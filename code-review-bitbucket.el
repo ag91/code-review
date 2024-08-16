@@ -397,6 +397,10 @@ For internal usage only.")
   "Set title for your pr in BITBUCKET and call CALLBACK."
   (code-review-bitbucket-not-supported-message))
 
+(cl-defmethod code-review-close ((_bitbucket code-review-bitbucket-repo) _callback)
+  "Close pullreq in BITBUCKET and call CALLBACK afterward."
+  (code-review-bitbucket-not-supported-message))
+
 (cl-defmethod code-review-send-description ((_bitbucket code-review-bitbucket-repo) _callback)
   "Set description for your pr in BITBUCKET and call CALLBACK."
   (code-review-bitbucket-not-supported-message))

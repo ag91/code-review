@@ -633,6 +633,20 @@ Optionally ask for the FALLBACK? query."
               :errorback #'code-review-github-errback
               :callback (lambda (&rest _) (funcall callback))))
 
+(cl-defmethod code-review-close ((github code-review-github-repo) callback)
+  "Close pullreq in GITHUB and call CALLBACK afterward."
+  (message "Closing PR...")
+  (ghub-patch (format "/repos/%s/%s/pulls/%s"
+                      (oref github owner)
+                      (oref github repo)
+                      (oref github number))
+              nil
+              :auth code-review-auth-login-marker
+              :host code-review-github-host
+              :payload (a-alist 'state (oref github state))
+              :errorback #'code-review-github-errback
+              :callback (lambda (&rest _) (funcall callback))))
+
 (cl-defmethod code-review-send-description ((github code-review-github-repo) callback)
   "Set description for a pullreq in GITHUB and call CALLBACK."
   (message "Sending new description...")

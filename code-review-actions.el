@@ -224,6 +224,12 @@ Optionally set a FEEDBACK message."
   (code-review--submit "COMMENT"))
 
 ;;;###autoload
+(defun code-review-close-pr ()
+  "Close the current PR."
+  (interactive)
+  (code-review-close-pr))
+
+;;;###autoload
 (defun code-review-submit-request-changes ()
   "Submit a Request Change for the current PR."
   (interactive)
@@ -383,6 +389,26 @@ Optionally set a FEEDBACK message."
       (insert ?\n)
       (switch-to-buffer-other-window buffer)
       (code-review-comment-mode))))
+
+;;;###autoload
+(defun code-review-close-pr ()
+  "Close current PR.  Sent immediately."
+  (interactive)
+  (let ((buffer (get-buffer-create code-review-comment-buffer-name))
+        (pr (code-review-db-get-pullreq)))
+    (if (code-review-github-repo-p pr)
+        (progn
+          (oset pr state "CLOSED")
+          (code-review-close
+           pr
+           (lambda ()
+             (code-review-db-update pr))))
+      (message "Not supported in %s yet."
+               (cond
+                ((code-review-gitlab-repo-p pr)
+                 "Gitlab")
+                ((code-review-bitbucket-repo-p pr)
+                 "Bitbucket"))))))
 
 ;;;###autoload
 (defun code-review-set-title ()
