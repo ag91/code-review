@@ -81,6 +81,9 @@
 (cl-defgeneric code-review-send-title (obj callback)
   "Set a pullrequest title for an OBJ and call CALLBACK afterward.")
 
+(cl-defgeneric code-review-close (obj callback)
+  "Close a PR for an OBJ and call CALLBACK afterward.")
+
 (cl-defgeneric code-review-send-description (obj callback)
   "Set a pullrequest description for an OBJ and call CALLBACK afterward.")
 

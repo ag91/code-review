@@ -137,6 +137,7 @@ OUTDATED."
     ("a" "Approve" code-review-submit-approve)
     ("r" "Request Changes" code-review-submit-request-changes)
     ("c" "Comment" code-review-submit-comments)
+    ("C" "Close" code-review-close-pr)
     ("C-c C-s" "Save Unfinished Review" code-review-save-unfinished-review)
     ("C-c C-r" "Open Unfinished Review" code-review-open-unfinished-review)]
    ["Merge"
