@@ -567,6 +567,10 @@ Optionally sets FALLBACK? to get minimal query."
             :payload `((title .,(oref gitlab title)))
             :callback (lambda (&rest _) (funcall callback))))
 
+(cl-defmethod code-review-close ((_gitlab code-review-gitlab-repo) _callback)
+  "Close pullreq in GITLAB and call CALLBACK afterward."
+  (code-review-gitlab-not-supported-message))
+
 (cl-defmethod code-review-send-description ((_gitlab code-review-gitlab-repo) _callback)
   "Set description for your pr in GITLAB and call CALLBACK."
   (code-review-gitlab-not-supported-message))
