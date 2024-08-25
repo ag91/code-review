@@ -1524,16 +1524,29 @@ Please Report this Bug" path-name))
 
       (let* ((heading  (match-string 0))
              (ranges   (mapcar (lambda (str)
-                                 (mapcar #'string-to-number
-                                         (split-string (substring str 1) ",")))
+                                 (let ((range
+                                        (mapcar #'string-to-number
+                                                (split-string (substring str 1) ","))))
+                                   ;; A single line is +1 rather than +1,1.
+                                   (if (length= range 1)
+                                       (nconc range (list 1))
+                                     range)))
                                (split-string (match-string 1))))
              (about    (match-string 2))
              (combined (= (length ranges) 3))
              (value    (cons about ranges)))
         (magit-delete-line)
-        (magit-insert-section section (hunk `((value . ,value)
-                                              (path . ,path-name)
-                                              (head-pos . ,head-pos)))
+        (magit-insert-section
+            ( hunk
+              `((value . ,value) ;; TODO not sure if this has to diverge as well
+                (path . ,path-name)
+                (head-pos . ,head-pos))
+              nil
+              :washer #'magit-diff-paint-hunk
+              :combined combined
+              :from-range (if combined (butlast ranges) (car ranges))
+              :to-range (car (last ranges))
+              :about about)
           (insert (propertize (concat heading "\n")
                               'font-lock-face 'magit-diff-hunk-heading))
           (magit-insert-heading)
@@ -1577,14 +1590,7 @@ Please Report this Bug" path-name))
                code-review-section-grouped-comments)))
 
         ;;; --- end -- code-review specific code.
-          (oset section end (point))
-          (oset section washer 'magit-diff-paint-hunk)
-          (oset section combined combined)
-          (if combined
-              (oset section from-ranges (butlast ranges))
-            (oset section from-range (car ranges)))
-          (oset section to-range (car (last ranges)))
-          (oset section about about))))
+          )))
     t))
 
 ;;; * build buffer
