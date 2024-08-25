@@ -1727,7 +1727,8 @@ If you want to display a minibuffer MSG in the end."
   (progress-reporter-update progress 5)
   (code-review-db--pullreq-raw-infos-update
    (code-review-gitlab-fix-infos
-    (a-get-in (-second-item res) (list 'data 'repository 'pullRequest))))
+    (code-review-github-fix-infos
+     (a-get-in (-second-item res) (list 'data 'repository 'pullRequest)))))
 
   ;; 1.3. trigger renders
   (progress-reporter-update progress 6)
