@@ -281,9 +281,12 @@ https://github.com/wandersoncferreira/code-review#configuration"))
               originalPosition
               diffHunk
               position
+              line
+              startLine
               outdated
               path
               databaseId
+              fullDatabaseId
               reactions(first:50){
                 nodes {
                   id
@@ -313,6 +316,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
       headRefName
       isDraft
       databaseId
+      fullDatabaseId
       number
       createdAt
       updatedAt
@@ -463,6 +467,8 @@ https://github.com/wandersoncferreira/code-review#configuration"))
               originalPosition
               diffHunk
               position
+              line
+              startLine
               outdated
               path
               databaseId
@@ -942,6 +948,21 @@ Return the blob URL if BLOB? is provided."
                                'commit_id (oref github sha))
              :callback callback
              :errorback #'code-review-github-errback))
+
+(defun code-review-github-fix-infos (github-infos)
+  "Make GitHub GITHUB-INFOS backward compatible.
+
+>> (code-review-github-fix-infos '((comments . ((nodes . (((databaseId . 1)) ((databaseId . 1) (fullDatabaseId . "2"))))))))
+=> ((comments . ((nodes . (((databaseId . 1)) ((databaseId . 2) (fullDatabaseId . "2")))))))"
+  (with-temp-file "/tmp/my.txt"
+    (insert (format "%s" github-infos)))
+  (let ((all-comments (--map
+                       (if-let ((fDbId (a-get it 'fullDatabaseId)))
+                           (a-assoc it 'databaseId (string-to-number fDbId))
+                         it)
+                       (a-get-in github-infos '(comments nodes)))))
+
+    (a-assoc-in github-infos '(comments nodes) all-comments)))
 
 (provide 'code-review-github)
 ;;; code-review-github.el ends here
