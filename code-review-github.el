@@ -950,5 +950,22 @@ Return the blob URL if BLOB? is provided."
 
     (a-assoc-in github-infos '(comments nodes) all-comments)))
 
+
+(defun code-review-jump-to-gh ()
+  (interactive)
+  (unless (equal "*Code Review*" (buffer-name)) (error "Need to be in code-review buffer for this"))
+  (let* ((pr (code-review-db-get-pullreq))
+         (owner (oref pr owner))
+         (pr-number (oref pr number))
+         (repo (oref pr repo))
+         (path (alist-get 'path (oref (magit-current-section) value)))
+         (sha256 (--> (shell-command-to-string (format "echo -n \"%s\" | shasum -a 256 | cut -d ' ' -f1" path)) ;; kindly discovered via https://github.com/orgs/community/discussions/55764
+                      s-lines
+                      -butlast ; there is a new line at the end of the output
+                      -last-item
+                      s-trim))
+         (url (format "https://github.com/%s/%s/pull/%s/files#diff-%s" owner repo pr-number sha256)))
+    (browse-url url)))
+
 (provide 'code-review-github)
 ;;; code-review-github.el ends here

@@ -8,7 +8,7 @@
 ;; Version: 0.0.7
 ;; Keywords: git, tools, vc
 ;; Homepage: https://github.com/wandersoncferreira/code-review
-;; Package-Requires: ((emacs "25.1") (closql "1.2.0") (magit "3.0.0") (transient "0.3.7") (a "1.0.0") (ghub "3.5.1") (uuidgen "1.2") (deferred "0.5.1") (markdown-mode "2.4") (forge "0.3.0") (emojify "1.2"))
+;; Package-Requires: ((emacs "25.1") (closql "1.2.0") (magit "3.0.0") (transient "0.3.7") (a "1.0.0") (ghub "3.5.1") (uuidgen "1.2") (deferred "0.5.1") (markdown-mode "2.4") (forge "0.3.0") (emojify "1.2") (s "1.13.1"))
 
 ;; This file is not part of GNU Emacs
 
@@ -44,6 +44,7 @@
 (require 'code-review-interfaces)
 (require 'code-review-faces)
 (require 'code-review-actions)
+(require 's)
 
 (defgroup code-review nil
   "Code Review tool for VC forges."
@@ -99,6 +100,28 @@ to 'forge."
   :type 'symbol)
 
 ;;; Entrypoint
+
+(defun code-review-jump-to-code-review-for-a-comment-and-back ()
+  "Jump from code-review buffer to file or back if you jumped already."
+  (interactive)
+  (save-excursion
+    (if (equal "*Code Review*" (buffer-name))
+        ;; I have already jumped: go back
+        (let ((reg (or
+                    (when (region-active-p)
+                      (substring-no-properties (funcall region-extract-function)))
+                    (s-chop-left 1 (thing-at-point 'line t)))))
+          (find-file (alist-get 'path (oref (magit-current-section) value)))
+          (goto-char (point-min))
+          (search-forward reg))
+      (let ((reg
+             (or
+              (when (region-active-p)
+                (substring-no-properties (funcall region-extract-function)))
+              (thing-at-point 'line t))))
+        (switch-to-buffer "*Code Review*")
+        (goto-char (point-min))
+        (search-forward reg)))))
 
 ;;;###autoload
 (defun code-review-forge-pr-at-point ()
