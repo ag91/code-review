@@ -126,6 +126,33 @@
     (error (setq code-review-db--sqlite-available-p nil)
            (signal (car err) (cdr err)))))
 
+;; Closql 2.x compatibility: ensure the class symbol passed to closql is correct.
+;; We specialize `closql-insert` for our database to avoid relying on Closql internals
+;; that expect a specific class representation in the object vector.
+(cl-defmethod closql-insert ((db code-review-db-database) obj &optional replace)
+  (closql--oset obj 'closql-database db)
+  (let (alist)
+    (dolist (slot (eieio-class-slots (eieio--object-class obj)))
+      (setq slot (cl--slot-descriptor-name slot))
+      (when (alist-get :closql-table (closql--slot-properties obj slot))
+        (push (cons slot (closql-oref obj slot)) alist)
+        (closql--oset obj slot eieio--unbound)))
+    (closql-with-transaction db
+      (emacsql db
+               (if replace
+                   [:insert-or-replace-into $i1 :values $v2]
+                 [:insert-into $i1 :values $v2])
+               (oref-default obj closql-table)
+               (pcase-let ((`(,_class ,_db . ,values)
+                            (closql--intern-unbound
+                             (closql--coerce obj 'list))))
+                 ;; Use the class symbol from the object’s class, not the raw vector tag.
+                 (vconcat (cons (closql--abbrev-class (eieio-object-class obj))
+                                values))))
+      (pcase-dolist (`(,slot . ,value) alist)
+        (closql-dset obj slot value))))
+  obj)
+
 ;;; Schema
 
 (defconst code-review-db-table-schema
@@ -221,12 +248,12 @@
   (let ((db (code-review-db))
         (class 'code-review-db-pullreq))
     (->> (emacsql db [:select :*
-                      :from 'pullreq
-                      :where (and (= owner $s1)
-                                  (= repo $s2)
-                                  (= number $s3)
-                                  (= saved 't)
-                                  (is finished nil))]
+                              :from 'pullreq
+                              :where (and (= owner $s1)
+                                          (= repo $s2)
+                                          (= number $s3)
+                                          (= saved 't)
+                                          (is finished nil))]
                   owner
                   repo
                   number)
@@ -243,9 +270,9 @@
         (db (code-review-db)))
     (->> (emacsql db
                   [:select :*
-                   :from 'pullreq
-                   :where (and (= saved 't)
-                               (is finished nil))])
+                           :from 'pullreq
+                           :where (and (= saved 't)
+                                       (is finished nil))])
          (mapcar
           (lambda (row) (closql--remake-instance class db row))))))
 
