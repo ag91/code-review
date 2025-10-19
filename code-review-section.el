@@ -641,54 +641,54 @@ INDENT count of spaces are added at the start of every line."
                    (msg (a-get-in c (list 'commit 'message)))
                    (obj (code-review-commit-section :sha sha :msg msg)))
               (magit-insert-section commit-section (code-review-commit-section obj)
-                (if (and (code-review-github-repo-p pr) .commit.statusCheckRollup.contexts.nodes)
-                    (progn
-                      (insert (format "%s%s %s "
-                                      (propertize (format "%-6s " (oref obj sha)) 'font-lock-face 'magit-hash)
-                                      (car (split-string (oref obj msg) "\n"))
-                                      (if (string-equal .commit.statusCheckRollup.state "SUCCESS")
-                                          ":white_check_mark:"
-                                        ":x:")))
-                      (insert
-                       (propertize "Expand for Details:" 'font-lock-face 'code-review-checker-detail-face))
-                      (oset commit-section hidden t)
-                      (magit-insert-heading)
-                      (when (> (length (split-string (oref obj msg) "\n")) 1)
-                        (insert (oref obj msg))
-                        (insert "\n"))
-                      (dolist (check .commit.statusCheckRollup.contexts.nodes)
-                        (let-alist check
-                          (let ((obj (code-review-commit-check-detail-section :check check :details .detailsUrl)))
-                            (magit-insert-section (code-review-commit-check-detail-section obj)
-                              (if (string-equal .conclusion "SUCCESS")
-                                  (progn
-                                    (insert (propertize (format "%-7s %s / %s" "" .checkSuite.workflowRun.workflow.name .name)
-                                                        'font-lock-face 'code-review-checker-name-face))
-                                    (insert " - ")
-                                    (insert (propertize (format "%s  " (format "Successful in %s."
-                                                                               (code-review-utils--elapsed-time .completedAt .startedAt)))
-                                                        'font-lock-face 'magit-dimmed))
-                                    (insert (propertize ":white_check_mark: Details"
-                                                        'font-lock-face 'code-review-checker-detail-face
-                                                        'mouse-face 'highlight
-                                                        'help-echo "Visit the page for details"
-                                                        'keymap 'code-review-commit-check-detail-section-map)))
-                                (progn
-                                  (insert (propertize (format "%-7s %s / %s" "" .checkSuite.workflowRun.workflow.name .title)
-                                                      'font-lock-face 'code-review-checker-name-face))
-                                  (insert " - ")
-                                  (insert (propertize (format "%s  " .summary)
-                                                      'font-lock-face 'magit-dimmed))
-                                  (insert (propertize ":x: Details"
-                                                      'font-lock-face 'code-review-checker-detail-face
-                                                      'mouse-face 'highlight
-                                                      'help-echo "Visit the page for details"
-                                                      'keymap 'code-review-commit-check-detail-section-map))))))
-                          (insert "\n"))))
-                  (progn
-                    (insert (propertize (format "%-6s " (oref obj sha)) 'font-lock-face 'magit-hash))
-                    (insert (oref obj msg))
-                    (insert ?\n)))))))
+                                    (if (and (code-review-github-repo-p pr) .commit.statusCheckRollup.contexts.nodes)
+                                        (progn
+                                          (insert (format "%s%s %s "
+                                                          (propertize (format "%-6s " (oref obj sha)) 'font-lock-face 'magit-hash)
+                                                          (car (split-string (oref obj msg) "\n"))
+                                                          (if (string-equal .commit.statusCheckRollup.state "SUCCESS")
+                                                              ":white_check_mark:"
+                                                            ":x:")))
+                                          (insert
+                                           (propertize "Expand for Details:" 'font-lock-face 'code-review-checker-detail-face))
+                                          (oset commit-section hidden t)
+                                          (magit-insert-heading)
+                                          (when (> (length (split-string (oref obj msg) "\n")) 1)
+                                            (insert (oref obj msg))
+                                            (insert "\n"))
+                                          (dolist (check .commit.statusCheckRollup.contexts.nodes)
+                                            (let-alist check
+                                              (let ((obj (code-review-commit-check-detail-section :check check :details .detailsUrl)))
+                                                (magit-insert-section (code-review-commit-check-detail-section obj)
+                                                  (if (string-equal .conclusion "SUCCESS")
+                                                      (progn
+                                                        (insert (propertize (format "%-7s %s / %s" "" .checkSuite.workflowRun.workflow.name .name)
+                                                                            'font-lock-face 'code-review-checker-name-face))
+                                                        (insert " - ")
+                                                        (insert (propertize (format "%s  " (format "Successful in %s."
+                                                                                                   (code-review-utils--elapsed-time .completedAt .startedAt)))
+                                                                            'font-lock-face 'magit-dimmed))
+                                                        (insert (propertize ":white_check_mark: Details"
+                                                                            'font-lock-face 'code-review-checker-detail-face
+                                                                            'mouse-face 'highlight
+                                                                            'help-echo "Visit the page for details"
+                                                                            'keymap 'code-review-commit-check-detail-section-map)))
+                                                    (progn
+                                                      (insert (propertize (format "%-7s %s / %s" "" .checkSuite.workflowRun.workflow.name .title)
+                                                                          'font-lock-face 'code-review-checker-name-face))
+                                                      (insert " - ")
+                                                      (insert (propertize (format "%s  " .summary)
+                                                                          'font-lock-face 'magit-dimmed))
+                                                      (insert (propertize ":x: Details"
+                                                                          'font-lock-face 'code-review-checker-detail-face
+                                                                          'mouse-face 'highlight
+                                                                          'help-echo "Visit the page for details"
+                                                                          'keymap 'code-review-commit-check-detail-section-map))))))
+                                              (insert "\n"))))
+                                      (progn
+                                        (insert (propertize (format "%-6s " (oref obj sha)) 'font-lock-face 'magit-hash))
+                                        (insert (oref obj msg))
+                                        (insert ?\n)))))))
         (insert ?\n)))))
 
 ;; description
