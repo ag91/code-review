@@ -45,7 +45,9 @@
 
 (defun code-review-parse-hunk-table (hunkstring)
   "Table with old line, new line, added/deleted line and relative pos from HUNKSTRING."
-  (if (string-prefix-p "Binary files" hunkstring)
+  (if (or (not hunkstring)
+          (string-empty-p hunkstring)
+          (string-prefix-p "Binary files" hunkstring))
       nil
     (let* ((difflines (split-string hunkstring "\n"))
            (relative 0)
@@ -121,43 +123,47 @@
 
 (defun code-review-parse-hunk-relative-pos (hunktable line-obj)
   "Given a HUNKTABLE (`code-review-parse-hunk-table') and LINE-OBJ return absolute diff pos."
-  (let ((row
-         (let-alist line-obj
-           (if .old
+  (if (not hunktable)
+      1
+    (let ((row
+           (let-alist line-obj
+             (if .old
+                 (-filter
+                  (lambda (it)
+                    (cond
+                     ((string-equal (a-get it 'type) "del")
+                      (>= (a-get it 'ln) .line-pos))
+                     ((string-equal (a-get it 'type) "normal")
+                      (>= (a-get it 'ln1) .line-pos))))
+                  hunktable)
                (-filter
                 (lambda (it)
                   (cond
-                   ((string-equal (a-get it 'type) "del")
+                   ((string-equal (a-get it 'type) "add")
                     (>= (a-get it 'ln) .line-pos))
                    ((string-equal (a-get it 'type) "normal")
-                    (>= (a-get it 'ln1) .line-pos))))
-                hunktable)
-             (-filter
-              (lambda (it)
-                (cond
-                 ((string-equal (a-get it 'type) "add")
-                  (>= (a-get it 'ln) .line-pos))
-                 ((string-equal (a-get it 'type) "normal")
-                  (>= (a-get it 'ln2) .line-pos))))
-              hunktable)))))
-    (a-get (-first-item row) 'relative)))
+                    (>= (a-get it 'ln2) .line-pos))))
+                hunktable)))))
+      (a-get (-first-item row) 'relative))))
 
 (defun code-review-parse-hunk-line-pos (hunktable hunk-obj)
   "Given a HUNKTABLE (`code-review-parse-hunk-table') and HUNK-OBJ return line pos."
-  (let-alist hunk-obj
-    (let ((row (-first-item
-                (-filter
-                 (lambda (it)
-                   (eq (a-get it 'relative) .line-pos))
-                 hunktable))))
-      (cond
-       (.added
-        (a-get row 'ln))
-       (.deleted
-        (a-get row 'ln))
-       (.normal
-        `((old-line . ,(a-get row 'ln1))
-          (new-line . ,(a-get row 'ln2))))))))
+  (if (not hunktable)
+      nil
+    (let-alist hunk-obj
+      (let ((row (-first-item
+                  (-filter
+                   (lambda (it)
+                     (eq (a-get it 'relative) .line-pos))
+                   hunktable))))
+        (cond
+         (.added
+          (a-get row 'ln))
+         (.deleted
+          (a-get row 'ln))
+         (.normal
+          `((old-line . ,(a-get row 'ln1))
+            (new-line . ,(a-get row 'ln2)))))))))
 
 (provide 'code-review-parse-hunk)
 ;;; code-review-parse-hunk.el ends here

@@ -155,7 +155,7 @@ using COMMENTS."
            (-reduce-from
             (lambda (grouped-comments comment)
               (let-alist comment
-                (let* ((handled-pos (or .position .originalPosition))
+                (let* ((handled-pos (or .position .originalPosition 1))
                        (path-pos (code-review-utils--comment-key .path handled-pos))
                        (reactions (-map
                                    (lambda (r)

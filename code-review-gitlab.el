@@ -95,31 +95,47 @@ an object then we need to build the diff string ourselves here."
    (-reduce-from
     (lambda (acc c)
       (let-alist c
-        (let ((header1 (format "diff --git %s %s\n" .new_path .old_path))
+        (let ((header1 (format "diff --git %s %s\n" (or .new_path "") (or .old_path "")))
               (header2 (cond
                         (.deleted_file
                          (format "deleted file mode %s\n" .a_mode))
                         (.new_file
                          (format "new file mode %s\nindex 0000000000000000000000000000000000000000..1111\n" .b_mode))
-                        (.renamed_file)
+                        (.renamed_file
+                         ;; For renamed files, check if .diff is empty (GitLab API issue)
+                         ;; If empty, provide fallback headers, otherwise use empty string
+                         (if (or (not .diff) (string-empty-p .diff))
+                             (format "similarity index 100%%\nrename from %s\nrename to %s\n" (or .old_path "") (or .new_path ""))
+                           ;; If .diff contains content, this is a rename+modify case
+                           ;; We need to provide the rename headers since .diff only contains the @@ hunks
+                           (format "similarity index 95%%\nrename from %s\nrename to %s\nindex 1111..2222 %s\n" 
+                                   (or .old_path "") (or .new_path "") (or .a_mode "100644"))))
                         (t
                          (format "index 1111..2222 %s\n" .a_mode))))
               (header3 (cond
                         (.deleted_file
-                         (format "--- %s\n+++ /dev/null\n" .old_path))
+                         (format "--- %s\n+++ /dev/null\n" (or .old_path "")))
                         (.new_file
-                         (format "--- /dev/null\n+++ %s\n" .new_path))
-                        (.renamed_file)
+                         (format "--- /dev/null\n+++ %s\n" (or .new_path "")))
+                        (.renamed_file
+                         ;; For renamed files, check if .diff is empty (GitLab API issue)
+                         ;; If empty, provide fallback headers, otherwise use empty string
+                         (if (or (not .diff) (string-empty-p .diff))
+                             (format "--- %s\n+++ %s\n" (or .old_path "") (or .new_path ""))
+                           ;; If .diff contains content, this is a rename+modify case
+                           ;; We need to provide the --- +++ headers since .diff only contains the @@ hunks
+                           (format "--- a/%s\n+++ b/%s\n" (or .old_path "") (or .new_path ""))))
                         (t
                          (format "--- %s\n+++ %s\n"
-                                 .old_path
-                                 .new_path)))))
+                                 (or .old_path "")
+                                 (or .new_path ""))))))
+
           (format "%s%s%s%s%s"
-                  acc
-                  header1
-                  header2
-                  header3
-                  .diff))))
+                  (or acc "")
+                  (or header1 "")
+                  (or header2 "")
+                  (or header3 "")
+                  (or .diff "")))))
     ""
     pr-changes)))
 
@@ -157,14 +173,16 @@ an object then we need to build the diff string ourselves here."
            (discussion-id (-> .discussion.id
                               (split-string "DiffDiscussion/")
                               (-second-item)))
-           (diff-pos (code-review-parse-hunk-relative-pos mapping line-obj)))
+           (diff-pos (if mapping
+                         (code-review-parse-hunk-relative-pos mapping line-obj)
+                       1)))
       `((author (login . ,.author.login))
         (state . ,"")
         (bodyHTML .,"")
         (createdAt . ,.createdAt)
         (updatedAt . ,.updatedAt)
         (comments (nodes ((bodyHTML . ,.bodyHTML)
-                          (path . ,.position.oldPath)
+                          (path . ,(or path ""))
                           (position . ,diff-pos)
                           (databaseId . ,discussion-id)
                           (createdAt . ,.createdAt)
@@ -173,27 +191,23 @@ an object then we need to build the diff string ourselves here."
 (defun code-review-gitlab-fix-review-comments (all-comments)
   "Get `code-review-comment' structure out of ALL-COMMENTS to all review comments."
   (let* ((review-comments (code-review-gitlab--review-comments all-comments))
+         (filtered-review-comments
+          (-filter
+           (lambda (c)
+             (let ((line (or (a-get-in c (list 'position 'oldLine))
+                             (a-get-in c (list 'position 'newLine))))
+                   (path (a-get-in c (list 'position 'oldPath))))
+               ;; Only include comments that have valid position line numbers
+               ;; Comments without valid position are likely misclassified overview comments
+               (and (numberp line) path)))
+           review-comments))
          (grouped-comments (-group-by
                             (lambda (c)
                               (let ((line (or (a-get-in c (list 'position 'oldLine))
                                               (a-get-in c (list 'position 'newLine))))
                                     (path (a-get-in c (list 'position 'oldPath))))
-                                ;; we assume that every review comment requires
-                                ;; a positional line number to be possible to
-                                ;; place it in the diff. However, Gitlab's API
-                                ;; does not provide a good differentiation
-                                ;; between an Overview comment and a Diff
-                                ;; comment so the heuristic used in
-                                ;; `code-review-gitlab--review-comments' might
-                                ;; be incomplete.
-                                (if (not (numberp line))
-                                    (error "Review Comment
-                                    without position line number
-                                    found! Possibly a bug in
-                                    heuristic to identify Review
-                                    Comments")
-                                  (concat path ":" (number-to-string line)))))
-                            review-comments)))
+                                (concat path ":" (number-to-string line))))
+                            filtered-review-comments)))
     (-reduce-from
      (lambda (acc k)
        (let* ((comments (alist-get k grouped-comments nil nil 'equal)))
@@ -214,7 +228,10 @@ an object then we need to build the diff string ourselves here."
   (let-alist comment
     (and (not .system)
          (or (not .resolvable)
-             (not .position)))))
+             (not .position)
+             ;; Even if position exists, check if it has valid line numbers
+             (not (or (a-get-in comment (list 'position 'oldLine))
+                      (a-get-in comment (list 'position 'newLine))))))))
 
 (defun code-review-gitlab-fix-infos (gitlab-infos)
   "Make GITLAB-INFOS structure compatible with GITHUB."
@@ -240,21 +257,23 @@ The payload is used to send a MR review to Gitlab."
                              nil nil 'equal))
          (line-type (oref comment line-type))
          (pos (oref comment position)))
-    (pcase line-type
-      ("ADDED"
-       (a-assoc-in payload (list 'position 'new_line)
-                   (code-review-parse-hunk-line-pos mapping `((added . t) (line-pos . ,pos)))))
-      ("REMOVED"
-       (a-assoc-in payload (list 'position 'old_line)
-                   (code-review-parse-hunk-line-pos mapping `((deleted . t) (line-pos . ,pos)))))
-      ("UNCHANGED"
-       (let ((line-pos-res
-              (code-review-parse-hunk-line-pos
-               mapping
-               `((normal . t) (line-pos . ,pos)))))
-         (-> payload
-             (a-assoc-in (list 'position 'new_line) (a-get line-pos-res 'new-line))
-             (a-assoc-in (list 'position 'old_line) (a-get line-pos-res 'old-line))))))))
+    (if (not mapping)
+        payload
+      (pcase line-type
+        ("ADDED"
+         (a-assoc-in payload (list 'position 'new_line)
+                     (code-review-parse-hunk-line-pos mapping `((added . t) (line-pos . ,pos)))))
+        ("REMOVED"
+         (a-assoc-in payload (list 'position 'old_line)
+                     (code-review-parse-hunk-line-pos mapping `((deleted . t) (line-pos . ,pos)))))
+        ("UNCHANGED"
+         (let ((line-pos-res
+                (code-review-parse-hunk-line-pos
+                 mapping
+                 `((normal . t) (line-pos . ,pos)))))
+           (-> payload
+               (a-assoc-in (list 'position 'new_line) (a-get line-pos-res 'new-line))
+               (a-assoc-in (list 'position 'old_line) (a-get line-pos-res 'old-line)))))))))
 
 ;;; classes
 
@@ -404,10 +423,12 @@ Optionally sets FALLBACK? to get minimal query."
   (let* ((res
           (-reduce-from
            (lambda (acc it)
-             (let ((str (a-get it 'diff)))
-               (a-assoc acc (or (a-get it 'old_path)
-                                (a-get it 'new_path))
-                        (code-review-parse-hunk-table str))))
+             (let ((str (a-get it 'diff))
+                   (path (or (a-get it 'old_path)
+                             (a-get it 'new_path))))
+               (if (and str (not (string-empty-p str)))
+                   (a-assoc acc path (code-review-parse-hunk-table str))
+                 acc)))
            nil
            gitlab-diff)))
     (setq code-review-gitlab-line-diff-mapping res)))

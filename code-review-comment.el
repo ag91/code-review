@@ -223,9 +223,9 @@ Optionally define a MSG."
                     (setq amount-loc 0)
                   (setq amount-loc (or (oref value amount-loc) 0)))))))
 
-        (let* ((diff-pos (+ 1 (- current-line
-                                 amount-loc
-                                 (a-get obj 'head-pos))))
+        (let* ((diff-pos (max 1 (+ 1 (- current-line
+                                         amount-loc
+                                         (a-get obj 'head-pos)))))
                (local-comment (code-review-local-comment-section
                                :state "LOCAL COMMENT"
                                :author (code-review-utils--git-get-user)
