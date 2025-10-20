@@ -1640,8 +1640,11 @@ If you want to display a minibuffer MSG in the end."
               (magit-insert-section (code-review-files-report-section)
                 (code-review-section-insert-files-changed)
                 (magit-insert-section (code-review-files-chnged)
-                  (magit-wash-sequence
-                   (apply-partially #'magit-diff-wash-diff ())))))
+                  (save-restriction
+                    (narrow-to-region (point) (point-max))
+                    (run-hooks 'magit-diff-wash-diffs-hook)
+                    (magit-wash-sequence
+                     (apply-partially #'magit-diff-wash-diff ()))))))
             (if window
                 (progn
                   (pop-to-buffer buff-name)
