@@ -658,26 +658,38 @@ INDENT count of spaces are added at the start of every line."
                                             (insert "\n"))
                                           (dolist (check .commit.statusCheckRollup.contexts.nodes)
                                             (let-alist check
-                                              (let ((obj (code-review-commit-check-detail-section :check check :details .detailsUrl)))
+                                              (let ((obj (code-review-commit-check-detail-section :check check :details (or .detailsUrl .targetUrl))))
                                                 (magit-insert-section (code-review-commit-check-detail-section obj)
                                                   (if (string-equal .conclusion "SUCCESS")
                                                       (progn
-                                                        (insert (propertize (format "%-7s %s / %s" "" .checkSuite.workflowRun.workflow.name .name)
-                                                                            'font-lock-face 'code-review-checker-name-face))
+                                                        (insert (propertize
+                                                                 (format
+                                                                  "%-7s %s" ""
+                                                                  (if-let ((check-suite-name (or .checkSuite.workflowRun.workflow.name .checkSuite.app.name)))
+                                                                      (format "%s / %s" check-suite-name .name)
+                                                                    ;; for StatusContext actions
+                                                                    .context))
+                                                                 'font-lock-face 'code-review-checker-name-face))
                                                         (insert " - ")
-                                                        (insert (propertize (format "%s  " (format "Successful in %s."
-                                                                                                   (code-review-utils--elapsed-time .completedAt .startedAt)))
-                                                                            'font-lock-face 'magit-dimmed))
+                                                        (when .startedAt
+                                                          (insert (propertize (format "%s  " (format "Successful in %s."
+                                                                                                     (code-review-utils--elapsed-time .completedAt .startedAt)))
+                                                                              'font-lock-face 'magit-dimmed)))
                                                         (insert (propertize ":white_check_mark: Details"
                                                                             'font-lock-face 'code-review-checker-detail-face
                                                                             'mouse-face 'highlight
                                                                             'help-echo "Visit the page for details"
                                                                             'keymap 'code-review-commit-check-detail-section-map)))
                                                     (progn
-                                                      (insert (propertize (format "%-7s %s / %s" "" .checkSuite.workflowRun.workflow.name .title)
+                                                      (insert (propertize (format
+                                                                           "%-7s %s" ""
+                                                                           (if-let ((check-suite-name (or .checkSuite.workflowRun.workflow.name .checkSuite.app.name)))
+                                                                               (format "%s / %s" check-suite-name .name)
+                                                                             ;; for StatusContext actions
+                                                                             .context))
                                                                           'font-lock-face 'code-review-checker-name-face))
                                                       (insert " - ")
-                                                      (insert (propertize (format "%s  " .summary)
+                                                      (insert (propertize (format "%s  " (or .summary .description))
                                                                           'font-lock-face 'magit-dimmed))
                                                       (insert (propertize ":x: Details"
                                                                           'font-lock-face 'code-review-checker-detail-face

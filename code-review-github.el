@@ -222,6 +222,13 @@ https://github.com/wandersoncferreira/code-review#configuration"))
                         logoUrl
                       }
                     }
+                  ... on StatusContext {
+                    createdAt
+                    context
+                    state
+                    targetUrl
+                    description
+                    }
                   }
                 }
               }
@@ -376,6 +383,13 @@ https://github.com/wandersoncferreira/code-review#configuration"))
               state
               contexts(first:50){
                 nodes {
+                  ... on StatusContext {
+                    createdAt
+                    context
+                    state
+                    targetUrl
+                    description
+                    }
                   ... on CheckRun {
                     startedAt
                     completedAt
