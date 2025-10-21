@@ -58,6 +58,23 @@
   :group 'code-review
   :type 'integer)
 
+(defcustom code-review-diff-file-order-rules nil
+  "Regex rules to order files in the diff.
+Each element is a regexp string tested against the file path
+without the leading \"a/\" or \"b/\". Files matching the first
+regexp appear first, then the second, and so on. Files that don't
+match any rule appear last. Within the same rule group files are
+sorted alphabetically by path.
+
+Example:
+  (setq code-review-diff-file-order-rules
+        '(\"^src/\"                           ;; source first
+          \"^\\\\(config/\\\\|\\\\.github/\\\\|\\\\.gitlab-ci\\\\.yml$\\\\)\" ;; config
+          \"^docs/\"                          ;; docs
+          \"^\\\\(test/\\\\|tests/\\\\)\"))   ;; tests last"
+  :group 'code-review
+  :type '(repeat string))
+
 (defcustom code-review-buffer-name "*Code Review*"
   "Name of the code review main buffer."
   :group 'code-review
@@ -251,6 +268,67 @@ INDENT count of spaces are added at the start of every line."
           (forward-line))))))
 
 ;; headers
+
+(defun code-review--diff--extract-b-path (header-line)
+  "Extract the b/ path from a diff HEADER-LINE.
+Return just the path without the leading b/."
+  (when (string-match "^diff --git a/\\(.+?\\) b/\\(.+\\)$" header-line)
+    (match-string 2 header-line)))
+
+(defun code-review--diff--split-by-files (diff-text)
+  "Split DIFF-TEXT into a list of (path . block) per file."
+  (let ((pos 0)
+        (len (length diff-text))
+        blocks)
+    (while (and (< pos len)
+                (string-match "^diff --git .+$" diff-text pos))
+      (let* ((start (match-beginning 0))
+             ;; advance to next header or end
+             (next (if (string-match "^diff --git .+$" diff-text (match-end 0))
+                       (match-beginning 0)
+                     len))
+             (block (substring diff-text start next))
+             (first-line-end (string-match "\n" block))
+             (header (if first-line-end
+                         (substring block 0 first-line-end)
+                       block))
+             (path (or (code-review--diff--extract-b-path header) "")))
+        (push (cons path block) blocks)
+        (setq pos next)))
+    (nreverse blocks)))
+
+(defun code-review--diff--file-order-index (path)
+  "Return the ordering index for PATH based on `code-review-diff-file-order-rules'."
+  (let ((rules code-review-diff-file-order-rules)
+        (idx 0)
+        (found nil))
+    (while (and rules (not found))
+      (setq found (string-match-p (car rules) path))
+      (unless found
+        (setq idx (1+ idx))
+        (setq rules (cdr rules))))
+    (if found idx ;; zero-based index of first match
+      ;; no match -> put after all rules
+      (length code-review-diff-file-order-rules))))
+
+(defun code-review--maybe-reorder-diff (diff-text)
+  "Reorder DIFF-TEXT per `code-review-diff-file-order-rules' if set."
+  (if (not code-review-diff-file-order-rules)
+      diff-text
+    (let* ((first-pos (string-match "^diff --git .+$" diff-text 0))
+           (prefix (if (and first-pos (> first-pos 0))
+                       (substring diff-text 0 first-pos)
+                     ""))
+           (blocks (code-review--diff--split-by-files
+                    (if first-pos (substring diff-text first-pos) diff-text)))
+           (sorted (sort blocks
+                         (lambda (a b)
+                           (let* ((ia (code-review--diff--file-order-index (car a)))
+                                  (ib (code-review--diff--file-order-index (car b))))
+                             (if (= ia ib)
+                                 (string-lessp (car a) (car b))
+                               (< ia ib)))))))
+      (concat prefix (mapconcat #'cdr sorted "")))))
 
 (defclass code-review-author-section (magit-section)
   ((keymap :initform 'code-review-author-section-map)
@@ -1647,7 +1725,8 @@ If you want to display a minibuffer MSG in the end."
                  (inhibit-read-only t))
             (save-excursion
               (erase-buffer)
-              (insert (code-review-db--pullreq-raw-diff))
+              (insert (code-review--maybe-reorder-diff
+                       (code-review-db--pullreq-raw-diff)))
               (insert ?\n))
             (magit-insert-section section (code-review--root-section)
                                   (magit-insert-section (code-review)
