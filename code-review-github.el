@@ -971,6 +971,19 @@ For GitHub, prefer line/side and optional start_line/start_side; do not send pos
                :callback callback
                :errorback #'code-review-github-errback)))
 
+(cl-defmethod code-review-delete-code-comment ((github code-review-github-repo) comment-id callback)
+  "Delete a code review comment on GitHub by COMMENT-ID and call CALLBACK."
+  (ghub-delete (format "/repos/%s/%s/pulls/comments/%s"
+                       (oref github owner)
+                       (oref github repo)
+                       comment-id)
+               nil
+               :auth code-review-auth-login-marker
+               :headers '(("Accept" . "application/vnd.github.v3+json"))
+               :host code-review-github-host
+               :callback callback
+               :errorback #'code-review-github-errback))
+
 (defun code-review-github-fix-infos (github-infos)
   "Make GitHub GITHUB-INFOS backward compatible.
 

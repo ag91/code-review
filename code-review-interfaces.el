@@ -111,5 +111,15 @@
 (cl-defgeneric code-review-new-code-comment (obj local-comment callback)
   "Create a new diff comment for OBJ given a LOCAL-COMMENT and call CALLBACK.")
 
+;; Deleting comments
+(cl-defgeneric code-review-delete-code-comment (obj comment-id callback)
+  "Delete a diff comment identified by COMMENT-ID from OBJ and call CALLBACK.
+COMMENT-ID is the provider's identifier (e.g., GitHub review comment id).")
+
+(cl-defmethod code-review-delete-code-comment ((obj t) comment-id callback)
+  "Fallback when provider deletion is not implemented."
+  (ignore obj comment-id callback)
+  (user-error "Deleting code comments is not implemented for this provider"))
+
 (provide 'code-review-interfaces)
 ;;; code-review-interfaces.el ends here

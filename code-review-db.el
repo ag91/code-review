@@ -549,16 +549,28 @@ Very Bad Performance!."
         0
       (oref comment loc-written))))
 
-(defun code-review-db-delete-raw-comment (internal-id)
-  "Remove INTERNAL-ID comment from raw comments list."
+(defun code-review-db-delete-raw-comment (identifier)
+  "Remove comment identified by IDENTIFIER from raw comments list.
+IDENTIFIER can be our local 'internal-id' (string UUID) or the provider
+'databaseId' (number or string)."
   (let* ((pr (code-review-db-get-pullreq))
+         (id-str (cond ((numberp identifier) (number-to-string identifier))
+                       ((stringp identifier) identifier)
+                       (t (format "%s" identifier))))
          (new-comments
           (-filter
            (lambda (c)
-             (let ((res (-filter
-                         (lambda (node)
-                           (not (string-equal (a-get node 'internal-id) internal-id)))
-                         (a-get-in c (list 'comments 'nodes)))))
+             (let* ((nodes (a-get-in c (list 'comments 'nodes)))
+                    (res (-filter
+                          (lambda (node)
+                            (let* ((iid (a-get node 'internal-id))
+                                   (dbid (a-get node 'databaseId))
+                                   (dbid-str (when dbid (number-to-string dbid)))
+                                   (fullid (a-get node 'fullDatabaseId)))
+                              (not (or (and iid (string-equal iid id-str))
+                                       (and dbid-str (string-equal dbid-str id-str))
+                                       (and fullid (string-equal fullid id-str))))))
+                          nodes)))
                res))
            (oref pr raw-comments))))
     (oset pr raw-comments new-comments)

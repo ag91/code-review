@@ -1112,6 +1112,7 @@ Return just the path without the leading b/."
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
     (define-key map (kbd "C-c C-r") 'code-review-code-comment-reaction-at-point)
     (define-key map (kbd "C-c C-n") 'code-review-promote-comment-at-point-to-new-issue)
+    (define-key map (kbd "K") 'code-review-section-delete-comment-remote)
     map)
   "Keymaps for code-comment sections.")
 
@@ -1119,6 +1120,7 @@ Return just the path without the leading b/."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
     (define-key map (kbd "C-c C-k") 'code-review-section-delete-comment)
+    (define-key map (kbd "K") 'code-review-section-delete-comment-remote)
     map)
   "Keymaps for local-comment sections.")
 
@@ -1126,12 +1128,14 @@ Return just the path without the leading b/."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
     (define-key map (kbd "C-c C-k") 'code-review-section-delete-comment)
+    (define-key map (kbd "K") 'code-review-section-delete-comment-remote)
     map)
   "Keymaps for reply-comment sections.")
 
 (defvar code-review-outdated-comment-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
+    (define-key map (kbd "K") 'code-review-section-delete-comment-remote)
     map)
   "Keymaps for outdated-comment sections.")
 
@@ -2022,6 +2026,40 @@ If you want to provide a MSG for the end of the process."
     (with-slots (value) (magit-current-section)
       (code-review-db-delete-raw-comment (oref value internalId))
       (code-review--build-buffer))))
+
+;;;###autoload
+(defun code-review-section-delete-comment-remote ()
+  "Delete comment at point locally and remotely (when applicable).
+For local comments, only deletes locally. For submitted diff comments,
+delete remotely via provider API and then drop from local DB."
+  (interactive)
+  (with-current-buffer code-review-buffer-name
+    (setq code-review-comment-cursor-pos (point))
+    (let* ((section (magit-current-section))
+           (val (and section (oref section value)))
+           (is-local (and val (code-review-local-comment-section-p val)))
+           (prompt (if is-local
+                       "Do you want to delete this comment locally? "
+                     "Do you want to delete this comment locally and remotely? ")))
+      (when (and val (y-or-n-p prompt))
+        (cond
+         ;; Local comments: just delete from DB
+         (is-local
+          (code-review-db-delete-raw-comment (oref val internalId))
+          (code-review--build-buffer))
+         ;; Remote code/reply/outdated comments: delete via provider
+         ((or (code-review-code-comment-section-p val)
+              (code-review-reply-comment-section-p val)
+              (code-review-outdated-comment-section-p val))
+          (let* ((comment-id (oref val id))
+                 (pr (code-review-db-get-pullreq))
+                 (callback (lambda (&rest _)
+                             (code-review-db-delete-raw-comment comment-id)
+                             (let ((code-review-section-full-refresh? t))
+                               (code-review--build-buffer)))))
+            (code-review-delete-code-comment pr comment-id callback)))
+         (t
+          (message "No deletable comment at point.")))))))
 
 (provide 'code-review-section)
 ;;; code-review-section.el ends here
