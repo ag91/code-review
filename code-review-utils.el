@@ -66,8 +66,13 @@
 ;;; COMMENTS
 
 (defun code-review-utils--comment-key (path pos)
-  "Define a key using PATH and POS."
+  "Define a key using PATH and POS.
+POS can be a number or a synthetic token."
   (format "%s:%s" path pos))
+
+(defun code-review-utils--comment-key-from-line (path side line)
+  "Define a grouping key using PATH, SIDE and LINE."
+  (format "%s:%s:%s" path (or side "RIGHT") (or line 0)))
 
 (defun code-review-utils--comment-get (grouped-comments path-pos)
   "Get comments from GROUPED-COMMENTS located by PATH-POS key."
@@ -155,8 +160,11 @@ using COMMENTS."
            (-reduce-from
             (lambda (grouped-comments comment)
               (let-alist comment
-                (let* ((handled-pos (or .position .originalPosition 1))
-                       (path-pos (code-review-utils--comment-key .path handled-pos))
+                (let* ((handled-pos (or .position .originalPosition))
+                       (has-line (or .line .startLine))
+                       (path-pos (if handled-pos
+                                     (code-review-utils--comment-key .path handled-pos)
+                                   (code-review-utils--comment-key-from-line .path .side .line)))
                        (reactions (-map
                                    (lambda (r)
                                      (code-review-reaction-section
@@ -191,17 +199,21 @@ using COMMENTS."
                                :createdAt .createdAt
                                :updatedAt .updatedAt))
                              (.local?
-                              (code-review-local-comment-section
-                               :state state
-                               :author author
-                               :msg .bodyText
-                               :position handled-pos
-                               :reactions nil
-                               :internalId .internal-id
-                               :path .path
-                               :createdAt .createdAt
-                               :updatedAt .updatedAt
-                               :line-type .line-type))
+                             (code-review-local-comment-section
+                              :state state
+                              :author author
+                              :msg .bodyText
+                              :position handled-pos
+                              :reactions nil
+                              :internalId .internal-id
+                              :path .path
+                              :createdAt .createdAt
+                              :updatedAt .updatedAt
+                              :line-type .line-type
+                              :side .side
+                              :line .line
+                              :start-side .startSide
+                              :start-line .startLine))
                              (t
                               (code-review-code-comment-section
                                :state state
@@ -217,9 +229,7 @@ using COMMENTS."
                                :updatedAt .updatedAt)))))
 
                   ;;; extra checks
-                  (when (not handled-pos)
-                    (throw :code-review/comment-missing-position
-                           "Every comment requires a position in the diff."))
+                  ;; position may be missing when using line/side API
 
                   (when (not .path)
                     (throw :code-review/comment-missing-path

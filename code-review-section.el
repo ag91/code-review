@@ -1015,7 +1015,19 @@ Return just the path without the leading b/."
    (msg        :initarg :msg
                :type string)
    (position   :initarg :position
-               :type number)
+               :initform nil
+               :type (or null number))
+   (side         :initarg :side
+                 :documentation "GitHub side for comment: LEFT or RIGHT")
+   (line         :initarg :line
+                 :initform nil
+                 :documentation "GitHub line number for side")
+   (start-side   :initarg :start-side
+                 :initform nil
+                 :documentation "GitHub start_side for multi-line comments")
+   (start-line   :initarg :start-line
+                 :initform nil
+                 :documentation "GitHub start_line for multi-line comments")
    (reactions  :initarg :reactions
                :type (or null
                          (satisfies

@@ -55,11 +55,15 @@
 ;;;
 
 (defclass code-review-submit-local-coment ()
-  ((path     :initarg :path)
-   (position :initarg :position)
-   (body     :initarg :body)
+  ((path       :initarg :path)
+   (position   :initarg :position) ;; kept for non-GitHub for backward compat
+   (side       :initarg :side)
+   (line       :initarg :line)
+   (start-side :initarg :start-side)
+   (start-line :initarg :start-line)
+   (body       :initarg :body)
    (internal-id :initarg :internal-id)
-   (line-type :initarg :line-type)))
+   (line-type  :initarg :line-type)))
 
 (defclass code-review-submit-review ()
   ((state :initform nil)
@@ -157,10 +161,14 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
                      (push (code-review-submit-local-coment
                             :path (oref value path)
                             :position (oref value position)
+                            :side (ignore-errors (oref value side))
+                            :line (ignore-errors (oref value line))
+                            :start-side (ignore-errors (oref value start-side))
+                            :start-line (ignore-errors (oref value start-line))
                             :body (oref value msg)
                             :internal-id (oref value internalId)
                             :line-type (oref value line-type))
-                           local-comments))))
+                          local-comments))))
                (forward-line))))))
 
       (oset replies-obj replies replies)

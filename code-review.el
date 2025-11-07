@@ -197,7 +197,9 @@ OUTDATED."
     map))
 
 (define-derived-mode code-review-mode magit-section-mode "Code Review"
-  "Code Review mode.")
+  "Code Review mode."
+  ;; Ensure line-number cache used by position calculators stays fresh
+  (add-hook 'after-change-functions #'code-review--after-change nil t))
 
 (provide 'code-review)
 ;;; code-review.el ends here

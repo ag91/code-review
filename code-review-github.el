@@ -771,7 +771,8 @@ Optionally ask for the FALLBACK? query."
    (feedback :initform nil)))
 
 (cl-defmethod code-review-send-review ((review code-review-submit-github-review) callback)
-  "Submit review comments given REVIEW and a CALLBACK fn."
+  "Submit review comments given REVIEW and a CALLBACK fn.
+For GitHub, use line/side and optional start_line/start_side for comments."
   (let* ((pr (oref review pr))
          (payload (a-alist 'event (oref review state)
                            'commit_id (oref pr sha)))
@@ -780,13 +781,20 @@ Optionally ask for the FALLBACK? query."
                     payload))
          (payload (if (oref review local-comments)
                       (a-assoc payload 'comments (vconcat (--sort
-                                                           (< (a-get it 'position)
-                                                              (a-get other 'position))
+                                                           (let ((l1 (or (a-get it 'line) 0))
+                                                                 (l2 (or (a-get other 'line) 0)))
+                                                             (< l1 l2))
                                                            (-map
                                                             (lambda (c)
-                                                              `((path . ,(oref c path))
-                                                               (position . ,(oref c position))
-                                                               (body . ,(oref c body))))
+                                                              (let* ((entry `((path . ,(oref c path))
+                                                                              (body . ,(oref c body))
+                                                                              (line . ,(ignore-errors (oref c line)))
+                                                                              (side . ,(ignore-errors (oref c side))))))
+                                                                (if (and (ignore-errors (oref c start-line))
+                                                                         (ignore-errors (oref c start-side)))
+                                                                    (append entry `((start_line . ,(oref c start-line))
+                                                                                    (start_side . ,(oref c start-side))))
+                                                                  entry)))
                                                             (oref review local-comments)))))
                     payload)))
     (ghub-post (format "/repos/%s/%s/pulls/%s/reviews"
@@ -933,21 +941,35 @@ Return the blob URL if BLOB? is provided."
              :errorback #'code-review-github-errback))
 
 (cl-defmethod code-review-new-code-comment ((github code-review-github-repo) local-comment callback)
-  "Creare a new code comment in GITHUB from a LOCAL-COMMENT and call CALLBACK."
-  (ghub-post (format "/repos/%s/%s/pulls/%s/comments"
-                     (oref github owner)
-                     (oref github repo)
-                     (oref github number))
-             nil
-             :auth code-review-auth-login-marker
-             :headers '(("Accept" . "application/vnd.github.v3+json"))
-             :host code-review-github-host
-             :payload (a-alist 'path (oref local-comment path)
-                               'position (oref local-comment position)
-                               'body (oref local-comment msg)
-                               'commit_id (oref github sha))
-             :callback callback
-             :errorback #'code-review-github-errback))
+  "Creare a new code comment in GITHUB from a LOCAL-COMMENT and call CALLBACK.
+For GitHub, prefer line/side and optional start_line/start_side; do not send position."
+  (let* ((path (oref local-comment path))
+         (msg (oref local-comment msg))
+         (sha (oref github sha))
+         (line (ignore-errors (oref local-comment line)))
+         (side (ignore-errors (oref local-comment side)))
+         (start-line (ignore-errors (oref local-comment start-line)))
+         (start-side (ignore-errors (oref local-comment start-side)))
+         (payload (a-alist 'path path
+                           'body msg
+                           'commit_id sha))
+         (payload (if (and line side)
+                      (a-assoc payload 'line line 'side side)
+                    payload))
+         (payload (if (and start-line start-side)
+                      (a-assoc payload 'start_line start-line 'start_side start-side)
+                    payload)))
+    (ghub-post (format "/repos/%s/%s/pulls/%s/comments"
+                       (oref github owner)
+                       (oref github repo)
+                       (oref github number))
+               nil
+               :auth code-review-auth-login-marker
+               :headers '(("Accept" . "application/vnd.github.v3+json"))
+               :host code-review-github-host
+               :payload payload
+               :callback callback
+               :errorback #'code-review-github-errback)))
 
 (defun code-review-github-fix-infos (github-infos)
   "Make GitHub GITHUB-INFOS backward compatible.

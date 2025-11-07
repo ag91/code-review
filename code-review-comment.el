@@ -119,6 +119,144 @@ For internal usage only.")
         code-review-comment-send? nil
         code-review-comment-suggestion? nil))
 
+;;; helper to compute GitHub patch position
+
+(defun code-review--compute-patch-position ()
+  "Compute GitHub patch position at point within current file section.
+Counts only patch lines (hunk headers @@, context space, additions +, deletions -)
+from the first hunk header of the file up to current line."
+  (save-excursion
+    (let* ((section (magit-current-section))
+           (file-sec (progn
+                       (while (and section (not (eq (oref section type) 'file)))
+                         (setq section (oref section parent)))
+                       section))
+           (start (when file-sec (oref file-sec start)))
+           (limit (point))
+           (count 0))
+      (when (and start (> limit start))
+        (goto-char start)
+        ;; jump to first hunk header within this file
+        (when (re-search-forward "^@\\{2,\\} " limit t)
+          (beginning-of-line)
+          (while (<= (point) limit)
+            (let ((line (buffer-substring-no-properties (line-beginning-position)
+                                                        (line-end-position))))
+              (when (or (string-prefix-p "+" line)
+                        (string-prefix-p "-" line)
+                        (and (not (string-prefix-p "modified" line))
+                             (not (string-prefix-p "new file" line))
+                             (not (string-prefix-p "deleted" line))
+                             (string-prefix-p " " line)))
+                (setq count (1+ count))))
+            (forward-line 1))))
+      (max 1 count))))
+
+(defun code-review--compute-line-and-side ()
+  "Compute the GitHub review comment LINE and SIDE at or near point.
+Returns a cons (SIDE . LINE), where SIDE is \"RIGHT\" (new) or \"LEFT\" (old).
+If point is on a non-patch line (e.g., an inline comment rendering),
+anchor to the nearest preceding patch line in the same hunk."
+  (save-excursion
+    (let ((cursor (line-beginning-position))
+          hunk-start hunk-end
+          from-start to-start old-line new-line side line)
+      ;; Find the current hunk header and establish hunk bounds
+      (unless (re-search-backward "^@\\{2,\\} \\(.+?\\) @\\{2,\\}" nil t)
+        (error "Not in a hunk"))
+      (let ((hdr (match-string 1)))
+        (setq hunk-start (line-beginning-position))
+        (save-excursion
+          (goto-char hunk-start)
+          (forward-line 1)
+          (setq hunk-end (or (and (re-search-forward "^@\\{2,\\} " nil t)
+                                  (match-beginning 0))
+                             (point-max))))
+        (let* ((parts (split-string hdr))
+               (from (car parts))
+               (to (car (last parts)))
+               (parse (lambda (s)
+                        (let* ((s (string-trim-left s "-+"))
+                               (xs (split-string s ",")))
+                          (cons (string-to-number (car xs))
+                                (string-to-number (or (cadr xs) "1")))))))
+          (setq from-start (car (funcall parse from))
+                to-start (car (funcall parse to))
+                old-line from-start
+                new-line to-start)))
+      ;; Determine anchor: nearest patch line at or before cursor within this hunk
+      (goto-char cursor)
+      (let ((anchor cursor)
+            (found nil))
+        ;; Search backward up to the hunk header
+        (while (and (not found)
+                    (>= (point) hunk-start))
+          (let* ((txt (buffer-substring-no-properties (line-beginning-position)
+                                                      (line-end-position)))
+                 (ch (if (> (length txt) 0) (substring txt 0 1) "")))
+            (if (or (string= ch "+") (string= ch "-") (string= ch " "))
+                (setq anchor (line-beginning-position)
+                      found t)
+              (forward-line -1))))
+        (unless found
+          ;; If nothing behind, try forward but stop at next hunk
+          (goto-char cursor)
+          (while (and (not found)
+                      (< (point) hunk-end))
+            (let* ((txt (buffer-substring-no-properties (line-beginning-position)
+                                                        (line-end-position)))
+                   (ch (if (> (length txt) 0) (substring txt 0 1) "")))
+              (when (or (string= ch "+") (string= ch "-") (string= ch " "))
+                (setq anchor (line-beginning-position)
+                      found t))
+              (forward-line 1))))
+        (unless found
+          (error "No patch line found in current hunk"))
+        ;; Walk from header to anchor to compute old/new counters
+        (goto-char hunk-start)
+        (forward-line 1)
+        (while (and (<= (line-beginning-position) anchor)
+                    (< (point) hunk-end))
+          (let* ((txt (buffer-substring-no-properties (line-beginning-position)
+                                                      (line-end-position)))
+                 (ch (if (> (length txt) 0) (substring txt 0 1) "")))
+            (when (= (line-beginning-position) anchor)
+              (setq side (cond
+                          ((string= ch "+") "RIGHT")
+                          ((string= ch "-") "LEFT")
+                          (t                 "RIGHT"))
+                    line (if (string= side "LEFT") old-line new-line)))
+            (cond
+             ((string= ch " ") (setq old-line (1+ old-line)
+                                     new-line (1+ new-line)))
+             ((string= ch "+") (setq new-line (1+ new-line)))
+             ((string= ch "-") (setq old-line (1+ old-line)))))
+          (forward-line 1)))
+      (cons side line))))
+
+;; Return location as plist supporting optional region
+(defun code-review--compute-line-side-and-range ()
+  "Compute GitHub location at point with optional region.
+Returns plist with :side :line and optionally :start-side :start-line."
+  (let* ((curr (code-review--compute-line-and-side))
+         (side (car curr))
+         (line (cdr curr)))
+    (if (and (use-region-p)
+             (not (= (region-beginning) (region-end))))
+        (save-excursion
+          (let* ((rb (region-beginning))
+                 (re (region-end))
+                 (beg (progn (goto-char rb) (code-review--compute-line-and-side)))
+                 (end (progn (goto-char re) (code-review--compute-line-and-side)))
+                 (start (if (<= rb re) beg end))
+                 (finish (if (<= rb re) end beg)))
+            (list :side (car finish)
+                  :line (cdr finish)
+                  :start-side (car start)
+                  :start-line (cdr start)))
+          )
+      (list :side side :line line))))
+
 ;;; Comment C_UD
 
 (defun code-review-comment-add (&optional msg)
@@ -223,14 +361,20 @@ Optionally define a MSG."
                     (setq amount-loc 0)
                   (setq amount-loc (or (oref value amount-loc) 0)))))))
 
-        (let* ((diff-pos (max 1 (+ 1 (- current-line
-                                         amount-loc
-                                         (a-get obj 'head-pos)))))
+        ;; Compute GitHub line/side and optional range (region)
+        (let* ((loc (code-review--compute-line-side-and-range))
+               (side (plist-get loc :side))
+               (line (plist-get loc :line))
+               (start-side (plist-get loc :start-side))
+               (start-line (plist-get loc :start-line))
                (local-comment (code-review-local-comment-section
                                :state "LOCAL COMMENT"
                                :author (code-review-utils--git-get-user)
                                :path (a-get obj 'path)
-                               :position diff-pos
+                               :side side
+                               :line line
+                               :start-side start-side
+                               :start-line start-line
                                :line-type line-type
                                :send? code-review-comment-send?)))
           (setq code-review-comment-uncommitted local-comment)
@@ -294,7 +438,12 @@ Inform if a SUGGESTION-CODE? is being proposed."
                         (comments (nodes ((internal-id . ,(uuidgen-4))
                                           (bodyText . ,clean-msg)
                                           (path . ,(oref obj path))
+                                          ;; keep position slot out for GitHub; internal uses may read it as nil
                                           (position . ,(oref obj position))
+                                          (line . ,(ignore-errors (and (setq x obj) (oref obj line))))
+                                          (side . ,(ignore-errors (oref obj side)))
+                                          (startLine . ,(ignore-errors (oref obj start-line)))
+                                          (startSide . ,(ignore-errors (oref obj start-side)))
                                           (databaseId)
                                           (diffHunk)
                                           (outdated)
