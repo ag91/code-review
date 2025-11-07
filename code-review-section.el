@@ -1427,94 +1427,106 @@ Optionally DELETE? flag must be set if you want to remove it."
            (oref obj id)))))))
 
 (defun code-review-section-insert-outdated-comment (comments amount-loc)
-  "Insert outdated COMMENTS in the buffer of PULLREQ-ID considering AMOUNT-LOC."
-  ;;; hunk groups are necessary because we usually have multiple reviews about
-  ;;; the same original position across different commits snapshots.
-  ;;; as github UI we will add those hunks and its comments
-  (let* ((hunk-groups (-group-by (lambda (el) (oref el diffHunk)) comments))
-         (hunks (a-keys hunk-groups))
-         (amount-loc-internal amount-loc))
-    (dolist (hunk hunks)
-      (when (not hunk)
-        (code-review-utils--log
-         "code-review-section-insert-outdated-comment"
-         (format "Every outdated comment must have a hunk! Error found for %S"
-                 (prin1-to-string hunk)))
-        (message "Hunk empty found. A empty string will be used instead. Report this bug please."))
-      (let* ((safe-hunk (or hunk ""))
-             (diff-hunk-lines (split-string safe-hunk "\n"))
-             (amount-new-loc (+ 1 (length diff-hunk-lines)))
-             (first-hunk-commit (-first-item (alist-get safe-hunk hunk-groups nil nil 'equal)))
-             (metadata1 `((comment . ,first-hunk-commit)
-                          (amount-loc ., (+ amount-loc-internal amount-new-loc)))))
+  "Insert outdated COMMENTS in the buffer of PULLREQ-ID considering AMOUNT-LOC.
+Safeguards against non-outdated/local comments accidentally passed in."
+  ;; Only consider true outdated diff comments that have a diff hunk.
+  (let* ((outdated-comments
+          (-filter (lambda (el)
+                     (and (ignore-errors (oref el outdated?))
+                          (oref el outdated?)
+                          (ignore-errors (slot-exists-p el 'diffHunk))
+                          (oref el diffHunk)))
+                   comments)))
+    (when outdated-comments
+      ;;; hunk groups are necessary because we usually have multiple reviews about
+      ;;; the same original position across different commits snapshots.
+      ;;; as github UI we will add those hunks and its comments
+      (let* ((hunk-groups (-group-by (lambda (el) (oref el diffHunk)) outdated-comments))
+             (hunks (a-keys hunk-groups))
+             (amount-loc-internal amount-loc))
+        (dolist (hunk hunks)
+          (when (not hunk)
+            (code-review-utils--log
+             "code-review-section-insert-outdated-comment"
+             (format "Every outdated comment must have a hunk! Error found for %S"
+                     (prin1-to-string hunk)))
+            (message "Hunk empty found. A empty string will be used instead. Report this bug please."))
+          (let* ((safe-hunk (or hunk ""))
+                 (diff-hunk-lines (split-string safe-hunk "\n"))
+                 (amount-new-loc (+ 1 (length diff-hunk-lines)))
+                 (first-hunk-commit (-first-item (alist-get safe-hunk hunk-groups nil nil 'equal)))
+                 (metadata1 `((comment . ,first-hunk-commit)
+                              (amount-loc ., (+ amount-loc-internal amount-new-loc)))))
 
-        (setq amount-loc-internal (+ amount-loc-internal amount-new-loc))
+            (setq amount-loc-internal (+ amount-loc-internal amount-new-loc))
 
-        (setq code-review-section-hold-written-comment-count
-              (code-review-utils--comment-update-written-count
-               code-review-section-hold-written-comment-count
-               (oref first-hunk-commit path)
-               amount-new-loc))
+            (setq code-review-section-hold-written-comment-count
+                  (code-review-utils--comment-update-written-count
+                   code-review-section-hold-written-comment-count
+                   (oref first-hunk-commit path)
+                   amount-new-loc))
 
-        (magit-insert-section outdated-section (code-review-outdated-hunk-section metadata1)
-                              (let ((heading (format "Reviewed - [OUTDATED]")))
-                                (add-face-text-property 0 (length heading)
-                                                        'code-review-outdated-comment-heading
-                                                        t heading)
-                                (magit-insert-heading heading)
-                                (magit-insert-section ()
-                                  (save-excursion
-                                    (insert safe-hunk))
-                                  (magit-diff-wash-hunk)
-                                  (insert ?\n)
+            (magit-insert-section outdated-section (code-review-outdated-hunk-section metadata1)
+                                  (let ((heading (format "Reviewed - [OUTDATED]")))
+                                    (add-face-text-property 0 (length heading)
+                                                            'code-review-outdated-comment-heading
+                                                            t heading)
+                                    (magit-insert-heading heading)
+                                    (magit-insert-section ()
+                                      (save-excursion
+                                        (insert safe-hunk))
+                                      (magit-diff-wash-hunk)
+                                      (insert ?\n)
 
-                                  (oset outdated-section hidden t)
+                                      (oset outdated-section hidden t)
 
-                                  (dolist (c (alist-get safe-hunk hunk-groups nil nil 'equal))
-                                    (let* ((written-loc (code-review--html-written-loc
-                                                         (oref c msg)
-                                                         (* 3 code-review-section-indent-width)))
-                                           (amount-new-loc-outdated-partial (+ 1 written-loc))
-                                           (amount-new-loc-outdated (if (oref c reactions)
-                                                                        (+ 2 amount-new-loc-outdated-partial)
-                                                                      amount-new-loc-outdated-partial)))
+                                      (dolist (c (alist-get safe-hunk hunk-groups nil nil 'equal))
+                                        (let* ((written-loc (code-review--html-written-loc
+                                                             (oref c msg)
+                                                             (* 3 code-review-section-indent-width)))
+                                               (amount-new-loc-outdated-partial (+ 1 written-loc))
+                                               (amount-new-loc-outdated (if (oref c reactions)
+                                                                            (+ 2 amount-new-loc-outdated-partial)
+                                                                          amount-new-loc-outdated-partial)))
 
-                                      (setq amount-loc-internal (+ amount-loc-internal amount-new-loc-outdated))
+                                          (setq amount-loc-internal (+ amount-loc-internal amount-new-loc-outdated))
 
-                                      (setq code-review-section-hold-written-comment-count
-                                            (code-review-utils--comment-update-written-count
-                                             code-review-section-hold-written-comment-count
-                                             (oref first-hunk-commit path)
-                                             amount-new-loc-outdated))
-                                      (oset c amount-loc amount-loc-internal)
+                                          (setq code-review-section-hold-written-comment-count
+                                                (code-review-utils--comment-update-written-count
+                                                 code-review-section-hold-written-comment-count
+                                                 (oref first-hunk-commit path)
+                                                 amount-new-loc-outdated))
+                                          (oset c amount-loc amount-loc-internal)
 
-                                      (magit-insert-section (code-review-outdated-comment-section c)
-                                        (magit-insert-heading (format "Reviewed by %s[%s]:"
-                                                                      (oref c author)
-                                                                      (oref c state)))
-                                        (magit-insert-section (code-review-outdated-comment-section c)
-                                          (code-review--insert-html
-                                           (oref c msg)
-                                           (* 3 code-review-section-indent-width))
-                                          (when-let (reactions-obj (oref c reactions))
-                                            (code-review-comment-insert-reactions
-                                             reactions-obj
-                                             "outdated-comment"
-                                             (oref c id)))))
-                                      (insert ?\n))))))))))
+                                          (magit-insert-section (code-review-outdated-comment-section c)
+                                            (magit-insert-heading (format "Reviewed by %s[%s]:"
+                                                                          (oref c author)
+                                                                          (oref c state)))
+                                            (magit-insert-section (code-review-outdated-comment-section c)
+                                              (code-review--insert-html
+                                               (oref c msg)
+                                               (* 3 code-review-section-indent-width))
+                                              (when-let (reactions-obj (oref c reactions))
+                                                (code-review-comment-insert-reactions
+                                                 reactions-obj
+                                                 "outdated-comment"
+                                                 (oref c id)))))
+                                          (insert ?\n))))))))))))
 
 (defun code-review-section-insert-outdated-comment-missing (path-name missing-paths grouped-comments)
   "Write missing outdated comments in the end of the current path.
 We need PATH-NAME, MISSING-PATHS, and GROUPED-COMMENTS to make this work."
   (dolist (path-pos missing-paths)
-    (let ((comment-written-pos
-           (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal)
-               0)))
-      (code-review-section-insert-outdated-comment
-       (code-review-utils--comment-get
-        grouped-comments
-        path-pos)
-       comment-written-pos)
+    (let* ((comment-written-pos
+            (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal)
+                0))
+           (comments (code-review-utils--comment-get grouped-comments path-pos))
+           (first (car comments)))
+      (when comments
+        (if (and (ignore-errors (oref first outdated?))
+                 (oref first outdated?))
+            (code-review-section-insert-outdated-comment comments comment-written-pos)
+          (code-review-section-insert-comment comments comment-written-pos)))
       (push path-pos code-review-section-hold-written-comment-ids))))
 
 (defun code-review-section-insert-comment (comments amount-loc)
@@ -1610,7 +1622,21 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
                             'help-echo "Visit the file in Dired buffer"
                             'keymap 'code-review-binary-file-section-map))
         (magit-insert-heading)))
-    (magit-wash-sequence #'magit-diff-wash-hunk)))
+    (magit-wash-sequence #'magit-diff-wash-hunk)
+    ;; After washing all hunks for this file, insert any remaining
+    ;; comments (e.g., local or outdated ones keyed by side/line)
+    ;; that weren’t anchored to a concrete diff position.
+    (let* ((raw-path-name (substring-no-properties file))
+           (clean-path (if (string-prefix-p "b/" raw-path-name)
+                           (replace-regexp-in-string "^b/" "" raw-path-name)
+                         raw-path-name))
+           (missing-paths (code-review-utils--missing-outdated-commments?
+                           clean-path
+                           code-review-section-hold-written-comment-ids
+                           code-review-section-grouped-comments)))
+      (when (and missing-paths code-review-section--display-all-comments)
+        (code-review-section-insert-outdated-comment-missing
+         clean-path missing-paths code-review-section-grouped-comments)))))
 
 (defun code-review-section--magit-diff-wash-hunk ()
   "Overwrite the original Magit function on `magit-diff.el' file.
@@ -1667,44 +1693,68 @@ Please Report this Bug" path-name))
           (insert (propertize (concat heading "\n")
                               'font-lock-face 'magit-diff-hunk-heading))
           (magit-insert-heading)
-          (while (not (or (eobp) (looking-at "^[^-+\s\\]")))
-          ;;; --- beg -- code-review specific code.
-          ;;; code-review specific code.
-          ;;; add code comments
-            (let* ((comment-written-pos
-                    (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0))
-                   (diff-pos (+ 1 (- (code-review--line-number-at-pos)
-                                     (or head-pos 0)
-                                     comment-written-pos)))
-                   (path-pos (code-review-utils--comment-key path-name diff-pos))
-                   (written? (-contains-p code-review-section-hold-written-comment-ids path-pos))
-                   (grouped-comment (code-review-utils--comment-get
-                                     code-review-section-grouped-comments
-                                     path-pos)))
-              (if (and (not written?)
-                       grouped-comment
-                       code-review-section--display-all-comments)
-                  (progn
-                    (push path-pos code-review-section-hold-written-comment-ids)
-                    (code-review-section-insert-comment
-                     grouped-comment
-                     comment-written-pos))
-                (forward-line))))
+          ;; Keep track of old/new line numbers from the hunk header so we
+          ;; can anchor local comments keyed by SIDE/LINE inline.
+          (let* ((from-range (car ranges))
+                 (to-range (car (last ranges)))
+                 (old-line-current (and from-range (car from-range)))
+                 (new-line-current (and to-range (car to-range))))
+            (while (not (or (eobp) (looking-at "^[^-+\s\\]")))
+              ;; --- code-review specific code: add code comments
+              (let* ((line-text (buffer-substring-no-properties (line-beginning-position)
+                                                                (line-end-position)))
+                     (ch (if (> (length line-text) 0) (substring line-text 0 1) ""))
+                     ;; Position-keyed comments (original API)
+                     (diff-pos (+ 1 (- (code-review--line-number-at-pos)
+                                       (or head-pos 0)
+                                       (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0))))
+                     (path-pos (code-review-utils--comment-key path-name diff-pos))
+                     (written-pos? (-contains-p code-review-section-hold-written-comment-ids path-pos))
+                     (grouped-pos (code-review-utils--comment-get
+                                   code-review-section-grouped-comments
+                                   path-pos))
+                     ;; Side/line-keyed comments (locals / GraphQL line API)
+                     (side (cond ((string= ch "+") "RIGHT")
+                                 ((string= ch "-") "LEFT")
+                                 ((string= ch " ") "RIGHT")
+                                 (t nil)))
+                     (side-line (cond ((string= side "LEFT") old-line-current)
+                                      ((string= side "RIGHT") new-line-current)
+                                      (t nil)))
+                     (path-pos-line (and side side-line (code-review-utils--comment-key-from-line path-name side side-line)))
+                     (written-line? (and path-pos-line (-contains-p code-review-section-hold-written-comment-ids path-pos-line)))
+                     (grouped-line (and path-pos-line
+                                        (code-review-utils--comment-get
+                                         code-review-section-grouped-comments
+                                         path-pos-line)))
+                     (did-insert nil))
+                ;; Insert position-keyed comments
+                (when (and (not written-pos?) grouped-pos code-review-section--display-all-comments)
+                  (push path-pos code-review-section-hold-written-comment-ids)
+                  (let ((comment-written-pos (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0)))
+                    (code-review-section-insert-comment grouped-pos comment-written-pos))
+                  (setq did-insert t))
+                ;; Insert side/line-keyed local comments
+                (when (and grouped-line (not written-line?) code-review-section--display-all-comments)
+                  (push path-pos-line code-review-section-hold-written-comment-ids)
+                  (let ((comment-written-pos (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0)))
+                    (code-review-section-insert-comment grouped-line comment-written-pos))
+                  (setq did-insert t))
+                ;; Advance line only when nothing was inserted (insertion moves point)
+                (unless did-insert
+                  (forward-line))
+                ;; Update counters for old/new line numbers following this patch line
+                (cond
+                 ((string= ch " ")
+                  (when old-line-current (setq old-line-current (1+ old-line-current)))
+                  (when new-line-current (setq new-line-current (1+ new-line-current))))
+                 ((string= ch "+")
+                  (when new-line-current (setq new-line-current (1+ new-line-current))))
+                 ((string= ch "-")
+                  (when old-line-current (setq old-line-current (1+ old-line-current))))))))
 
-          ;;; we can have outdated comments missing that were written in a
-          ;;; version of the buffer that had more lines than now.
-          ;;; call function to write the remaining comments.
-          ;;; important to only consider comments for this path.
-          (when-let (missing-paths (code-review-utils--missing-outdated-commments?
-                                    path-name
-                                    code-review-section-hold-written-comment-ids
-                                    code-review-section-grouped-comments))
-            (when (and (eobp)
-                       code-review-section--display-all-comments)
-              (code-review-section-insert-outdated-comment-missing
-               path-name
-               missing-paths
-               code-review-section-grouped-comments)))
+          ;; Remaining comments for this file are handled once per file
+          ;; in code-review-section--magit-diff-insert-file-section.
 
         ;;; --- end -- code-review specific code.
           )))
