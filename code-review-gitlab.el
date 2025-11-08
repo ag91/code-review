@@ -108,7 +108,7 @@ an object then we need to build the diff string ourselves here."
                              (format "similarity index 100%%\nrename from %s\nrename to %s\n" (or .old_path "") (or .new_path ""))
                            ;; If .diff contains content, this is a rename+modify case
                            ;; We need to provide the rename headers since .diff only contains the @@ hunks
-                           (format "similarity index 95%%\nrename from %s\nrename to %s\nindex 1111..2222 %s\n" 
+                           (format "similarity index 95%%\nrename from %s\nrename to %s\nindex 1111..2222 %s\n"
                                    (or .old_path "") (or .new_path "") (or .a_mode "100644"))))
                         (t
                          (format "index 1111..2222 %s\n" .a_mode))))
@@ -290,7 +290,7 @@ The payload is used to send a MR review to Gitlab."
    (local-comments :initform nil
                    :type (satisfies
                           (lambda (it)
-                            (-all-p #'code-review-submit-local-coment-p it))))
+                            (-all-p #'code-review-submit-local-comment-p it))))
    (feedback :initform nil)))
 
 ;;; reify

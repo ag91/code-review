@@ -54,7 +54,7 @@
 ;;;; * Submit review
 ;;;
 
-(defclass code-review-submit-local-coment ()
+(defclass code-review-submit-local-comment ()
   ((path       :initarg :path)
    (position   :initarg :position) ;; kept for non-GitHub for backward compat
    (side       :initarg :side)
@@ -71,7 +71,7 @@
    (local-comments :initform nil
                    :type (satisfies
                           (lambda (it)
-                            (-all-p #'code-review-submit-local-coment-p it))))
+                            (-all-p #'code-review-submit-local-comment-p it))))
    (feedback :initform nil)))
 
 (defclass code-review-submit-reply ()
@@ -158,7 +158,7 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
                  ;; get local comments
                  (when (code-review-local-comment-section-p section)
                    (when (code-review-submit--unique? local-comments (oref value internalId))
-                     (push (code-review-submit-local-coment
+                     (push (code-review-submit-local-comment
                             :path (oref value path)
                             :position (oref value position)
                             :side (ignore-errors (oref value side))
@@ -168,7 +168,7 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
                             :body (oref value msg)
                             :internal-id (oref value internalId)
                             :line-type (oref value line-type))
-                          local-comments))))
+                           local-comments))))
                (forward-line))))))
 
       (oset replies-obj replies replies)

@@ -767,7 +767,7 @@ Optionally ask for the FALLBACK? query."
    (local-comments :initform nil
                    :type (satisfies
                           (lambda (it)
-                            (-all-p #'code-review-submit-local-coment-p it))))
+                            (-all-p #'code-review-submit-local-comment-p it))))
    (feedback :initform nil)))
 
 (cl-defmethod code-review-send-review ((review code-review-submit-github-review) callback)

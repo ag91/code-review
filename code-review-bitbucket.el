@@ -208,7 +208,7 @@ An optionally provide a CALLBACK."
    (local-comments :initform nil
                    :type (satisfies
                           (lambda (it)
-                            (-all-p #'code-review-submit-local-coment-p it))))
+                            (-all-p #'code-review-submit-local-comment-p it))))
    (feedback :initform nil)))
 
 (defun code-review-bitbucket--inline-arg (comment)
