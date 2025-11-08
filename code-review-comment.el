@@ -119,120 +119,30 @@ For internal usage only.")
         code-review-comment-send? nil
         code-review-comment-suggestion? nil))
 
-;;; helper to compute GitHub patch position
-
-(defun code-review--compute-patch-position ()
-  "Compute GitHub patch position at point within current file section.
-Counts only patch lines (hunk headers @@, context space, additions +, deletions -)
-from the first hunk header of the file up to current line."
-  (save-excursion
-    (let* ((section (magit-current-section))
-           (file-sec (progn
-                       (while (and section (not (eq (oref section type) 'file)))
-                         (setq section (oref section parent)))
-                       section))
-           (start (when file-sec (oref file-sec start)))
-           (limit (point))
-           (count 0))
-      (when (and start (> limit start))
-        (goto-char start)
-        ;; jump to first hunk header within this file
-        (when (re-search-forward "^@\\{2,\\} " limit t)
-          (beginning-of-line)
-          (while (<= (point) limit)
-            (let ((line (buffer-substring-no-properties (line-beginning-position)
-                                                        (line-end-position))))
-              (when (or (string-prefix-p "+" line)
-                        (string-prefix-p "-" line)
-                        (and (not (string-prefix-p "modified" line))
-                             (not (string-prefix-p "new file" line))
-                             (not (string-prefix-p "deleted" line))
-                             (string-prefix-p " " line)))
-                (setq count (1+ count))))
-            (forward-line 1))))
-      (max 1 count))))
-
 (defun code-review--compute-line-and-side ()
   "Compute the GitHub review comment LINE and SIDE at or near point.
 Returns a cons (SIDE . LINE), where SIDE is \"RIGHT\" (new) or \"LEFT\" (old).
 If point is on a non-patch line (e.g., an inline comment rendering),
 anchor to the nearest preceding patch line in the same hunk."
-  (save-excursion
-    (let ((cursor (line-beginning-position))
-          hunk-start hunk-end
-          from-start to-start old-line new-line side line)
-      ;; Find the current hunk header and establish hunk bounds
-      (unless (re-search-backward "^@\\{2,\\} \\(.+?\\) @\\{2,\\}" nil t)
-        (error "Not in a hunk"))
-      (let ((hdr (match-string 1)))
-        (setq hunk-start (line-beginning-position))
-        (save-excursion
-          (goto-char hunk-start)
-          (forward-line 1)
-          (setq hunk-end (or (and (re-search-forward "^@\\{2,\\} " nil t)
-                                  (match-beginning 0))
-                             (point-max))))
-        (let* ((parts (split-string hdr))
-               (from (car parts))
-               (to (car (last parts)))
-               (parse (lambda (s)
-                        (let* ((s (string-trim-left s "-+"))
-                               (xs (split-string s ",")))
-                          (cons (string-to-number (car xs))
-                                (string-to-number (or (cadr xs) "1")))))))
-          (setq from-start (car (funcall parse from))
-                to-start (car (funcall parse to))
-                old-line from-start
-                new-line to-start)))
-      ;; Determine anchor: nearest patch line at or before cursor within this hunk
-      (goto-char cursor)
-      (let ((anchor cursor)
-            (found nil))
-        ;; Search backward up to the hunk header
-        (while (and (not found)
-                    (>= (point) hunk-start))
-          (let* ((txt (buffer-substring-no-properties (line-beginning-position)
-                                                      (line-end-position)))
-                 (ch (if (> (length txt) 0) (substring txt 0 1) "")))
-            (if (or (string= ch "+") (string= ch "-") (string= ch " "))
-                (setq anchor (line-beginning-position)
-                      found t)
-              (forward-line -1))))
-        (unless found
-          ;; If nothing behind, try forward but stop at next hunk
-          (goto-char cursor)
-          (while (and (not found)
-                      (< (point) hunk-end))
-            (let* ((txt (buffer-substring-no-properties (line-beginning-position)
-                                                        (line-end-position)))
-                   (ch (if (> (length txt) 0) (substring txt 0 1) "")))
-              (when (or (string= ch "+") (string= ch "-") (string= ch " "))
-                (setq anchor (line-beginning-position)
-                      found t))
-              (forward-line 1))))
-        (unless found
-          (error "No patch line found in current hunk"))
-        ;; Walk from header to anchor to compute old/new counters
-        (goto-char hunk-start)
-        (forward-line 1)
-        (while (and (<= (line-beginning-position) anchor)
-                    (< (point) hunk-end))
-          (let* ((txt (buffer-substring-no-properties (line-beginning-position)
-                                                      (line-end-position)))
-                 (ch (if (> (length txt) 0) (substring txt 0 1) "")))
-            (when (= (line-beginning-position) anchor)
-              (setq side (cond
-                          ((string= ch "+") "RIGHT")
-                          ((string= ch "-") "LEFT")
-                          (t                 "RIGHT"))
-                    line (if (string= side "LEFT") old-line new-line)))
-            (cond
-             ((string= ch " ") (setq old-line (1+ old-line)
-                                     new-line (1+ new-line)))
-             ((string= ch "+") (setq new-line (1+ new-line)))
-             ((string= ch "-") (setq old-line (1+ old-line)))))
-          (forward-line 1)))
-      (cons side line))))
+  ;; let's make sure we are actually in a diff
+  (when-let* ((hunk (magit-current-section))
+              (_ (magit-hunk-section-p hunk)))
+    ;; we reuse the information from magit for the hunk
+    (let* ((start-pos (marker-position (oref hunk start)))
+           (start-hunk-line (line-number-at-pos start-pos))
+           (old-line (car (oref hunk from-range)))
+           (new-line (car (oref hunk to-range)))
+           (n-lines-removed (--> (buffer-substring start-pos (point))
+                                 s-lines
+                                 (--filter (s-starts-with? "-" it) it)
+                                 length))
+           ;; we need to calculate how many lines we are from the top
+           (differential (max 0 (- (line-number-at-pos (point)) start-hunk-line 1))))
+      (cond
+       ((s-starts-with? "-" (thing-at-point 'line 'no-properties)) `("LEFT" . ,(+ old-line differential)))
+       ;; in case of RIGHT side, we have also to remove the old lines (starting with -) that we have seen in the hunk so far
+       (t `("RIGHT" . ,(- (+ new-line differential) n-lines-removed))))
+      )))
 
 ;; Return location as plist supporting optional region
 (defun code-review--compute-line-side-and-range ()
