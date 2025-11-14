@@ -199,7 +199,17 @@ OUTDATED."
 (define-derived-mode code-review-mode magit-section-mode "Code Review"
   "Code Review mode."
   ;; Ensure line-number cache used by position calculators stays fresh
-  (add-hook 'after-change-functions #'code-review--after-change nil t))
+  (add-hook 'after-change-functions #'code-review--after-change nil t)
+  ;; Avoid gray overlays that obscure diff colors: disable Magit's
+  ;; section highlighting for this buffer.
+  (when (boundp 'magit-section-highlight-current)
+    (setq-local magit-section-highlight-current nil))
+  (when (boundp 'magit-section-highlight-selection)
+    (setq-local magit-section-highlight-selection nil))
+  ;; If the user has global-hl-line enabled, it can also gray the
+  ;; current line and hide green/red diff backgrounds; disable it here.
+  (when (bound-and-true-p hl-line-mode)
+    (hl-line-mode -1)))
 
 (provide 'code-review)
 ;;; code-review.el ends here

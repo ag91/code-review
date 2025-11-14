@@ -159,5 +159,12 @@
   "Face for text that shouldn't stand out."
   :group 'magit-faces)
 
+;; Face used for hover interactions in Code Review buffers without
+;; adding a background that would obscure diff colors.
+(defface code-review-hover-face
+  '((((class color)) :underline t))
+  "Mouse hover face with no background."
+  :group 'code-review)
+
 (provide 'code-review-faces)
 ;;; code-review-faces.el ends here

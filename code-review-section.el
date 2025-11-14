@@ -354,7 +354,7 @@ Return just the path without the leading b/."
           (insert (format "%-17s" "Author: "))
           (insert (propertize (format "@%s" .author.login)
                               'face 'code-review-author-header-face
-                              'mouse-face 'highlight
+                              'mouse-face 'code-review-hover-face
                               'help-echo "Visit author's page"
                               'keymap 'code-review-author-section-map))
           (insert ?\n))))))
@@ -532,13 +532,13 @@ Return just the path without the leading b/."
       (if (not assignee-names)
           (insert (propertize "No one — Assign yourself"
                               'font-lock-face 'code-review-dimmed
-                              'mouse-face 'highlight
+                              'mouse-face 'code-review-hover-face
                               'help-echo "Set new assignee"
                               'keymap 'code-review-assignees-section-map))
         (progn
           (insert (propertize "Set new assignee"
                               'font-lock-face 'code-review-dimmed
-                              'mouse-face 'highlight
+                              'mouse-face 'code-review-hover-face
                               'help-echo "Set new assignee"
                               'keymap 'code-review-assignees-section-map))
           (insert ?\n)
@@ -550,7 +550,7 @@ Return just the path without the leading b/."
                 (magit-insert-section (code-review-assignee-section assignee-obj)
                   (insert (propertize .name
                                       'face 'code-review-author-header-face
-                                      'mouse-face 'highlight
+                                      'mouse-face 'code-review-hover-face
                                       'help-echo "Visit author's page"
                                       'keymap 'code-review-assignee-section-map))))))
           (insert ?\n)))
@@ -629,7 +629,7 @@ Return just the path without the leading b/."
               (insert ?\n)
               (insert (propertize "Request Review"
                                   'face 'code-review-request-review-face
-                                  'mouse-face 'highlight
+                                  'mouse-face 'code-review-hover-face
                                   'help-echo "Request review from reviewe"
                                   'keymap 'code-review-suggested-reviewers-section-map))
               (insert " - ")
@@ -676,7 +676,7 @@ Return just the path without the leading b/."
                          (insert " - ")
                          (insert (propertize (concat "@" .login)
                                              'face 'code-review-author-face
-                                             'mouse-face 'highlight
+                                             'mouse-face 'code-review-hover-face
                                              'help-echo "Visit user profile"
                                              'keymap 'code-review-reviewer-section-map))
                          (when .code-owner?
@@ -770,7 +770,7 @@ Return just the path without the leading b/."
                                                                               'font-lock-face 'magit-dimmed)))
                                                         (insert (propertize ":white_check_mark: Details"
                                                                             'font-lock-face 'code-review-checker-detail-face
-                                                                            'mouse-face 'highlight
+                                                                            'mouse-face 'code-review-hover-face
                                                                             'help-echo "Visit the page for details"
                                                                             'keymap 'code-review-commit-check-detail-section-map)))
                                                     (progn
@@ -786,7 +786,7 @@ Return just the path without the leading b/."
                                                                           'font-lock-face 'magit-dimmed))
                                                       (insert (propertize ":x: Details"
                                                                           'font-lock-face 'code-review-checker-detail-face
-                                                                          'mouse-face 'highlight
+                                                                          'mouse-face 'code-review-hover-face
                                                                           'help-echo "Visit the page for details"
                                                                           'keymap 'code-review-commit-check-detail-section-map))))))
                                               (insert "\n"))))
@@ -1622,7 +1622,7 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
       (magit-insert-section (code-review-binary-file-section file)
         (insert (propertize "Visit file"
                             'face 'code-review-request-review-face
-                            'mouse-face 'highlight
+                            'mouse-face 'code-review-hover-face
                             'help-echo "Visit the file in Dired buffer"
                             'keymap 'code-review-binary-file-section-map))
         (magit-insert-heading)))
