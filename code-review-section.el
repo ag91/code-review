@@ -1892,7 +1892,9 @@ If you want to display a minibuffer MSG in the end."
               (goto-char code-review-comment-cursor-pos))
             (when msg
               (message nil)
-              (message msg)))))
+              (message msg))
+            ;; Run post hook after everything is rendered and mode is active
+            (run-hooks 'code-review-post-hook))))
 
     ;; remove advices
     (advice-remove 'magit-diff-insert-file-section #'code-review-section--magit-diff-insert-file-section)

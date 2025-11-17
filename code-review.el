@@ -216,5 +216,31 @@ OUTDATED."
   (when (bound-and-true-p hl-line-mode)
     (hl-line-mode -1)))
 
+;; Run after a Code Review buffer is fully rendered
+(defcustom code-review-post-hook
+  '(code-review--post-default-setup)
+  "Hook run after the Code Review buffer is fully loaded and rendered."
+  :group 'code-review
+  :type 'hook)
+
+(defun code-review--post-default-setup ()
+  "Default post-setup for Code Review buffers.
+Remaps Magit's visit command and binds C-<return> to our robust visitor.
+Also installs a safety advice so any call to `magit-diff-visit-worktree-file'
+inside Code Review buffers is redirected."
+  (when (derived-mode-p 'code-review-mode)
+    (let ((map (current-local-map)))
+      (when map
+        (define-key map (kbd "C-<return>") #'code-review-visit-worktree-file)
+        (define-key map (kbd "C-RET") #'code-review-visit-worktree-file)
+        (define-key map [remap magit-diff-visit-worktree-file] #'code-review-visit-worktree-file)))
+    ))
+
+(defun code-review--maybe-visit-worktree (orig-fn &rest args)
+  "Advice wrapper to use robust visitor in Code Review buffers."
+  (if (derived-mode-p 'code-review-mode)
+      (apply #'code-review-visit-worktree-file args)
+    (apply orig-fn args)))
+
 (provide 'code-review)
 ;;; code-review.el ends here
