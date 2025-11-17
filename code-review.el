@@ -193,6 +193,8 @@ OUTDATED."
     ;; Use a robust worktree file visit that ignores inline review lines
     (define-key map (kbd "C-<return>") 'code-review-visit-worktree-file)
     (define-key map (kbd "C-RET") 'code-review-visit-worktree-file)
+    ;; Remap Magit's visit command to our robust one in this buffer
+    (define-key map [remap magit-diff-visit-worktree-file] 'code-review-visit-worktree-file)
     (define-key map (kbd "C-c RET") 'code-review-submit-single-diff-comment-at-point)
     (define-key map (kbd "C-c C-s") 'code-review-comment-code-suggestion)
     (define-key map (kbd "G") 'code-review-reload)

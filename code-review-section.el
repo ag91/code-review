@@ -1244,8 +1244,20 @@ Optionally DELETE? flag must be set if you want to remove it."
   (code-review-conversation--add-or-delete-reaction comment-id reaction-id nil t))
 
 (cl-defmethod code-review-insert-comment-lines ((obj code-review-comment-section))
-  "Insert the comment lines given in the OBJ."
-  (code-review--insert-html (oref obj msg) (* 3 code-review-section-indent-width)))
+  "Insert the comment lines given in the OBJ with colored background."
+  (let* ((start (point))
+         (infos (code-review-db--pullreq-raw-infos))
+         (pr-author (and infos (a-get-in infos '(author login))))
+         (author (oref obj author))
+         (my-login (code-review-utils--git-get-user))
+         (face (cond
+                ((and my-login author (string= my-login author)) 'code-review-comment-self-bg)
+                ((and pr-author author (string= pr-author author)) 'code-review-comment-author-bg)
+                (t 'code-review-comment-other-bg))))
+    (code-review--insert-html (oref obj msg) (* 3 code-review-section-indent-width))
+    (let ((ov (make-overlay start (point))))
+      (overlay-put ov 'face face)
+      (overlay-put ov 'priority 100))))
 
 (defun code-review--toggle-reaction-at-point (pr context-name comment-id existing-reactions reaction)
   "Given a PR, use the CONTEXT-NAME to toggle REACTION in COMMENT-ID considering EXISTING-REACTIONS."
@@ -1369,12 +1381,16 @@ Optionally DELETE? flag must be set if you want to remove it."
       (add-face-text-property 0 (length heading) (oref obj heading-face) t heading)
       (magit-insert-heading heading))
     (magit-insert-section (code-review-local-comment-section obj)
-      (dolist (l (code-review-utils--split-comment
-                  (code-review-utils--wrap-text
-                   (oref obj msg)
-                   code-review-fill-column)))
-        (insert l)
-        (insert ?\n)))))
+      (let ((start (point)))
+        (dolist (l (code-review-utils--split-comment
+                    (code-review-utils--wrap-text
+                     (oref obj msg)
+                     code-review-fill-column)))
+          (insert l)
+          (insert ?\n))
+        (let ((ov (make-overlay start (point))))
+          (overlay-put ov 'face 'code-review-comment-self-bg)
+          (overlay-put ov 'priority 1))))))
 
 (cl-defmethod code-review-comment-insert-lines ((obj code-review-reply-comment-section))
   "Insert reply comment lines present in the OBJ."
@@ -1383,13 +1399,17 @@ Optionally DELETE? flag must be set if you want to remove it."
       (add-face-text-property 0 (length heading) (oref obj heading-face) t heading)
       (magit-insert-heading heading))
     (magit-insert-section (code-review-reply-comment-section obj)
-      (dolist (l (code-review-utils--split-comment
-                  (code-review-utils--wrap-text
-                   (oref obj msg)
-                   code-review-fill-column)))
-        (insert l)
-        (insert ?\n))
-      (insert ?\n))))
+      (let ((start (point)))
+        (dolist (l (code-review-utils--split-comment
+                    (code-review-utils--wrap-text
+                     (oref obj msg)
+                     code-review-fill-column)))
+          (insert l)
+          (insert ?\n))
+        (insert ?\n)
+        (let ((ov (make-overlay start (point))))
+          (overlay-put ov 'face 'code-review-comment-self-bg)
+          (overlay-put ov 'priority 1))))))
 
 (defun code-review-comment-insert-reactions (reactions context-name comment-id)
   "Insert REACTIONS in CONTEXT-NAME identified by COMMENT-ID."
@@ -1411,7 +1431,15 @@ Optionally DELETE? flag must be set if you want to remove it."
 (cl-defmethod code-review-comment-insert-lines (obj)
   "Default insert comment lines in the OBJ."
   (magit-insert-section (code-review-code-comment-section obj)
-    (let ((heading (concat
+    (let* ((infos (code-review-db--pullreq-raw-infos))
+           (pr-author (and infos (a-get-in infos '(author login))))
+           (author (oref obj author))
+           (my-login (code-review-utils--git-get-user))
+           (bgface (cond
+                    ((and my-login author (string= my-login author)) 'code-review-comment-self-bg)
+                    ((and pr-author author (string= pr-author author)) 'code-review-comment-author-bg)
+                    (t 'code-review-comment-other-bg)))
+           (heading (concat
                     (propertize "Reviewed by " 'face 'magit-section-heading)
                     (propertize (concat "@" (oref obj author)) 'face 'code-review-author-face)
                     " - "
@@ -1420,15 +1448,34 @@ Optionally DELETE? flag must be set if you want to remove it."
                     (propertize (code-review-utils--format-timestamp (oref obj createdAt)) 'face 'code-review-timestamp-face))))
       (add-face-text-property 0 (length heading) 'code-review-recent-comment-heading t heading)
       (magit-insert-heading heading)
+      (save-excursion
+        (forward-line 0)
+        (let ((bol (point))
+              (eol (line-end-position)))
+          (let ((ov (make-overlay bol eol)))
+            (overlay-put ov 'face bgface)
+            (overlay-put ov 'priority 1))))
       (magit-insert-section (code-review-code-comment-section obj)
-        (code-review--insert-html
-         (oref obj msg)
-         (* 3 code-review-section-indent-width))
-        (when-let (reactions-obj (oref obj reactions))
-          (code-review-comment-insert-reactions
-           reactions-obj
-           "code-comment"
-           (oref obj id)))))))
+        (let* ((start (point))
+               (infos (code-review-db--pullreq-raw-infos))
+               (pr-author (and infos (a-get-in infos '(author login))))
+               (author (oref obj author))
+               (my-login (code-review-utils--git-get-user))
+               (face (cond
+                      ((and my-login author (string= my-login author)) 'code-review-comment-self-bg)
+                      ((and pr-author author (string= pr-author author)) 'code-review-comment-author-bg)
+                      (t 'code-review-comment-other-bg))))
+          (code-review--insert-html
+           (oref obj msg)
+           (* 3 code-review-section-indent-width))
+          (when-let (reactions-obj (oref obj reactions))
+            (code-review-comment-insert-reactions
+             reactions-obj
+             "code-comment"
+             (oref obj id)))
+          (let ((ov (make-overlay start (point))))
+            (overlay-put ov 'face face)
+            (overlay-put ov 'priority 100))))))))
 
 (defun code-review-section-insert-outdated-comment (comments amount-loc)
   "Insert outdated COMMENTS in the buffer of PULLREQ-ID considering AMOUNT-LOC.
@@ -1501,21 +1548,48 @@ Safeguards against non-outdated/local comments accidentally passed in."
                                                  (oref first-hunk-commit path)
                                                  amount-new-loc-outdated))
                                           (oset c amount-loc amount-loc-internal)
-
                                           (magit-insert-section (code-review-outdated-comment-section c)
-                                            (magit-insert-heading (format "Reviewed by %s[%s]:"
-                                                                          (oref c author)
-                                                                          (oref c state)))
+                                            (let* ((infos (code-review-db--pullreq-raw-infos))
+                                                   (pr-author (and infos (a-get-in infos '(author login))))
+                                                   (author (oref c author))
+                                                   (my-login (code-review-utils--git-get-user))
+                                                   (bgface (cond
+                                                            ((and my-login author (string= my-login author)) 'code-review-comment-self-bg)
+                                                            ((and pr-author author (string= pr-author author)) 'code-review-comment-author-bg)
+                                                            (t 'code-review-comment-other-bg)))
+                                                   (heading (format "Reviewed by %s[%s]:"
+                                                                    (oref c author)
+                                                                    (oref c state))))
+                                              (magit-insert-heading heading)
+                                              (save-excursion
+                                                (forward-line 0)
+                                                (let ((bol (point))
+                                                      (eol (line-end-position)))
+                                                  (let ((ov (make-overlay bol eol)))
+                                                    (overlay-put ov 'face bgface)
+                                                    (overlay-put ov 'priority 100)))))
                                             (magit-insert-section (code-review-outdated-comment-section c)
-                                              (code-review--insert-html
-                                               (oref c msg)
-                                               (* 3 code-review-section-indent-width))
-                                              (when-let (reactions-obj (oref c reactions))
-                                                (code-review-comment-insert-reactions
-                                                 reactions-obj
-                                                 "outdated-comment"
-                                                 (oref c id)))))
-                                          (insert ?\n))))))))))))
+                                              (let* ((start (point))
+                                                     (infos (code-review-db--pullreq-raw-infos))
+                                                     (pr-author (and infos (a-get-in infos '(author login))))
+                                                     (author (oref c author))
+                                                     (my-login (code-review-utils--git-get-user))
+                                                     (face (cond
+                                                            ((and my-login author (string= my-login author)) 'code-review-comment-self-bg)
+                                                            ((and pr-author author (string= pr-author author)) 'code-review-comment-author-bg)
+                                                            (t 'code-review-comment-other-bg))))
+                                                (code-review--insert-html
+                                                 (oref c msg)
+                                                 (* 3 code-review-section-indent-width))
+                                                (when-let (reactions-obj (oref c reactions))
+                                                  (code-review-comment-insert-reactions
+                                                   reactions-obj
+                                                   "outdated-comment"
+                                                   (oref c id)))
+                                                (let ((ov (make-overlay start (point))))
+                                                  (overlay-put ov 'face face)
+                                                  (overlay-put ov 'priority 100))))
+                                            (insert ?\n)))))))))))))
 
 (defun code-review-section-insert-outdated-comment-missing (path-name missing-paths grouped-comments)
   "Write missing outdated comments in the end of the current path.

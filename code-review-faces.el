@@ -147,6 +147,37 @@
   "Face for outdated comments."
   :group 'code-review)
 
+;; Background faces for comment bodies by author type
+(defface code-review-comment-self-bg
+  `((((class color) (background light))
+     ,@(and (>= emacs-major-version 27) '(:extend t))
+     :background "light cyan")
+    (((class color) (background dark))
+     ,@(and (>= emacs-major-version 27) '(:extend t))
+     :background nil))
+  "Background face for comments authored by the current user."
+  :group 'code-review)
+
+(defface code-review-comment-author-bg
+  `((((class color) (background light))
+     ,@(and (>= emacs-major-version 27) '(:extend t))
+     :background "#eaf6ff") ; light sky-blue like
+    (((class color) (background dark))
+     ,@(and (>= emacs-major-version 27) '(:extend t))
+     :background "#233040"))
+  "Background face for comments authored by the PR author."
+  :group 'code-review)
+
+(defface code-review-comment-other-bg
+  `((((class color) (background light))
+     ,@(and (>= emacs-major-version 27) '(:extend t))
+     :background "#fffbe5") ; light yellow
+    (((class color) (background dark))
+     ,@(and (>= emacs-major-version 27) '(:extend t))
+     :background "#2b2b20"))
+  "Background face for comments authored by other reviewers."
+  :group 'code-review)
+
 (defface code-review-dimmed
   '((((class color) (background light))
      :foreground "grey50"
