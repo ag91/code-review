@@ -122,27 +122,23 @@ For internal usage only.")
 (defun code-review--compute-line-and-side ()
   "Compute the GitHub review comment LINE and SIDE at or near point.
 Returns a cons (SIDE . LINE), where SIDE is \"RIGHT\" (new) or \"LEFT\" (old).
-If point is on a non-patch line (e.g., an inline comment rendering),
-anchor to the nearest preceding patch line in the same hunk."
-  ;; let's make sure we are actually in a diff
+Skips review UI lines when counting and anchors to nearest patch line."
   (when-let* ((hunk (magit-current-section))
               (_ (magit-hunk-section-p hunk)))
-    ;; we reuse the information from magit for the hunk
-    (let* ((start-pos (marker-position (oref hunk start)))
-           (start-hunk-line (line-number-at-pos start-pos))
-           (old-line (car (oref hunk from-range)))
-           (new-line (car (oref hunk to-range)))
-           (n-lines-removed (--> (buffer-substring start-pos (point))
-                                 s-lines
-                                 (--filter (s-starts-with? "-" it) it)
-                                 length))
-           ;; we need to calculate how many lines we are from the top
-           (differential (max 0 (- (line-number-at-pos (point)) start-hunk-line 1))))
-      (cond
-       ((s-starts-with? "-" (thing-at-point 'line 'no-properties)) `("LEFT" . ,(+ old-line differential)))
-       ;; in case of RIGHT side, we have also to remove the old lines (starting with -) that we have seen in the hunk so far
-       (t `("RIGHT" . ,(- (+ new-line differential) n-lines-removed))))
-      )))
+    (let* ((startc (code-review--hunk-content-start hunk))
+           (anchor (or (and (code-review--patch-line-p)
+                            (line-beginning-position))
+                       (code-review--nearest-patch-line-in-hunk hunk)
+                       startc))
+           (adv (code-review--count-patch-advances hunk startc anchor))
+           (old-start (car (oref hunk from-range)))
+           (new-start (car (oref hunk to-range))))
+      (save-excursion
+        (goto-char anchor)
+        (let ((ch (char-after (line-beginning-position))))
+          (if (eq ch ?-)
+              (cons "LEFT" (+ old-start (car adv)))
+            (cons "RIGHT" (+ new-start (cdr adv)))))))))
 
 ;; Return location as plist supporting optional region
 (defun code-review--compute-line-side-and-range ()

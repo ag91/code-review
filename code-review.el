@@ -190,6 +190,9 @@ OUTDATED."
     (suppress-keymap map t)
     (define-key map (kbd "r") 'code-review-transient-api)
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
+    ;; Use a robust worktree file visit that ignores inline review lines
+    (define-key map (kbd "C-<return>") 'code-review-visit-worktree-file)
+    (define-key map (kbd "C-RET") 'code-review-visit-worktree-file)
     (define-key map (kbd "C-c RET") 'code-review-submit-single-diff-comment-at-point)
     (define-key map (kbd "C-c C-s") 'code-review-comment-code-suggestion)
     (define-key map (kbd "G") 'code-review-reload)

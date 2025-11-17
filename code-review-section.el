@@ -2061,5 +2061,123 @@ delete remotely via provider API and then drop from local DB."
          (t
           (message "No deletable comment at point.")))))))
 
+;;; Patch line helpers (skip review UI lines inside hunks)
+
+(defun code-review--section-in-review-subsection-p (&optional section)
+  "Return non-nil when SECTION (or current section) is inside a review UI subsection.
+Detects comment/reply/local/reactions/outdated comment sections which render
+non-patch lines inside hunks."
+  (let ((cur (or section (magit-current-section)))
+        found)
+    (while (and cur (not found))
+      (setq found (or (and (fboundp 'code-review-code-comment-section-p)
+                           (code-review-code-comment-section-p cur))
+                      (and (fboundp 'code-review-reply-comment-section-p)
+                           (code-review-reply-comment-section-p cur))
+                      (and (fboundp 'code-review-local-comment-section-p)
+                           (code-review-local-comment-section-p cur))
+                      (and (fboundp 'code-review-reactions-section-p)
+                           (code-review-reactions-section-p cur))
+                      (and (fboundp 'code-review-outdated-comment-section-p)
+                           (code-review-outdated-comment-section-p cur))))
+      (setq cur (and (slot-boundp cur 'parent) (oref cur parent))))
+    found))
+
+(defun code-review--patch-line-p ()
+  "Return non-nil if point is on a patch line inside a Magit hunk.
+Skips lines that belong to code-review comment UI subsections."
+  (and (magit-hunk-section-p (magit-current-section))
+       (not (code-review--section-in-review-subsection-p))
+       (let ((c (char-after (line-beginning-position))))
+         (or (eq c ?\s) (eq c ?+) (eq c ?-)))))
+
+(defun code-review--hunk-content-start (hunk)
+  "Return buffer position of first content line for HUNK (line after header)."
+  (save-excursion
+    (goto-char (marker-position (oref hunk start)))
+    (forward-line 1)
+    (line-beginning-position)))
+
+(defun code-review--nearest-patch-line-in-hunk (hunk &optional pos)
+  "Find nearest patch line position (BOL) within HUNK from POS (default point).
+Prefers previous patch line; if none, uses next patch line; returns nil if none."
+  (let ((here (or pos (point)))
+        prev next)
+    (save-excursion
+      ;; Search backward within hunk bounds
+      (goto-char here)
+      (while (and (>= (point) (marker-position (oref hunk start)))
+                  (not prev))
+        (when (code-review--patch-line-p)
+          (setq prev (line-beginning-position)))
+        (forward-line -1))
+      ;; Search forward within hunk bounds
+      (goto-char here)
+      (while (and (< (point) (marker-position (oref hunk end)))
+                  (not next))
+        (when (code-review--patch-line-p)
+          (setq next (line-beginning-position)))
+        (forward-line 1)))
+    (or prev next)))
+
+(defun code-review--count-patch-advances (hunk start-pos end-pos)
+  "Count old/new advances across patch lines from START-POS up to END-POS in HUNK.
+Returns cons (OLD . NEW) where OLD counts lines with ' ' or '-', and NEW counts
+lines with ' ' or '+'. END-POS is exclusive. Review UI lines are ignored."
+  (let ((old 0) (new 0))
+    (save-excursion
+      (goto-char start-pos)
+      (while (< (point) end-pos)
+        (when (code-review--patch-line-p)
+          (pcase (char-after (line-beginning-position))
+            (?\s (setq old (1+ old) new (1+ new)))
+            (?+  (setq new (1+ new)))
+            (?-  (setq old (1+ old)))))
+        (forward-line 1)))
+    (cons old new)))
+
+;;; Visiting files from hunks with robust line mapping
+
+(defun code-review-visit-worktree-file (&rest _)
+  "Visit the worktree file at point using a robust line choice.
+This ignores inline review/comment lines when computing the target
+line inside a hunk. Falls back to `magit-diff-visit-worktree-file'
+when path cannot be determined or file does not exist."
+  (interactive)
+  (let* ((sec (magit-current-section))
+         (cur sec)
+         path)
+    ;; Walk up to find a section whose value carries our PATH
+    (while (and cur (not path))
+      (let ((val (and (slot-boundp cur 'value) (oref cur value))))
+        (when (and (listp val))
+          (setq path (alist-get 'path val))))
+      (unless path
+        (setq cur (and (slot-boundp cur 'parent) (oref cur parent)))))
+    (if (not path)
+        ;; Fallback if we cannot infer a path
+        (call-interactively 'magit-diff-visit-worktree-file)
+      (let* ((root (ignore-errors (magit-toplevel)))
+             (full (and root (expand-file-name path root))))
+        (if (and full (file-exists-p full))
+            (let* ((hunk (and (magit-hunk-section-p (magit-current-section))
+                              (magit-current-section)))
+                   (target nil))
+              (when hunk
+                (save-excursion
+                  (let* ((startc (code-review--hunk-content-start hunk))
+                         (anchor (or (code-review--nearest-patch-line-in-hunk hunk)
+                                     startc))
+                         (adv (code-review--count-patch-advances hunk startc anchor))
+                         (new-start (car (oref hunk to-range)))
+                         (new-adv (cdr adv)))
+                    (setq target (+ new-start new-adv)))))
+              (find-file full)
+              (when (and target (integerp target) (> target 0))
+                (goto-char (point-min))
+                (forward-line (1- target))))
+          ;; File missing: fallback to Magit's default
+          (call-interactively 'magit-diff-visit-worktree-file))))))
+
 (provide 'code-review-section)
 ;;; code-review-section.el ends here
