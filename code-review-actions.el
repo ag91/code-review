@@ -745,24 +745,39 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-commit-at-point ()
   "Review the current commit at point in Code Review buffer."
   (interactive)
-  ;; TODO rewrite the whole feature
-  ;; (let ((code-review-comment-commit-buffer? t))
-  ;;   (code-review-section--build-commit-buffer
-  ;;    code-review-commit-buffer-name))
-  (error "Sorry, this feature became outdated and require a rewrite!"))
+  (let ((section (magit-current-section)))
+    ;; Walk up to a commit section
+    (while (and section (not (code-review-commit-section-p section)))
+      (setq section (and (slot-boundp section 'parent) (oref section parent))))
+    (if (not (code-review-commit-section-p section))
+        (user-error "Not on a commit entry")
+      (let* ((obj (oref section value))
+             (sha (and obj (oref obj sha)))
+             (subject (and obj (car (split-string (or (oref obj msg) "") "\n"))))
+             (subject (string-trim (or subject "")))
+             (subject (if (> (length subject) 60)
+                          (concat (substring subject 0 57) "...")
+                        subject))
+             (buff-name (format "*Code Review Commit %s %s*" sha subject)))
+        (unless sha
+          (user-error "Could not resolve commit SHA at point"))
+        ;; Store SHA and build commit buffer
+        (code-review-db--pullreq-sha-update sha)
+        (setq code-review-comment-commit-buffer? t
+              code-review-section-full-refresh? t
+              ;; Track current commit buffer name so follow-up actions know where to render
+              code-review-commit-buffer-name buff-name)
+        (code-review-section--build-commit-buffer buff-name)))))
 
 (defun code-review-commit-buffer-back ()
   "Move from commit buffer to review buffer."
   (interactive)
-  ;; (if (equal (current-buffer)
-  ;;            (get-buffer code-review-commit-buffer-name))
-  ;;     (progn
-  ;;       (setq code-review-comment-commit-buffer? nil
-  ;;             code-review-section-full-refresh? nil)
-  ;;       (kill-this-buffer)
-  ;;       (code-review--trigger-hooks code-review-buffer-name))
-  ;;   (message "Command must be called from Code Review Commit buffer."))
-  (error "Sorry, this feature became outdated and require a rewrite!"))
+  (if (not (bound-and-true-p code-review-commit-minor-mode))
+      (message "Command must be called from a Code Review Commit buffer.")
+    (setq code-review-comment-commit-buffer? nil
+          code-review-section-full-refresh? t)
+    (kill-this-buffer)
+    (code-review--build-buffer code-review-buffer-name)))
 
 ;;; * Handle deprecated commands
 ;;; all these commands were renamed and you should use the new version

@@ -150,6 +150,7 @@ OUTDATED."
   "Code Review Commit."
   :keymap (let ((map (make-sparse-keymap)))
             (define-key map (kbd "b") 'code-review-commit-buffer-back)
+            (define-key map (kbd "q") 'code-review-commit-buffer-back)
             map))
 
 ;;; Transient

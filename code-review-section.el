@@ -1870,7 +1870,9 @@ If you want to display a minibuffer MSG in the end."
               (insert ?\n))
             (magit-insert-section section (code-review--root-section)
                                   (magit-insert-section (code-review)
-                                    (magit-run-section-hook 'code-review-sections-hook))
+                                    (magit-run-section-hook (if commit-focus?
+                                                                'code-review-sections-commit-hook
+                                                              'code-review-sections-hook)))
                                   (magit-insert-section (code-review-files-report-section)
                                     (code-review-section-insert-files-changed)
                                     (magit-insert-section (code-review-files-chnged)
@@ -1887,6 +1889,8 @@ If you want to display a minibuffer MSG in the end."
                 (funcall code-review-new-buffer-window-strategy buff-name)
                 (goto-char (point-min))))
             (code-review-mode)
+            (when commit-focus?
+              (code-review-commit-minor-mode 1))
             (code-review-section-insert-header-title)
             (when code-review-comment-cursor-pos
               (goto-char code-review-comment-cursor-pos))
@@ -2088,10 +2092,32 @@ If you want to provide a MSG for the end of the process."
                              (message "Got an error from your VC provider. Check `code-review-log-file'.")))))))))
 
 ;;; * commit buffer
-;;; TODO this whole feature should be reviewed.
+;;; Rebuild commit buffer focusing on a single commit's diff.
 (defun code-review-section--build-commit-buffer (buff-name)
-  "Build commit buffer review given by BUFF-NAME."
-  (code-review--build-buffer buff-name t))
+  "Build commit buffer review given by BUFF-NAME.
+Fetches the commit diff using the backend and renders the buffer
+with commit-focused hooks and keybindings."
+  (let* ((obj (code-review-db-get-pullreq))
+         (progress (make-progress-reporter "Fetch commit diff..." 1 3)))
+    (progress-reporter-update progress 1)
+    (deferred:$
+     (code-review-commit-diff-deferred obj)
+     (deferred:nextc it
+                     (lambda (res)
+                       ;; Save raw diff data into DB and render using commit hooks
+                       (progress-reporter-update progress 2)
+                       (code-review-db--pullreq-raw-diff-update
+                        (code-review-utils--clean-diff-prefixes
+                         (a-get res 'message)))
+                       (progress-reporter-update progress 3)
+                       (code-review--trigger-hooks buff-name t)
+                       (progress-reporter-done progress)))
+     (deferred:error it
+                     (lambda (err)
+                       (code-review-utils--log
+                        "code-review-section--build-commit-buffer"
+                        (prin1-to-string err))
+                       (message "Got an error while fetching commit diff. See `code-review-log-file'."))))))
 
 ;;;###autoload
 (defun code-review-section-delete-comment ()
