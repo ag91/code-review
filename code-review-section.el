@@ -1440,12 +1440,12 @@ Optionally DELETE? flag must be set if you want to remove it."
                     ((and pr-author author (string= pr-author author)) 'code-review-comment-author-bg)
                     (t 'code-review-comment-other-bg)))
            (heading (concat
-                    (propertize "Reviewed by " 'face 'magit-section-heading)
-                    (propertize (concat "@" (oref obj author)) 'face 'code-review-author-face)
-                    " - "
-                    (code-review--propertize-keyword (oref obj state))
-                    " - "
-                    (propertize (code-review-utils--format-timestamp (oref obj createdAt)) 'face 'code-review-timestamp-face))))
+                     (propertize "Reviewed by " 'face 'magit-section-heading)
+                     (propertize (concat "@" (oref obj author)) 'face 'code-review-author-face)
+                     " - "
+                     (code-review--propertize-keyword (oref obj state))
+                     " - "
+                     (propertize (code-review-utils--format-timestamp (oref obj createdAt)) 'face 'code-review-timestamp-face))))
       (add-face-text-property 0 (length heading) 'code-review-recent-comment-heading t heading)
       (magit-insert-heading heading)
       (save-excursion
@@ -1475,7 +1475,7 @@ Optionally DELETE? flag must be set if you want to remove it."
              (oref obj id)))
           (let ((ov (make-overlay start (point))))
             (overlay-put ov 'face face)
-            (overlay-put ov 'priority 100))))))))
+            (overlay-put ov 'priority 100)))))))
 
 (defun code-review-section-insert-outdated-comment (comments amount-loc)
   "Insert outdated COMMENTS in the buffer of PULLREQ-ID considering AMOUNT-LOC.
