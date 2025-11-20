@@ -84,6 +84,13 @@
   "Face used for author names."
   :group 'code-review)
 
+(defface code-review-url-header-face
+  '((t :inherit font-lock-keyword-face
+       :slant italic
+       :underline t))
+  "Face used for PR url in the header."
+  :group 'code-review)
+
 (defface code-review-author-header-face
   '((t :inherit font-lock-keyword-face
        :slant italic

@@ -330,6 +330,19 @@ Return just the path without the leading b/."
                                (< ia ib)))))))
       (concat prefix (mapconcat #'cdr sorted "")))))
 
+(defclass code-review-url-section (magit-section)
+  ((keymap :initform 'code-review-url-section-map)
+   (url :initarg :url)))
+
+(defvar code-review-url-section-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") 'browse-url)
+    (define-key map [mouse-2] 'browse-url)
+    (define-key map [follow-link] 'browse-url)
+    map)
+  "Keymaps for header url section.")
+
+
 (defclass code-review-author-section (magit-section)
   ((keymap :initform 'code-review-author-section-map)
    (login :initarg :login)
@@ -342,6 +355,21 @@ Return just the path without the leading b/."
     (define-key map [follow-link] 'code-review-utils--visit-author-at-point)
     map)
   "Keymaps for header author section.")
+
+(defun code-review-section-insert-url ()
+  "Insert the author of the PR in the buffer."
+  (with-slots (url) (code-review-db-get-pullreq)
+    (when url
+      (let ((obj (code-review-url-section
+                  :url url)))
+        (magit-insert-section (code-review-author-section obj)
+          (insert (format "%-17s" "Url: "))
+          (insert (propertize (format "%s" url)
+                              'face 'code-review-url-header-face
+                              'mouse-face 'code-review-hover-face
+                              'help-echo "Visit PR url"
+                              'keymap 'code-review-url-section-map))
+          (insert ?\n))))))
 
 (defun code-review-section-insert-author ()
   "Insert the author of the PR in the buffer."

@@ -54,6 +54,7 @@
 
 (defcustom code-review-headers-hook
   '(code-review-section-insert-header-title
+    code-review-section-insert-url
     code-review-section-insert-author
     code-review-section-insert-title
     code-review-section-insert-state
@@ -242,6 +243,14 @@ inside Code Review buffers is redirected."
   (if (derived-mode-p 'code-review-mode)
       (apply #'code-review-visit-worktree-file args)
     (apply orig-fn args)))
+
+(defun code-review-kill-pr-url (jump?)
+  "Kill (or browse if JUMP?) pr at point."
+  (interactive "P")
+  (with-slots (url) (code-review-db-get-pullreq)
+    (when jump?
+      (browse-url url))
+    (kill-new url)))
 
 (provide 'code-review)
 ;;; code-review.el ends here

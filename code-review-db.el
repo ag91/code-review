@@ -91,6 +91,7 @@
    (owner               :initarg :owner)
    (repo                :initarg :repo)
    (number              :initarg :number)
+   (url                 :initarg :url)
    (description         :initform nil)
    (title               :initform nil)
    (host                :initform nil)
@@ -114,7 +115,7 @@
    (object-class :initform 'code-review-db-pullreq)
    (file         :initform 'code-review-db-database-file)
    (schemata     :initform 'code-review-db-table-schema)
-   (version      :initform 8)))
+   (version      :initform 9)))
 
 (defvar code-review-db--override-connection-class nil)
 
@@ -186,6 +187,7 @@
       reviewers
       assignees
       linked-issues
+      url
       (buffer :default eieio-unbound)
       callback])
 
@@ -231,6 +233,11 @@
         (emacsql db [:alter-table pullreq :add-column head-ref-name :default nil])
         (closql--db-set-version db (setq version 8))
         (message "Upgrading Code Review database from version 7 to 8...done"))
+      (when (= version 8)
+        (message "Upgrading Code Review database from version 8 to 9...")
+        (emacsql db [:alter-table pullreq :add-column url :default nil])
+        (closql--db-set-version db (setq version 9))
+        (message "Upgrading Code Review database from version 8 to 9...done"))
       (cl-call-next-method))))
 
 ;;; Core

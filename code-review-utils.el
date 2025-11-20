@@ -310,17 +310,20 @@ using COMMENTS."
       (code-review-db--pullreq-create
        (code-review-github-repo :owner .owner
                                 :repo .repo
-                                :number .num)))
+                                :number .num
+                                :url .url)))
      ((equal .forge 'gitlab)
       (code-review-db--pullreq-create
        (code-review-gitlab-repo :owner .owner
                                 :repo .repo
-                                :number .num)))
+                                :number .num
+                                :url .url)))
      ((equal .forge 'bitbucket)
       (code-review-db--pullreq-create
        (code-review-bitbucket-repo :owner .owner
                                    :repo .repo
-                                   :number .num)))
+                                   :number .num
+                                   :url .url)))
      (t
       (error "Forge not supported")))))
 
