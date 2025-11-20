@@ -1004,16 +1004,14 @@ For GitHub, prefer line/side and optional start_line/start_side; do not send pos
   (interactive)
   (unless (equal "*Code Review*" (buffer-name)) (error "Need to be in code-review buffer for this"))
   (let* ((pr (code-review-db-get-pullreq))
-         (owner (oref pr owner))
-         (pr-number (oref pr number))
-         (repo (oref pr repo))
+         (url (oref pr url))
          (path (alist-get 'path (oref (magit-current-section) value)))
          (sha256 (--> (shell-command-to-string (format "echo -n \"%s\" | shasum -a 256 | cut -d ' ' -f1" path)) ;; kindly discovered via https://github.com/orgs/community/discussions/55764
                       s-lines
                       -butlast ; there is a new line at the end of the output
                       -last-item
                       s-trim))
-         (url (format "https://github.com/%s/%s/pull/%s/files#diff-%s" owner repo pr-number sha256)))
+         (url (format "%s/files#diff-%s" url sha256)))
     (browse-url url)))
 
 (provide 'code-review-github)
