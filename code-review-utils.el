@@ -199,21 +199,22 @@ using COMMENTS."
                                :createdAt .createdAt
                                :updatedAt .updatedAt))
                              (.local?
-                             (code-review-local-comment-section
-                              :state state
-                              :author author
-                              :msg .bodyText
-                              :position handled-pos
-                              :reactions nil
-                              :internalId .internal-id
-                              :path .path
-                              :createdAt .createdAt
-                              :updatedAt .updatedAt
-                              :line-type .line-type
-                              :side .side
-                              :line .line
-                              :start-side .startSide
-                              :start-line .startLine))
+                              (code-review-local-comment-section
+                               :state state
+                               :author author
+                               :msg .bodyText
+                               :position handled-pos
+                               :reactions nil
+                               :internalId .internal-id
+                               :path .path
+                               :createdAt .createdAt
+                               :updatedAt .updatedAt
+                               :line-type .line-type
+                               :side .side
+                               :line .line
+                               :send? .send?
+                               :start-side .startSide
+                               :start-line .startLine))
                              (t
                               (code-review-code-comment-section
                                :state state
