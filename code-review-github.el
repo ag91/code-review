@@ -585,9 +585,10 @@ Optionally ask for the FALLBACK? query."
              nil
              :auth code-review-auth-login-marker
              :host code-review-github-host
-             :payload (a-alist 'assignees (-map (lambda (it)
-                                                  (a-get it 'login))
-                                                (oref github assignees)))
+             :payload `((assignees . ,(apply #'vector
+                                       (-map (lambda (it)
+                                               (a-get it 'login))
+                                        (oref github assignees)))))
              :errorback #'code-review-github-errback
              :callback (lambda (&rest _) (funcall callback))))
 
