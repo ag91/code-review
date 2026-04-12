@@ -57,24 +57,31 @@
 (defun code-review-github-errback (&rest m)
   "Error callback, displays the error message M."
   (code-review-utils--log "code-review-github-errback" (prin1-to-string m))
-  (let-alist m
-    (let* ((status (-second-item .error)))
-      (cond
-       ((= status 422)
-        (let ((errors (string-join
-                       (a-get (-third-item .error) 'errors)
-                       " AND "))
-              (msg (string-trim (a-get (-third-item .error) 'message))))
-          (message "Errors: %S" (if (string-empty-p errors)
-                                    msg
-                                  (string-join (list msg errors) ". ")))))
-       ((= status 404)
-        (message "Provided URL Not Found"))
-       ((= status 401)
-        (message "Bad credentials. Documentation to how to setup credentials
+  (if-let* ((first (car m))
+            ((listp first))
+            ((eq (car-safe first) 'errors))
+            (graphql-errors (cdr first))
+            (msgs (mapcar (lambda (e) (or (a-get e 'message) (prin1-to-string e)))
+                          graphql-errors)))
+      (message "GraphQL errors: %s" (string-join msgs "; "))
+    (let-alist m
+      (let* ((status (-second-item .error)))
+        (cond
+         ((= status 422)
+          (let ((errors (string-join
+                         (a-get (-third-item .error) 'errors)
+                         " AND "))
+                (msg (string-trim (a-get (-third-item .error) 'message))))
+            (message "Errors: %S" (if (string-empty-p errors)
+                                      msg
+                                    (string-join (list msg errors) ". ")))))
+         ((= status 404)
+          (message "Provided URL Not Found"))
+         ((= status 401)
+          (message "Bad credentials. Documentation to how to setup credentials
 https://github.com/wandersoncferreira/code-review#configuration"))
-       (t
-        (message "Unknown error talking to Github: %s" m))))))
+         (t
+          (message "Unknown error talking to Github: %s" m)))))))
 
 (cl-defmethod code-review-pullreq-diff ((github code-review-github-repo) callback)
   "Get PR diff from GITHUB, run CALLBACK after answer."
@@ -203,6 +210,13 @@ https://github.com/wandersoncferreira/code-review#configuration"))
               state
               contexts(first:50){
                 nodes {
+                  ... on StatusContext {
+                    createdAt
+                    context
+                    state
+                    targetUrl
+                    description
+                  }
                   ... on CheckRun {
                     startedAt
                     completedAt
@@ -221,13 +235,6 @@ https://github.com/wandersoncferreira/code-review#configuration"))
                         slug
                         logoUrl
                       }
-                    }
-                  ... on StatusContext {
-                    createdAt
-                    context
-                    state
-                    targetUrl
-                    description
                     }
                   }
                 }
@@ -501,12 +508,12 @@ https://github.com/wandersoncferreira/code-review#configuration"))
                   repo
                   owner
                   num)))
-    (ghub-graphql query
-                  nil
-                  :auth code-review-auth-login-marker
-                  :host code-review-github-graphql-host
-                  :callback callback
-                  :errorback #'code-review-github-errback)))
+    (ghub-query query
+                nil
+                :auth code-review-auth-login-marker
+                :host code-review-github-graphql-host
+                :callback callback
+                :errorback #'code-review-github-errback)))
 
 (cl-defmethod code-review-infos-deferred ((github code-review-github-repo) &optional fallback?)
   "Get PR infos from GITHUB using deferred lib.
@@ -831,12 +838,12 @@ For GitHub, use line/side and optional start_line/start_side for comments."
       (let ((has-next-page t)
             cursor res)
         (while has-next-page
-          (let ((graphql-res (ghub-graphql query
-                                           `((repo_owner . ,(oref github owner))
-                                             (repo_name . ,(oref github repo))
-                                             (cursor . ,cursor))
-                                           :auth code-review-auth-login-marker
-                                           :host code-review-github-graphql-host)))
+          (let ((graphql-res (ghub-query query
+                                         `((repo_owner . ,(oref github owner))
+                                           (repo_name . ,(oref github repo))
+                                           (cursor . ,cursor))
+                                         :auth code-review-auth-login-marker
+                                         :host code-review-github-graphql-host)))
             (let-alist graphql-res
               (setq has-next-page .data.repository.assignableUsers.pageInfo.hasNextPage
                     cursor .data.repository.assignableUsers.pageInfo.endCursor
@@ -856,15 +863,15 @@ For GitHub, use line/side and optional start_line/start_side for comments."
 }
 ")
         (pr-id (a-get (oref github raw-infos) 'id)))
-    (ghub-graphql query
-                  `((input . ((pullRequestId . ,pr-id)
-                              (userIds . ,user-ids))))
-                  :auth code-review-auth-login-marker
-                  :host code-review-github-graphql-host
-                  :callback (lambda (&rest _)
-                              (message "Review requested successfully!")
-                              (funcall callback))
-                  :errorback #'code-review-github-errback)))
+    (ghub-query query
+                `((input . ((pullRequestId . ,pr-id)
+                            (userIds . ,user-ids))))
+                :auth code-review-auth-login-marker
+                :host code-review-github-graphql-host
+                :callback (lambda (&rest _)
+                            (message "Review requested successfully!")
+                            (funcall callback))
+                :errorback #'code-review-github-errback)))
 
 (cl-defmethod code-review-new-issue ((github code-review-github-repo) body title callback)
   "Create a new issue in GITHUB given a BODY and TITLE and call CALLBACK."

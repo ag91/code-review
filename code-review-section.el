@@ -1956,9 +1956,9 @@ If you want to display a minibuffer MSG in the end."
 
 (cl-defmethod code-review--internal-build ((_github code-review-github-repo) progress res &optional buff-name msg)
   "Helper function to build process for GITHUB based on the fetched RES informing PROGRESS."
-  (let* ((errors-complete-query (a-get (-second-item res) 'errors))
-         (raw-infos-complete (a-get-in (-second-item res) (list 'data 'repository 'pullRequest)))
-         (raw-infos-fallback (a-get-in (-third-item res) (list 'data 'repository 'pullRequest)))
+  (let* ((errors-complete-query (alist-get 'errors (-second-item res)))
+         (raw-infos-complete (a-get-in (cdr (-second-item res)) (list 'repository 'pullRequest)))
+         (raw-infos-fallback (a-get-in (cdr (-third-item res)) (list 'repository 'pullRequest)))
          (raw-infos
           (if (not raw-infos-complete)
               raw-infos-fallback
