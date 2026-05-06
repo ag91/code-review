@@ -29,6 +29,7 @@
 ;;; Code:
 
 (require 'ghub)
+(require 'ghub-legacy nil t)
 (require 'deferred)
 (require 'code-review-interfaces)
 (require 'code-review-db)
