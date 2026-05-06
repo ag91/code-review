@@ -670,20 +670,47 @@ Optionally ask for the FALLBACK? query."
 
 (cl-defmethod code-review-merge ((github code-review-github-repo) strategy)
   "Merge a PR in GITHUB using a STRATEGY."
-  (ghub-put (format "/repos/%s/%s/pulls/%s/merge"
-                    (oref github owner)
-                    (oref github repo)
-                    (oref github number))
-            nil
-            :auth code-review-auth-login-marker
-            :host code-review-github-host
-            :payload (a-alist 'commit_title (oref github title)
-                              'commit_message (oref github description)
-                              'sha (oref github sha)
-                              'merge_method strategy)
-            :callback (lambda (&rest _)
-                        (message "Merge %s PR #%s succeeded." strategy (oref github number)))
-            :errorback #'code-review-github-errback))
+  (let* ((payload
+          (pcase strategy
+            ("merge"
+             (a-alist 'commit_title (format "Merge pull request #%s from %s/%s"
+                                            (oref github number)
+                                            (oref github owner)
+                                            (oref github head-ref-name))
+                      'commit_message (oref github title)))
+            ("squash"
+             (let ((commits (a-get-in (oref github raw-infos) (list 'commits 'nodes))))
+               (if (= (length commits) 1)
+                   (let* ((commit (a-get-in (car commits) '(commit)))
+                          (msg (a-get commit 'message))
+                          (lines (split-string msg "\n"))
+                          (title (car lines))
+                          (body (string-join (cdr lines) "\n")))
+                     (a-alist 'commit_title (format "%s (#%s)" title (oref github number))
+                              'commit_message (string-trim body)))
+                 (a-alist 'commit_title (format "%s (#%s)" (oref github title) (oref github number))
+                          'commit_message (string-join
+                                           (mapcar (lambda (c)
+                                                     (let ((oid (a-get-in c '(commit abbreviatedOid)))
+                                                           (msg (car (split-string
+                                                                      (a-get-in c '(commit message))
+                                                                      "\n"))))
+                                                       (format "* %s %s" oid msg)))
+                                                   commits)
+                                           "\n"))))))))
+    (ghub-put (format "/repos/%s/%s/pulls/%s/merge"
+                      (oref github owner)
+                      (oref github repo)
+                      (oref github number))
+              nil
+              :auth code-review-auth-login-marker
+              :host code-review-github-host
+              :payload (append payload
+                               (a-alist 'sha (oref github sha)
+                                        'merge_method strategy))
+              :callback (lambda (&rest _)
+                          (message "Merge %s PR #%s succeeded." strategy (oref github number)))
+              :errorback #'code-review-github-errback)))
 
 (cl-defmethod code-review-send-reaction ((github code-review-github-repo) context-name comment-id reaction)
   "Set REACTION in GITHUB pullreq COMMENT-ID given a CONTEXT-NAME e.g. issue, pr, discussion."
