@@ -232,6 +232,12 @@ Optionally set a FEEDBACK message."
   (code-review--submit "COMMENT"))
 
 ;;;###autoload
+(defun code-review-close-pr ()
+  "Close the current PR."
+  (interactive)
+  (code-review-close-pr))
+
+;;;###autoload
 (defun code-review-submit-request-changes ()
   "Submit a Request Change for the current PR."
   (interactive)

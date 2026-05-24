@@ -812,7 +812,7 @@ For GitHub, use line/side and optional start_line/start_side for comments."
 (cl-defmethod code-review-get-assignable-users ((github code-review-github-repo))
   "Get a list of assignable users for current PR in GITHUB."
   (let ((infos (oref github raw-infos))
-        (query "query($repo_owner:String!, $repo_name:String!, $cursor:String) {
+        (query "query($repo_owner:String!, $repo_name:String!, $cursor:String = null) {
    repository(owner: $repo_owner, name: $repo_name) {
      assignableUsers(first: 100, after: $cursor) {
        pageInfo {
@@ -832,12 +832,13 @@ For GitHub, use line/side and optional start_line/start_side for comments."
       (let ((has-next-page t)
             cursor res)
         (while has-next-page
-          (let ((graphql-res (ghub-graphql query
-                                           `((repo_owner . ,(oref github owner))
-                                             (repo_name . ,(oref github repo))
-                                             (cursor . ,cursor))
-                                           :auth code-review-auth-login-marker
-                                           :host code-review-github-graphql-host)))
+          (let* ((baseData `((repo_owner . ,(oref github owner))
+                             (repo_name . ,(oref github repo))))
+                 (data (if cursor (cons `(cursor . ,cursor) baseData) baseData))
+
+                 (graphql-res (ghub-graphql query data
+                                            :auth code-review-auth-login-marker
+                                            :host code-review-github-graphql-host)))
             (let-alist graphql-res
               (setq has-next-page .data.repository.assignableUsers.pageInfo.hasNextPage
                     cursor .data.repository.assignableUsers.pageInfo.endCursor
