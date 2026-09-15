@@ -65,7 +65,8 @@
     code-review-section-insert-is-draft
     code-review-section-insert-assignee
     code-review-section-insert-suggested-reviewers
-    code-review-section-insert-reviewers)
+    code-review-section-insert-reviewers
+    code-review-repo-insert-header)
   "Hook run to insert headers into the code review buffer."
   :group 'code-review
   :type 'hook)
@@ -184,6 +185,7 @@ OUTDATED."
    ("s t" "Title" code-review-set-title)
    ("s d" "Description" code-review-set-description)]
   ["Buffer"
+   ("w" "Open worktree in Dired" code-review-repo-open-worktree)
    ("G" "Full reload" code-review-reload)
    ("q" "Quit" transient-quit-one)])
 
@@ -200,6 +202,10 @@ OUTDATED."
     (define-key map (kbd "C-c RET") 'code-review-submit-single-diff-comment-at-point)
     (define-key map (kbd "C-c C-s") 'code-review-comment-code-suggestion)
     (define-key map (kbd "G") 'code-review-reload)
+    ;; Repository context: xref and worktree access from the diff
+    (define-key map (kbd "M-.") 'code-review-xref-find-definitions)
+    (define-key map (kbd "M-?") 'code-review-xref-find-references)
+    (define-key map (kbd "w") 'code-review-repo-open-worktree)
     (set-keymap-parent map magit-section-mode-map)
     map))
 

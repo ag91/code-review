@@ -37,6 +37,7 @@
 (require 'code-review-faces)
 (require 'code-review-db)
 (require 'code-review-utils)
+(require 'code-review-repo)
 
 (require 'code-review-interfaces)
 (require 'code-review-github)
@@ -1888,6 +1889,17 @@ If you want to display a minibuffer MSG in the end."
               code-review-section-hold-written-comment-ids nil)
 
         (with-current-buffer (get-buffer-create buff-name)
+          ;; local repository context: worktree checked out at PR head
+          (when (and code-review-repo-enable
+                     (or (not code-review-repo-worktree)
+                         code-review-section-full-refresh?))
+            (condition-case err
+                (code-review-repo-setup (code-review-db-get-pullreq))
+              (error (message "code-review: repo setup failed: %s"
+                              (error-message-string err)))))
+          (when code-review-repo-worktree
+            (setq default-directory
+                  (file-name-as-directory code-review-repo-worktree)))
           (let* ((window (get-buffer-window buff-name))
                  (ws (window-start window))
                  (inhibit-read-only t))
@@ -2268,46 +2280,82 @@ lines with ' ' or '+'. END-POS is exclusive. Review UI lines are ignored."
 
 ;;; Visiting files from hunks with robust line mapping
 
-(defun code-review-visit-worktree-file (&rest _)
-  "Visit the worktree file at point using a robust line choice.
-This ignores inline review/comment lines when computing the target
-line inside a hunk. Falls back to `magit-diff-visit-worktree-file'
-when path cannot be determined or file does not exist."
-  (interactive)
+(defun code-review--resolve-worktree-position ()
+  "Return (FULL-PATH . LINE) for the diff position at point, or nil.
+LINE is nil when point is not inside a hunk.  Prefer the local
+worktree of the PR (`code-review-repo-worktree') and fall back to
+`magit-toplevel'.  Ignores inline review/comment lines when
+computing the target line inside a hunk."
   (let* ((sec (magit-current-section))
          (cur sec)
          path)
     ;; Walk up to find a section whose value carries our PATH
     (while (and cur (not path))
       (let ((val (and (slot-boundp cur 'value) (oref cur value))))
-        (when (and (listp val))
+        (when (listp val)
           (setq path (alist-get 'path val))))
       (unless path
         (setq cur (and (slot-boundp cur 'parent) (oref cur parent)))))
-    (if (not path)
-        ;; Fallback if we cannot infer a path
-        (call-interactively 'magit-diff-visit-worktree-file)
-      (let* ((root (ignore-errors (magit-toplevel)))
+    (when path
+      (let* ((root (or code-review-repo-worktree
+                       (ignore-errors (magit-toplevel))))
              (full (and root (expand-file-name path root))))
-        (if (and full (file-exists-p full))
-            (let* ((hunk (and (magit-hunk-section-p (magit-current-section))
-                              (magit-current-section)))
-                   (target nil))
-              (when hunk
-                (save-excursion
-                  (let* ((startc (code-review--hunk-content-start hunk))
-                         (anchor (or (code-review--nearest-patch-line-in-hunk hunk)
-                                     startc))
-                         (adv (code-review--count-patch-advances hunk startc anchor))
-                         (new-start (car (oref hunk to-range)))
-                         (new-adv (cdr adv)))
-                    (setq target (+ new-start new-adv)))))
-              (find-file full)
-              (when (and target (integerp target) (> target 0))
-                (goto-char (point-min))
-                (forward-line (1- target))))
-          ;; File missing: fallback to Magit's default
-          (call-interactively 'magit-diff-visit-worktree-file))))))
+        (when (and full (file-exists-p full))
+          (let* ((hunk (and (magit-hunk-section-p (magit-current-section))
+                            (magit-current-section)))
+                 (target nil))
+            (when hunk
+              (save-excursion
+                (let* ((startc (code-review--hunk-content-start hunk))
+                       (anchor (or (code-review--nearest-patch-line-in-hunk hunk)
+                                   startc))
+                       (adv (code-review--count-patch-advances hunk startc anchor))
+                       (new-start (car (oref hunk to-range)))
+                       (new-adv (cdr adv)))
+                  (setq target (+ new-start new-adv)))))
+            (cons full (and target (integerp target) (> target 0) target))))))))
+
+(defun code-review-visit-worktree-file (&rest _)
+  "Visit the worktree file at point using a robust line choice.
+This ignores inline review/comment lines when computing the target
+line inside a hunk. Falls back to `magit-diff-visit-worktree-file'
+when path cannot be determined or file does not exist."
+  (interactive)
+  (if-let ((pos (code-review--resolve-worktree-position)))
+      (progn
+        (find-file (car pos))
+        (when (cdr pos)
+          (goto-char (point-min))
+          (forward-line (1- (cdr pos)))))
+    (call-interactively 'magit-diff-visit-worktree-file)))
+
+(defun code-review-xref--find (fn)
+  "Run xref FN for the symbol at point.
+Opens the corresponding file of the PR worktree at the matching
+line first, so the xref backend operates on the reviewed version
+of the code."
+  (let ((sym (thing-at-point 'symbol t))
+        (pos (code-review--resolve-worktree-position)))
+    (unless code-review-repo-worktree
+      (user-error
+       "No local repo context for this review (check `code-review-projects-root')"))
+    (unless pos (user-error "No file at point in the diff"))
+    (unless sym (user-error "No symbol at point"))
+    (find-file-other-window (car pos))
+    (when (cdr pos)
+      (goto-char (point-min))
+      (forward-line (1- (cdr pos))))
+    (funcall fn sym)))
+
+(defun code-review-xref-find-definitions ()
+  "Find definitions of the symbol at point in the PR worktree."
+  (interactive)
+  (code-review-xref--find #'xref-find-definitions))
+
+(defun code-review-xref-find-references ()
+  "Find references of the symbol at point in the PR worktree."
+  (interactive)
+  (code-review-xref--find #'xref-find-references))
 
 (provide 'code-review-section)
 ;;; code-review-section.el ends here

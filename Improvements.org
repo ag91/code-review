@@ -1,0 +1,98 @@
+#+TITLE: Improvements plan for code-review mode
+
+Goal: make reviewing AI-generated PRs from Emacs practical. See the
+*important* changes early, keep noise away, and review inside real
+repository context (xref, tests, running code).
+
+* Phase 1 — Local repo context                                  :STATUS:done
+
+The mode has no notion of "the PR's repository on disk".  Visiting a
+file used =(magit-toplevel)= on the *review buffer*, which only works
+when you happened to launch from inside the repo.  Fix: resolve,
+clone if needed, fetch PR refs, and check out a worktree.
+
+- New file =code-review-repo.el=:
+  - =code-review-projects-root=: default dir to look for clones
+    (~ =nil= disables).  Matches clones by git remote URL, one and
+    two levels deep, plus the current =magit-toplevel=.
+  - =code-review-repo-cache-dir= (default =~/.cache/code-review=):
+    =repos/= for on-demand clones (=git clone --filter=blob:none=,
+    prompted), =worktrees/= for per-PR checkouts.
+  - Fetch =pull/N/head= (GitHub) or =merge-requests/N/head= (GitLab)
+    into =refs/remotes/code-review/N/head=, plus the base ref.
+  - =git worktree add --detach= at the PR head, hard-updated on
+    refresh when the PR is force-pushed.
+- Review buffer gets =default-directory= set to the worktree, so
+  =project.el=, compile, grep, eglot etc. work against the exact PR
+  version.  A "Worktree:" header shows it (clickable, opens Dired);
+  =w= opens the worktree.
+
+* Phase 2 — Transparent xref in the diff                          :STATUS:done
+
+- =code-review--resolve-worktree-position=: shared resolver
+  (file . line) for the patch line at point (ignores comment lines
+  inside hunks).
+- =code-review-xref-find-definitions= / =code-review-xref-find-references=
+  (=M-.= / =M-?=): symbol at point in the diff, jump to the worktree
+  file at the matching line, then run the real xref command there.
+  No glue: the worktree is a normal project checkout, so every xref
+  backend (eglot, etags, gtags) just works.
+
+* Phase 3 — Noise reduction                                      :STATUS:todo
+
+- When the local repo is available, generate the diff locally with
+  =git diff -w --ignore-blank-lines base...head= instead of the raw
+  API diff.  Configurable via =code-review-diff-ignore-whitespace=.
+- Hunk classification: comment/doc-only hunks collapsed by default
+  ("doc-only" tag in the heading).  Files sorted with substantive
+  code hunks first, doc-only last (extends
+  =code-review-diff-file-order-rules=).
+- Difftastic (=difft= on PATH) as a *drill-down view* (key on a
+  file/hunk), not as the review surface: its output has no line
+  numbers, so comments can't anchor to it.
+
+* Phase 4 — Robust GitHub data (pr-review lessons)               :STATUS:todo
+
+How /tmp/emacs-pr-review handles comments (it *does* use magit, but
+only as a renderer):
+
+- Renders the diff with public =magit-wash-sequence=
+  / =magit-diff-wash-diff=.  No =advice-add= overrides of magit
+  internals (code-review currently overrides
+  =magit-diff-insert-file-section= and =magit-diff-wash-hunk=).
+- After washing, walks the buffer once and stamps every diff line
+  with =pr-review-diff-line-left/right= text properties carrying
+  =((path ...) (line ...))=.  Anchoring a comment becomes an exact
+  =text-property-search-forward=, not line-count arithmetic.
+- Comments come from GraphQL =reviewThreads= (=path=, =diffSide=,
+  =line=, =isOutdated=, =isResolved=).  In-diff fringe markers link
+  to full threads; pending comments are collected buffer-locally
+  and submitted as one =addPullRequestReview= mutation with a
+  =threads= input.
+
+Plan for code-review:
+
+- Fetch comments via GraphQL =reviewThreads=; kill the
+  "amount-loc"/"head-pos" line arithmetic.  Anchor by (path, side,
+  line) directly.
+- New comments become pending review threads, submitted in one
+  mutation.  Add resolve/unresolve support.
+
+* Phase 5 — Duplicate and dead code detection                    :STATUS:todo
+
+- Similar code: normalize added lines (mask strings/numbers), take
+  4-line shingles, match against an index of the repo built at the
+  *base* commit.  Report "18/20 added lines similar to
+  src/foo.py:120-140" with a jump link.
+- Dead code: (a) newly added definitions with zero references in
+  the head tree -> "possibly dead"; (b) symbols deleted by the PR
+  still referenced elsewhere -> "dangling reference" (this one is
+  reliable).  Shown in a toggleable "Analysis" section, clearly
+  marked heuristic.
+
+* Future ideas
+
+- =code-review-repo-cleanup=: prune old worktrees (older than N
+  days).
+- Commit buffer should reuse the same worktree context.
+- Per-PR buffer names so multiple reviews can stay open.
