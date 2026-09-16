@@ -323,5 +323,36 @@ buffer-local).  Return the worktree directory, or nil on failure."
       (dired code-review-repo-worktree)
     (user-error "No local worktree for this review")))
 
+(defun code-review-repo-substantive-files (num)
+  "Return the list of files that really changed in PR NUM.
+This compares the PR base ref with the PR head ignoring
+whitespace-only changes, so files whose only change is
+reindentation or trailing spaces are NOT in the returned list.
+Return nil when the worktree or the base ref are unavailable."
+  (let ((wt code-review-repo-worktree)
+        (dir code-review-repo-dir)
+        (base (format "refs/remotes/code-review/%s/base" num)))
+    (when (and wt
+               (code-review-repo--git (or dir wt)
+                                      "rev-parse" "--verify" "--quiet" base))
+      (let ((out (code-review-repo--git
+                  wt "diff" "--no-renames" "-w" "--ignore-blank-lines"
+                  "--numstat" (format "%s...HEAD" base))))
+        (when out
+          (delq nil
+                (mapcar (lambda (line)
+                          (let ((cols (split-string line "\t")))
+                            (when (= 3 (length cols))
+                              (let ((adds (nth 0 cols))
+                                    (dels (nth 1 cols)))
+                                ;; keep the file when lines were truly
+                                ;; added/removed, or it is binary ("-")
+                                (when (or (string= adds "-")
+                                          (string= dels "-")
+                                          (not (string= adds "0"))
+                                          (not (string= dels "0")))
+                                  (nth 2 cols))))))
+                        (split-string out "\n" t))))))))
+
 (provide 'code-review-repo)
 ;;; code-review-repo.el ends here

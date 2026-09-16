@@ -157,6 +157,9 @@ Review` buffer.
 | C-c C-r | pr description                        | Add Reaction                |
 | RET     | reaction (on emoji symbol)            | Endorse or Remove Reaction  |
 | RET     | Request Reviewer                      | Request reviewer at point   |
+| N       | anywhere in buffer                    | Toggle focus mode: hide auto-flagged noise files (lockfiles, docs, whitespace-only changes); the "Files changed" heading reports what is hidden |
+| D       | file section                          | Difftastic drill-down: zoom into one file's real changes in a structural view (read-only; C-u for the whole PR; needs the `difftastic` package and the `difft` command) |
+| V       | anywhere in buffer                    | View-only diff of the whole PR ignoring whitespace |
 
 
 ## Binding suggestions

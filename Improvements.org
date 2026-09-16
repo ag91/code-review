@@ -40,18 +40,131 @@ clone if needed, fetch PR refs, and check out a worktree.
   No glue: the worktree is a normal project checkout, so every xref
   backend (eglot, etags, gtags) just works.
 
-* Phase 3 — Noise reduction                                      :STATUS:todo
+* Phase 3 — Noise reduction                                    :STATUS:done
 
-- When the local repo is available, generate the diff locally with
-  =git diff -w --ignore-blank-lines base...head= instead of the raw
-  API diff.  Configurable via =code-review-diff-ignore-whitespace=.
-- Hunk classification: comment/doc-only hunks collapsed by default
-  ("doc-only" tag in the heading).  Files sorted with substantive
-  code hunks first, doc-only last (extends
-  =code-review-diff-file-order-rules=).
-- Difftastic (=difft= on PATH) as a *drill-down view* (key on a
-  file/hunk), not as the review surface: its output has no line
-  numbers, so comments can't anchor to it.
+CONSTRAINT (why this phase is classification, not replacement):
+comment anchors (=position=, =side=, =line=) refer to the API's
+unified diff.  Rendering a *different* diff (e.g. a locally
+generated =-w= one) misplaces or drops comments.  So the review
+surface stays the API diff; noise handling only classifies, tags
+and collapses.
+
+DONE (implementation notes):
+
+- =code-review-diff-file-order-rules= now accepts regexp strings
+  (order-only, backward compatible) or plists
+  =(:match REGEX :tag TAG :collapse BOOL :hide BOOL)=.
+- New built-in =code-review-diff-noise-rules= (enabled by
+  default, battery included; set to nil to disable): lockfiles,
+  minified/build output -> =GEN=; CHANGELOG/docs/README ->
+  =DOC=; all collapsed.
+- =code-review--diff--classify-diff= per render: merges user
+  rules, noise rules, textual detection and the worktree check
+  into a hash table used by the wash (tags, collapse) and by
+  focus-mode filtering.  Classification happens on every render
+  and is deliberately NOT permanent-local (the re-activation of
+  =code-review-mode= at the end of =code-review--trigger-hooks=
+  kills buffer-locals; everything reads it during the wash, so
+  this is fine).
+- Whitespace-only files: textual pairwise hunk comparison
+  (=code-review--diff--block-ws-only-p=) plus, when the worktree
+  exists, one =git diff --no-renames -w --ignore-blank-lines
+  --numstat base...HEAD= call
+  (=code-review-repo-substantive-files=): files absent from the
+  numstat output (all-zero) are =WS-ONLY=, collapsed + hidden in
+  focus mode.  Binary/mode-only blocks are guarded via
+  =code-review--diff--block-has-content-p=.
+- Pure renames -> =[MOVED]=, collapsed, NOT hidden in focus mode.
+- Files carrying review comments are never auto-collapsed
+  (=code-review--diff--file-has-comments-p= guard in the
+  =insert-file-section= override).
+- Ordering: user rules first, then unmatched files, then noise
+  rules last (noise sinks to the bottom of the diff).
+- Focus mode: buffer-local =code-review-focus-mode= (permanent
+  so it survives re-renders), =N= or the transient toggles it;
+  hidden files are removed from the buffer text but always
+  counted in the "Files changed" heading
+  (=code-review-section--focus-summary=).
+- =V=: view-only =*Code Review Diff (-w)*= buffer
+  (local =git diff -w --ignore-blank-lines base...HEAD=, =diff-mode=,
+  warning banner that comments cannot anchor there).
+- =D=: difftastic drill-down via
+  =(difftastic-git-diff-range "refs/remotes/code-review/N/base...HEAD" nil (list FILE))=
+  from the worktree; =C-u D= for the whole PR.  Soft-dependency:
+  friendly install hint when =difftastic= or =difft= is missing
+  (both absent on this machine; the error path is tested).
+- GOTCHA fixed along the way: PR 3's API diff uses NO a/ b/
+  prefixes (=diff --git file file=), so
+  =code-review--diff--extract-b-path= now handles both forms;
+  without this every file classified under path "".
+- GOTCHA: docstrings containing ='(= need =\\='= in source to
+  satisfy the byte-compiler docstring check.
+
+Original design (kept for reference):
+
+** File rules: from ordering to classification
+
+Extend =code-review-diff-file-order-rules= so each element is
+either a regexp (backward-compatible: order-only, as today) or a
+property list:
+
+  (:match REGEX :tag "docs" :collapse t :hide t)
+
+- =:tag= shows a =[\[DOC]]= style tag on the file heading
+  (=code-review-section--magit-diff-insert-file-section= already
+  overrides file sections, so heading + default hidden state are
+  easy to control).
+- =:collapse= starts the file section hidden.
+- =:hide= omits the file entirely in "focus mode" (never silently:
+  the files-changed summary counts them).
+- Built-in default rules (toggleable via
+  =code-review-diff-noise-rules=): lockfiles
+  (=package-lock.json=, =yarn.lock=, =pnpm-lock.yaml=,
+  =Cargo.lock=, =flake.lock=, ...), minified/build output,
+  CHANGELOG and pure docs -> =GEN= / =DOC= tags, collapsed.
+
+** Hunk-level classification (purely textual, no repo needed)
+
+- Whitespace-only hunks: every =-=/=+= pair is equal after
+  collapsing internal whitespace -> =[\[WS]]= tag, collapsed by
+  default.  Works on the raw diff text we already split per file
+  in =code-review--maybe-reorder-diff=.
+- Pure renames (header has =rename from/to=, no hunks) -> one-line
+  =[\[MOVED]]= section.
+
+** Local-repo assisted classification (phase 1 gives this free)
+
+- When the worktree is available: =git diff -w base...head -- FILE=
+  empty -> whole file tagged =[\[WS-ONLY]]= and collapsed (catches
+  reformatting churn the textual check misses).
+
+** Focus mode
+
+- A transient toggle (like the existing =toggle-display-*= ones):
+  hide everything tagged =GEN= / =DOC= / =WS-ONLY=; the
+  "Files changed" heading reports what is hidden
+  ("6 files: 3 substantive, 2 docs, 1 generated").
+
+** The =-w= "what really changed" view, done safely
+
+- A view-only buffer (=*Code Review Diff (-w)*=) rendering the local
+  =git diff -w --ignore-blank-lines base...head=, banner noting
+  that comments cannot anchor there.  This replaces the original
+  (unsafe) idea of swapping the review surface to the =-w= diff.
+
+** Difftastic drill-down
+
+- Optional dependency on =difftastic.el= (pkryger, MELPA): more
+  robust than a hand-rolled =GIT_EXTERNAL_DIFF= runner (it is the
+  maintained version of that blog code: ANSI->theme faces, width,
+  reflow, chunk nav).
+- Key on a file section (say =D=): run
+  =difftastic-git-diff-range= on base...head for that file, from
+  the worktree (=default-directory= already points there).  With
+  =C-u=: whole-PR structural diff.
+- Explicitly NOT in-place rendering (rschmukler/magit-difftastic
+  renders inside magit buffers with staging; in-place difftastic
+  would break the line anchoring comments need).
 
 * Phase 4 — Robust GitHub data (pr-review lessons)               :STATUS:done
 

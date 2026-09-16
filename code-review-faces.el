@@ -50,6 +50,16 @@
   "Face for comment sections."
   :group 'code-review)
 
+(defface code-review-diff-tag-face
+  `((((class color) (background light))
+     :inherit font-lock-builtin-face
+     :weight bold)
+    (((class color) (background  dark))
+     :inherit font-lock-builtin-face
+     :weight bold))
+  "Face for file classification tags like [DOC] or [WS-ONLY]."
+  :group 'code-review)
+
 (defface code-review-thread-face
   `((((class color) (background light))
      ,@(and (>= emacs-major-version 27) '(:extend t))

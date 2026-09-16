@@ -687,6 +687,20 @@ If a valid ASSIGNEE is provided, use that instead."
   (code-review--build-buffer))
 
 ;;;###autoload
+(defun code-review-toggle-focus-mode ()
+  "Toggle focus mode in this review buffer.
+In plain terms: focus mode HIDES the files that look like noise
+(generated lockfiles, changelogs and other docs, files whose only
+change is whitespace), leaving on screen only the files with real
+code changes that need your attention.  Nothing is lost: the
+\"Files changed\" heading always reports how many files were
+hidden and why, and pressing \\[code-review-toggle-focus-mode]
+again brings everything back."
+  (interactive)
+  (setq code-review-focus-mode (not code-review-focus-mode))
+  (code-review--build-buffer))
+
+;;;###autoload
 (defun code-review-comment-code-suggestion ()
   "Add code suggestion box."
   (interactive)

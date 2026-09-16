@@ -186,6 +186,12 @@ OUTDATED."
    ("s d" "Description" code-review-set-description)]
   ["Buffer"
    ("w" "Open worktree in Dired" code-review-repo-open-worktree)
+   ("N" "Focus: hide auto-flagged noise files (lockfiles, docs, whitespace-only)"
+    code-review-toggle-focus-mode)
+   ("D" "Difftastic: zoom into the file's real changes (C-u: whole PR)"
+    code-review-difftastic-file)
+   ("V" "View: whole diff ignoring whitespace (view-only)"
+    code-review-view-wdiff)
    ("G" "Full reload" code-review-reload)
    ("q" "Quit" transient-quit-one)])
 
@@ -208,6 +214,10 @@ OUTDATED."
     (define-key map (kbd "w") 'code-review-repo-open-worktree)
     ;; Review threads
     (define-key map (kbd "R") 'code-review-threads-toggle-resolved)
+    ;; Noise reduction: focus mode, difftastic drill-down, -w view
+    (define-key map (kbd "N") 'code-review-toggle-focus-mode)
+    (define-key map (kbd "D") 'code-review-difftastic-file)
+    (define-key map (kbd "V") 'code-review-view-wdiff)
     (set-keymap-parent map magit-section-mode-map)
     map))
 

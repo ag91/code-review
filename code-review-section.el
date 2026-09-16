@@ -60,21 +60,76 @@
   :type 'integer)
 
 (defcustom code-review-diff-file-order-rules nil
-  "Regex rules to order files in the diff.
-Each element is a regexp string tested against the file path
-without the leading \"a/\" or \"b/\". Files matching the first
-regexp appear first, then the second, and so on. Files that don't
-match any rule appear last. Within the same rule group files are
-sorted alphabetically by path.
+  "Rules to order and classify files in the diff.
+Each element is either a regexp string or a property list:
+
+  (:match REGEXP :tag TAG :collapse BOOL :hide BOOL)
+
+- A string is a pure ordering rule: files matching the first
+  regexp come first, then the second, and so on.
+- `:match' is the regexp (required for plist rules), tested
+  against the file path without the leading \"a/\" or \"b/\".
+- `:tag' shows a [TAG] label on the file heading.
+- `:collapse' starts the file section collapsed.  Files carrying
+  review comments are never auto-collapsed.
+- `:hide' removes the file while focus mode is on (see
+  `code-review-toggle-focus-mode').  The \"Files changed\" heading
+  always reports what is hidden, so nothing is lost.
+
+Files matching no user rule come next, and files matching the
+built-in `code-review-diff-noise-rules' sink to the bottom.
 
 Example:
   (setq code-review-diff-file-order-rules
-        '(\"^src/\"                           ;; source first
-          \"^\\\\(config/\\\\|\\\\.github/\\\\|\\\\.gitlab-ci\\\\.yml$\\\\)\" ;; config
-          \"^docs/\"                          ;; docs
-          \"^\\\\(test/\\\\|tests/\\\\)\"))   ;; tests last"
+        \\='(\"^src/\"                           ;; source first
+          (:match \"^\\\\(test/\\\\|tests/\\\\)\" :tag \"TEST\") ;; tests last
+          \"^\\\\(config/\\\\|\\\\.github/\\\\|\\\\.gitlab-ci\\\\.yml$\\\\)\")) ;; config"
   :group 'code-review
-  :type '(repeat string))
+  :type
+  '(repeat
+    (choice (string :tag "Regexp (order only)")
+            (set (cons (const :match) (regexp :tag "Regexp"))
+                 (cons (const :tag) (string :tag "Tag"))
+                 (cons (const :collapse) (boolean :tag "Collapse by default"))
+                 (cons (const :hide) (boolean :tag "Hide in focus mode"))))))
+
+(defcustom code-review-diff-noise-rules
+  '((:match "\\`\\(package-lock\\.json\\|yarn\\.lock\\|pnpm-lock\\.yaml\\|Cargo\\.lock\\|flake\\.lock\\|poetry\\.lock\\|Gemfile\\.lock\\|composer\\.lock\\|mix\\.lock\\|Pipfile\\.lock\\|packages\\.lock\\.json\\)\\'"
+     :tag "GEN" :collapse t)
+    (:match "\\.lock\\'"
+     :tag "GEN" :collapse t)
+    (:match "\\`\\(dist\\|build\\|out\\)/\\|\\.min\\.[cm]?js\\'\\|\\.bundle\\.[cm]?js\\'\\|\\.map\\'"
+     :tag "GEN" :collapse t)
+    (:match "\\`\\(CHANGELOG\\|CHANGES\\|NEWS\\|HISTORY\\|AUTHORS\\|CREDITS\\)\\(\\.[^/]*\\)?\\'\\|/\\(doc\\|docs\\|documentation\\)/\\|\\.\\(md\\|markdown\\|rst\\)\\'\\|\\(^\\|/\\)README\\(\\.[^/]*\\)?\\'"
+     :tag "DOC" :collapse t))
+  "Built-in rules classifying low-signal files as noise.
+These come enabled by default so you don't have to maintain
+anything: lockfiles, generated/minified output and changelog/docs
+are tagged (e.g. [GEN], [DOC]) and collapsed, and focus mode
+(see `code-review-toggle-focus-mode') hides them entirely.
+Set this variable to nil to disable all built-in classification.
+The same plist format of `code-review-diff-file-order-rules'
+applies, so you can add your own entries or place
+`code-review-diff-file-order-rules' entries after these to
+override them."
+  :group 'code-review
+  :type
+  '(repeat
+    (set (cons (const :match) (regexp :tag "Regexp"))
+         (cons (const :tag) (string :tag "Tag"))
+         (cons (const :collapse) (boolean :tag "Collapse by default"))
+         (cons (const :hide) (boolean :tag "Hide in focus mode")))))
+
+(defvar-local code-review-focus-mode nil
+  "When non-nil, files auto-flagged as noise are hidden.
+See `code-review-diff-noise-rules' and
+`code-review-toggle-focus-mode'.")
+(put 'code-review-focus-mode 'permanent-local t)
+
+(defvar-local code-review-section--file-classifications nil
+  "Hash table path -> plist (:tag :collapse :hide) for the diff.
+Recomputed by `code-review--diff--classify-diff' on every render.
+For internal usage only.")
 
 (defcustom code-review-buffer-name "*Code Review*"
   "Fallback name of the code review main buffer.
@@ -319,10 +374,14 @@ INDENT count of spaces are added at the start of every line."
 ;; headers
 
 (defun code-review--diff--extract-b-path (header-line)
-  "Extract the b/ path from a diff HEADER-LINE.
-Return just the path without the leading b/."
-  (when (string-match "^diff --git a/\\(.+?\\) b/\\(.+\\)$" header-line)
-    (match-string 2 header-line)))
+  "Extract the new-file path from a diff HEADER-LINE.
+Handles both the usual \"diff --git a/old b/new\" form and the
+no-prefix \"diff --git old new\" form some forges return."
+  (cond
+   ((string-match "^diff --git a/\\(.+?\\) b/\\(.+\\)$" header-line)
+    (match-string 2 header-line))
+   ((string-match "^diff --git \\(.+?\\) \\(.+\\)$" header-line)
+    (match-string 2 header-line))))
 
 (defun code-review--diff--split-by-files (diff-text)
   "Split DIFF-TEXT into a list of (path . block) per file."
@@ -346,23 +405,179 @@ Return just the path without the leading b/."
         (setq pos next)))
     (nreverse blocks)))
 
+(defun code-review--diff--rule-regexp (rule)
+  "Return the match regexp of RULE, or nil when it has none.
+A string rule matches as itself."
+  (cond ((stringp rule) rule)
+        ((plist-get rule :match))))
+
+(defun code-review--diff--classify-path (path)
+  "Return plist (:tag ... :collapse ... :hide ...) for PATH.
+Merge `code-review-diff-file-order-rules' and
+`code-review-diff-noise-rules': the first rule that matches and
+sets a property wins for that property."
+  (let ((info nil))
+    (dolist (rule (append code-review-diff-file-order-rules
+                          code-review-diff-noise-rules))
+      (when-let* ((regexp (code-review--diff--rule-regexp rule))
+                  ((string-match-p regexp path)))
+        (dolist (key '(:tag :collapse :hide))
+          (unless (plist-member info key)
+            (when-let* ((val (and (not (stringp rule))
+                                  (plist-get rule key))))
+              (setq info (plist-put info key val)))))))
+    info))
+
+(defun code-review--diff--ws-normalize (line)
+  "Collapse whitespace in LINE for whitespace-only comparisons."
+  (string-join (split-string line "\\s-+" t) " "))
+
+(defun code-review--diff--hunk-ws-only-p (minus plus)
+  "Non-nil when MINUS/PLUS line lists differ only in whitespace."
+  (and (= (length minus) (length plus))
+       (let ((a (mapcar #'code-review--diff--ws-normalize minus))
+             (b (mapcar #'code-review--diff--ws-normalize plus)))
+         (while (and a b (string-equal (car a) (car b)))
+           (setq a (cdr a) b (cdr b)))
+         (null a))))
+
+(defun code-review--diff--block-ws-only-p (block)
+  "Non-nil when every hunk of BLOCK only changes whitespace.
+Blocks without hunks (pure renames, binary, mode-only) return nil."
+  (let ((lines (split-string block "\n"))
+        (saw-hunk nil)
+        (in-hunk nil)
+        (minus nil)
+        (plus nil))
+    (catch 'done
+      (dolist (line lines)
+        (cond
+         ((string-prefix-p "@@" line)
+          (when in-hunk
+            (unless (code-review--diff--hunk-ws-only-p (nreverse minus)
+                                                        (nreverse plus))
+              (throw 'done nil)))
+          (setq in-hunk t
+                saw-hunk t
+                minus nil
+                plus nil))
+         (t
+          (when in-hunk
+            (cond
+             ((string-prefix-p "-" line) (push (substring line 1) minus))
+             ((string-prefix-p "+" line) (push (substring line 1) plus)))))))
+      (when in-hunk
+        (unless (code-review--diff--hunk-ws-only-p (nreverse minus)
+                                                   (nreverse plus))
+          (throw 'done nil)))
+      saw-hunk)))
+
+(defun code-review--diff--block-pure-rename-p (block)
+  "Non-nil when BLOCK is a pure rename with no content hunks."
+  (and (string-match-p "^rename from " block)
+       (not (string-match-p "^@@" block))))
+
+(defun code-review--diff--block-has-content-p (block)
+  "Non-nil when BLOCK has at least one added or removed line."
+  (or (string-match-p "\n\\+[^+]" block)
+      (string-match-p "\n-[^-]" block)))
+
+(defun code-review--diff--file-has-comments-p (path)
+  "Non-nil when PATH carries review comments."
+  (let ((res nil)
+        (groups code-review-section-grouped-comments))
+    (while (and groups (not res))
+      (let ((objs (cdr (pop groups))))
+        (while (and objs (not res))
+          (let ((c (pop objs)))
+            (when (and (slot-boundp c 'path)
+                       (string-equal (oref c path) path))
+              (setq res t))))))
+    res))
+
+(defun code-review--diff--classify-diff (diff-text)
+  "Classify every file of DIFF-TEXT.
+Return a hash table path -> plist (:tag :collapse :hide),
+combining:
+- rule-based classification from
+  `code-review-diff-file-order-rules' and
+  `code-review-diff-noise-rules';
+- pure renames ([MOVED]);
+- whitespace-only files ([WS-ONLY]), detected textually and,
+  when a local worktree is available, with `git diff -w'.
+
+Comment anchors refer to the API diff, so classification only
+tags, collapses and hides: it never replaces the diff itself."
+  (let ((table (make-hash-table :test #'equal))
+        (substantive
+         (ignore-errors
+           (let ((pr (code-review-db-get-pullreq)))
+             (and (slot-boundp pr 'number)
+                  (code-review-repo-substantive-files
+                   (format "%s" (oref pr number))))))))
+    (dolist (blk (code-review--diff--split-by-files diff-text))
+      (let* ((path (car blk))
+             (block (cdr blk))
+             (info (code-review--diff--classify-path path))
+             (tag (plist-get info :tag)))
+        (cond
+         ((code-review--diff--block-pure-rename-p block)
+          (setq tag "MOVED"
+                info (plist-put info :collapse t)))
+         ((code-review--diff--block-ws-only-p block)
+          (setq tag "WS-ONLY"
+                info (plist-put info :collapse t)))
+         ((and substantive
+               (code-review--diff--block-has-content-p block)
+               (not (member path substantive)))
+          (setq tag "WS-ONLY"
+                info (plist-put info :collapse t))))
+        (when tag
+          (setq info (plist-put info :tag tag)))
+        ;; focus mode hides auto-flagged noise, unless a rule
+        ;; explicitly opted out with :hide nil
+        (when (and (member tag '("GEN" "DOC" "WS-ONLY"))
+                   (not (plist-member info :hide)))
+          (setq info (plist-put info :hide t)))
+        (puthash path info table)))
+    table))
+
 (defun code-review--diff--file-order-index (path)
-  "Return the ordering index for PATH based on `code-review-diff-file-order-rules'."
-  (let ((rules code-review-diff-file-order-rules)
+  "Return the ordering index for PATH.
+User rules come first (in their order); files matching no user
+rule come next; files matching only `code-review-diff-noise-rules'
+sink to the very bottom, keeping noise out of the way."
+  (let ((user code-review-diff-file-order-rules)
+        (noise code-review-diff-noise-rules)
         (idx 0)
         (found nil))
-    (while (and rules (not found))
-      (setq found (string-match-p (car rules) path))
-      (unless found
-        (setq idx (1+ idx))
-        (setq rules (cdr rules))))
-    (if found idx ;; zero-based index of first match
-      ;; no match -> put after all rules
-      (length code-review-diff-file-order-rules))))
+    (while (and user (not found))
+      (let ((rule (pop user)))
+        (if (when-let* ((regexp (code-review--diff--rule-regexp rule)))
+              (string-match-p regexp path))
+            (setq found idx)
+          (setq idx (1+ idx)))))
+    (or found
+        ;; not matched by user rules: check noise rules
+        (let ((j 0)
+              (noise-found nil))
+          (while (and noise (not noise-found))
+            (let ((rule (pop noise)))
+              (when (when-let* ((regexp (code-review--diff--rule-regexp rule)))
+                      (string-match-p regexp path))
+                (setq noise-found (+ idx 1 j))))
+            (setq j (1+ j)))
+          (or noise-found idx)))))
 
-(defun code-review--maybe-reorder-diff (diff-text)
-  "Reorder DIFF-TEXT per `code-review-diff-file-order-rules' if set."
-  (if (not code-review-diff-file-order-rules)
+(defun code-review--maybe-reorder-diff (diff-text &optional classifications)
+  "Reorder DIFF-TEXT per the file rules, and honor focus mode.
+CLASSIFICATIONS is the hash table produced by
+`code-review--diff--classify-diff'.  When focus mode is on, files
+whose classification has a non-nil :hide are omitted from the
+buffer; they remain counted in the \"Files changed\" heading."
+  (if (and (not code-review-diff-file-order-rules)
+           (not code-review-diff-noise-rules)
+           (not code-review-focus-mode))
       diff-text
     (let* ((first-pos (string-match "^diff --git .+$" diff-text 0))
            (prefix (if (and first-pos (> first-pos 0))
@@ -376,8 +591,17 @@ Return just the path without the leading b/."
                                   (ib (code-review--diff--file-order-index (car b))))
                              (if (= ia ib)
                                  (string-lessp (car a) (car b))
-                               (< ia ib)))))))
-      (concat prefix (mapconcat #'cdr sorted "")))))
+                               (< ia ib))))))
+           (kept (if (and code-review-focus-mode classifications)
+                     (let (acc)
+                       (dolist (blk sorted)
+                         (unless (plist-get (gethash (car blk)
+                                                     classifications)
+                                            :hide)
+                           (push blk acc)))
+                       (nreverse acc))
+                   sorted)))
+      (concat prefix (mapconcat #'cdr kept "")))))
 
 (defclass code-review-url-section (magit-section)
   ((keymap :initform 'code-review-url-section-map)
@@ -1738,6 +1962,29 @@ A quite good assumption: every comment in an outdated hunk will be outdated."
                    amount-loc-incr))
             (code-review-comment-insert-lines c)))))))
 
+(defun code-review-section--focus-summary ()
+  "One-line summary of the files hidden by focus mode, or nil."
+  (when code-review-section--file-classifications
+    (let ((tags nil)
+          (total 0))
+      (maphash (lambda (_path info)
+                 (when (plist-get info :hide)
+                   (setq total (1+ total))
+                   (let ((tag (or (plist-get info :tag) "noise")))
+                     (let ((cell (assoc tag tags)))
+                       (if cell
+                           (setcdr cell (1+ (cdr cell)))
+                         (push (cons tag 1) tags))))))
+               code-review-section--file-classifications)
+      (when (> total 0)
+        (format "  --  focus: %d noise file%s hidden (%s)"
+                total
+                (if (= total 1) "" "s")
+                (mapconcat (lambda (x)
+                             (format "%d %s" (cdr x) (car x)))
+                           tags
+                           ", "))))))
+
 (defun code-review-section-insert-files-changed ()
   (let ((files (a-get (code-review-db--pullreq-raw-infos) 'files)))
     (let-alist files
@@ -1747,7 +1994,10 @@ A quite good assumption: every comment in an outdated hunk will be outdated."
                          (format " (%s files; %s additions, %s deletions)"
                                  (length .nodes)
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .nodes))
-                                 (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .nodes)))))
+                                 (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .nodes))))
+                       (when code-review-focus-mode
+                         (or (code-review-section--focus-summary)
+                             "  --  focus: no noise files to hide")))
                'font-lock-face
                'magit-section-heading)))
     (magit-insert-heading)))
@@ -1760,24 +2010,39 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
   ;;; --- beg -- code-review specific code.
   ;;; I need to set a reference point for the first hunk header
   ;;; so the positioning of comments is done correctly.
+  ;;; Also apply file classification (tags, collapse) from
+  ;;; `code-review--diff--classify-diff'.
   (let* ((raw-path-name (substring-no-properties file))
          (clean-path (if (string-prefix-p "b/" raw-path-name)
                          (replace-regexp-in-string "^b\\/" "" raw-path-name)
-                       raw-path-name)))
-    (code-review-db--curr-path-update clean-path))
+                       raw-path-name))
+         (info (and code-review-section--file-classifications
+                    (gethash clean-path
+                             code-review-section--file-classifications)))
+         (tag (plist-get info :tag))
+         (collapse (and (plist-get info :collapse)
+                        ;; never auto-collapse files that carry
+                        ;; review comments: they'd hide discussion
+                        (not (code-review--diff--file-has-comments-p
+                              clean-path)))))
+    (code-review-db--curr-path-update clean-path)
     ;;; --- end -- code-review specific code.
-  (insert ?\n)
-  (magit-insert-section section
-    (file file (or (equal status "deleted")
-                   (derived-mode-p 'magit-status-mode)))
-    (insert (propertize (format "%-10s %s" status
-                                (if (or (not orig) (equal orig file))
-                                    file
-                                  (format "%s -> %s" orig file)))
-                        'font-lock-face 'magit-diff-file-heading))
-    (when long-status
-      (insert (format " (%s)" long-status)))
-    (magit-insert-heading)
+    (insert ?\n)
+    (magit-insert-section section
+      (file file (or (equal status "deleted")
+                     (derived-mode-p 'magit-status-mode)
+                     collapse))
+      (insert (propertize (format "%-10s %s" status
+                                  (if (or (not orig) (equal orig file))
+                                      file
+                                    (format "%s -> %s" orig file)))
+                          'font-lock-face 'magit-diff-file-heading))
+      (when tag
+        (insert (propertize (format "  [%s]" tag)
+                            'font-lock-face 'code-review-diff-tag-face)))
+      (when long-status
+        (insert (format " (%s)" long-status)))
+      (magit-insert-heading)
     (unless (equal orig file)
       (oset section source orig))
     (oset section header header)
@@ -1811,7 +2076,7 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
                            code-review-section-grouped-comments)))
       (when (and missing-paths code-review-section--display-all-comments)
         (code-review-section-insert-outdated-comment-missing
-         clean-path missing-paths code-review-section-grouped-comments)))))
+         clean-path missing-paths code-review-section-grouped-comments))))))
 
 (defun code-review-section--magit-diff-wash-hunk ()
   "Overwrite the original Magit function on `magit-diff.el' file.
@@ -1975,9 +2240,13 @@ If you want to display a minibuffer MSG in the end."
                  (ws (window-start window))
                  (inhibit-read-only t))
             (save-excursion
+              (setq code-review-section--file-classifications
+                    (code-review--diff--classify-diff
+                     (code-review-db--pullreq-raw-diff)))
               (erase-buffer)
               (insert (code-review--maybe-reorder-diff
-                       (code-review-db--pullreq-raw-diff)))
+                       (code-review-db--pullreq-raw-diff)
+                       code-review-section--file-classifications))
               (insert ?\n))
             (magit-insert-section section (code-review--root-section)
                                   (magit-insert-section (code-review)
@@ -2476,6 +2745,105 @@ of the code."
   "Find references of the symbol at point in the PR worktree."
   (interactive)
   (code-review-xref--find #'xref-find-references))
+
+;;; Noise reduction: difftastic drill-down and -w view
+
+(declare-function difftastic-git-diff-range "difftastic"
+                  (&optional rev-or-range args files))
+
+(defun code-review-difftastic--file-at-point ()
+  "Return the repository-relative path of the file section at point."
+  (let ((section (magit-current-section)))
+    (while (and section
+                (not (magit-file-section-p section)))
+      (setq section (oref section parent)))
+    (when section
+      (let ((path (substring-no-properties (oref section value))))
+        (cond ((string-prefix-p "a/" path) (substring path 2))
+              ((string-prefix-p "b/" path) (substring path 2))
+              (t path))))))
+
+(defun code-review-difftastic--range ()
+  "Return the base...HEAD range for the reviewed PR, or nil."
+  (when-let* ((pr (ignore-errors (code-review-db-get-pullreq)))
+              ((slot-boundp pr 'number))
+              (num (format "%s" (oref pr number)))
+              (base (format "refs/remotes/code-review/%s/base" num))
+              ((and code-review-repo-worktree
+                    (code-review-repo--git code-review-repo-worktree
+                                           "rev-parse" "--verify"
+                                           "--quiet" base))))
+    (format "%s...HEAD" base)))
+
+(defun code-review-difftastic-file (&optional whole-pr-p)
+  "Show the changes of the file at point with difftastic.
+In plain terms, this \"drills down\" into one file: it opens a
+side-by-side view that understands syntax, so you see what REALLY
+changed (moved blocks, renamed things), not just line edits.  It
+is for READING only: comments cannot anchor there, so you cannot
+leave reviews in that view.  Press \\[quit-window] in the
+difftastic buffer to come back to the review.
+
+With WHOLE-PR-P (\\[universal-argument]) show the entire pull
+request instead of the file at point.  This needs the `difftastic'
+Emacs package (MELPA) and the external `difft' command."
+  (interactive "P")
+  (cond
+   ((not (fboundp 'difftastic-git-diff-range))
+    (user-error
+     "This needs the `difftastic' Emacs package and the external `difft' command.
+Install it with: M-x package-install RET difftastic RET
+and get difft from https://github.com/Wilfred/difftastic"))
+   ((not (executable-find (if (boundp 'difftastic-executable)
+                              difftastic-executable
+                            "difft")))
+    (user-error
+     "The external `difft' command is not installed; see https://github.com/Wilfred/difftastic"))
+   ((not code-review-repo-worktree)
+    (user-error "No local worktree for this review"))
+   (t
+    (let* ((range (code-review-difftastic--range))
+           (file (and (not whole-pr-p)
+                      (code-review-difftastic--file-at-point))))
+      (unless range
+        (user-error "Base ref not available locally; press G to fully reload this review"))
+      (if (and (not whole-pr-p) (not file))
+          (user-error "Point is not on a file section (use C-u for the whole PR)")
+        (let ((default-directory
+                (file-name-as-directory code-review-repo-worktree)))
+          (difftastic-git-diff-range range nil (and file (list file)))))))))
+
+(defun code-review-view-wdiff ()
+  "Show the whole pull request diff IGNORING whitespace.
+In plain terms, this answers \"what really changed?\" when the PR
+contains formatting churn (reindentation, line wrapping): the
+local git diff skips changes that only touch spaces, tabs and
+blank lines.  The buffer is VIEW-ONLY: comments cannot anchor
+there, so reviews are still left in the review buffer."
+  (interactive)
+  (if (not code-review-repo-worktree)
+      (user-error "No local worktree for this review")
+    (let* ((range (code-review-difftastic--range))
+           (out (and range
+                     (code-review-repo--git code-review-repo-worktree
+                                           "diff" "-w"
+                                           "--ignore-blank-lines"
+                                           range))))
+      (unless range
+        (user-error "Base ref not available locally; press G to fully reload this review"))
+      (with-current-buffer (get-buffer-create "*Code Review Diff (-w)*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (propertize
+                   "View-only: what really changed in this PR, ignoring whitespace.
+Comments can only be placed in the review buffer, not here.
+
+"
+                   'face 'font-lock-warning-face))
+          (insert (or out "")))
+        (diff-mode)
+        (goto-char (point-min)))
+      (pop-to-buffer "*Code Review Diff (-w)*"))))
 
 (provide 'code-review-section)
 ;;; code-review-section.el ends here
