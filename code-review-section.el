@@ -77,9 +77,55 @@ Example:
   :type '(repeat string))
 
 (defcustom code-review-buffer-name "*Code Review*"
-  "Name of the code review main buffer."
+  "Fallback name of the code review main buffer.
+Buffers are normally named after the reviewed PR
+\(see `code-review-pr-buffer-name') so that several reviews can
+stay open at once."
   :group 'code-review
   :type 'string)
+
+(defvar-local code-review-review-buffer-pr-id nil
+  "Database id of the pull request displayed in this review buffer.")
+(put 'code-review-review-buffer-pr-id 'permanent-local t)
+
+(defvar-local code-review-comment-review-buffer nil
+  "Review buffer a comment buffer was opened for.")
+(put 'code-review-comment-review-buffer 'permanent-local t)
+
+(defun code-review-pr-buffer-name (&optional pr)
+  "Return the review buffer name for PR (defaults to the DB current pullreq).
+Falls back to `code-review-buffer-name' when the PR cannot be
+determined."
+  (let ((pr (or pr (ignore-errors (code-review-db-get-pullreq)))))
+    (if (and pr
+             (slot-boundp pr 'owner)
+             (slot-boundp pr 'repo)
+             (slot-boundp pr 'number))
+        (format "*Code Review: %s/%s#%s*"
+                (oref pr owner)
+                (replace-regexp-in-string "%2F" "/" (oref pr repo))
+                (oref pr number))
+      code-review-buffer-name)))
+
+(defun code-review-review-buffer ()
+  "Return the review buffer for the PR being acted on, or nil.
+Prefer the current buffer when it already is a review buffer, then
+the review buffer recorded in a comment buffer, then the buffer
+named after the DB's current pullreq."
+  (cond ((and (bound-and-true-p code-review-review-buffer-pr-id)
+              (buffer-live-p (current-buffer)))
+         (current-buffer))
+        ((and (bound-and-true-p code-review-comment-review-buffer)
+              (buffer-live-p code-review-comment-review-buffer))
+         code-review-comment-review-buffer)
+        (t (get-buffer (code-review-pr-buffer-name)))))
+
+(defun code-review--sync-db-pullreq ()
+  "Make the DB current pullreq match the PR shown in this buffer."
+  (when (and code-review-review-buffer-pr-id
+             (not (equal code-review-db--pullreq-id
+                         code-review-review-buffer-pr-id)))
+    (setq code-review-db--pullreq-id code-review-review-buffer-pr-id)))
 
 (defcustom code-review-commit-buffer-name "*Code Review Commit*"
   "Name of the code review commit buffer."
@@ -1318,8 +1364,7 @@ Optionally DELETE? flag must be set if you want to remove it."
          (code-review-conversation-add-reaction comment-id node-id reaction))
         ("code-comment"
          (code-review-code-comment-add-reaction comment-id node-id reaction))))
-    (code-review--build-buffer
-     code-review-buffer-name)))
+    (code-review--build-buffer)))
 
 (defun code-review-toggle-reaction-at-point (comment-id context-name)
   "Add reaction at point given a COMMENT-ID and CONTEXT-NAME."
@@ -1943,6 +1988,12 @@ If you want to display a minibuffer MSG in the end."
                 (funcall code-review-new-buffer-window-strategy buff-name)
                 (goto-char (point-min))))
             (code-review-mode)
+            ;; per-PR review buffers: remember which PR this buffer
+            ;; shows, and make commands issued here act on that PR.
+            ;; Done after `code-review-mode', which kills local
+            ;; variables and hooks.
+            (setq code-review-review-buffer-pr-id code-review-db--pullreq-id)
+            (add-hook 'post-command-hook #'code-review--sync-db-pullreq nil t)
             (when commit-focus?
               (code-review-commit-minor-mode 1))
             (code-review-section-insert-header-title)
@@ -2098,10 +2149,9 @@ If you want to display a minibuffer MSG in the end."
 
 (defun code-review--build-buffer (&optional buf-name commit-focus? msg)
   "Build BUF-NAME set COMMIT-FOCUS? mode to use commit list of hooks.
-If you want to provide a MSG for the end of the process."
-  (let ((buff-name (if (not buf-name)
-                       code-review-buffer-name
-                     buf-name)))
+If you want to provide a MSG for the end of the process.
+BUF-NAME defaults to the per-PR buffer name."
+  (let ((buff-name (or buf-name (code-review-pr-buffer-name))))
     (if (not code-review-section-full-refresh?)
         (code-review--trigger-hooks buff-name commit-focus? msg)
       (let ((obj (code-review-db-get-pullreq))
@@ -2178,7 +2228,7 @@ with commit-focused hooks and keybindings."
 (defun code-review-section-delete-comment ()
   "Delete a local comment."
   (interactive)
-  (with-current-buffer code-review-buffer-name
+  (with-current-buffer (code-review-review-buffer)
     (setq code-review-comment-cursor-pos (point))
     (with-slots (value) (magit-current-section)
       (code-review-db-delete-raw-comment (oref value internalId))
@@ -2190,7 +2240,7 @@ with commit-focused hooks and keybindings."
 For local comments, only deletes locally. For submitted diff comments,
 delete remotely via provider API and then drop from local DB."
   (interactive)
-  (with-current-buffer code-review-buffer-name
+  (with-current-buffer (code-review-review-buffer)
     (setq code-review-comment-cursor-pos (point))
     (let* ((section (magit-current-section))
            (val (and section (oref section value)))

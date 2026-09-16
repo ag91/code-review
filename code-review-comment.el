@@ -298,7 +298,7 @@ Optionally define a MSG."
 Inform if a SUGGESTION-CODE? is being proposed."
   (interactive)
   (let ((section (magit-current-section)))
-    (with-current-buffer (get-buffer code-review-buffer-name)
+    (with-current-buffer (code-review-review-buffer)
       (setq code-review-comment-cursor-pos (point)
             code-review-comment-suggestion? suggestion-code?)
       (with-slots (value) section
@@ -335,7 +335,7 @@ Inform if a SUGGESTION-CODE? is being proposed."
   "Commit the local comment OBJ and clean the DEFAULT-BUFF-MSG from the text if any."
   (let* ((buff-name (if code-review-comment-commit-buffer?
                         code-review-commit-buffer-name
-                      code-review-buffer-name))
+                      (code-review-pr-buffer-name)))
          (clean-msg (code-review-utils--comment-clean-msg
                      (oref obj msg)
                      default-buff-msg))
@@ -507,7 +507,7 @@ Inform if a SUGGESTION-CODE? is being proposed."
   (if (= 1 (length (window-list (window-frame (selected-window)))))
       (delete-frame (window-frame (selected-window)))
     (delete-window (selected-window)))
-  (with-current-buffer (get-buffer code-review-buffer-name)
+  (with-current-buffer (code-review-review-buffer)
     (goto-char code-review-comment-cursor-pos)
     (code-review-comment-reset-global-vars)))
 
@@ -520,7 +520,12 @@ Inform if a SUGGESTION-CODE? is being proposed."
     map))
 
 (define-derived-mode code-review-comment-mode markdown-mode "Code Review Comment"
-  "Code Review Comment.")
+  "Code Review Comment."
+  ;; Review buffers are per-PR: bind this comment buffer to the
+  ;; review it was opened for.  The DB's current pullreq is the PR
+  ;; of the review buffer the user just interacted with.
+  (setq code-review-comment-review-buffer
+        (get-buffer (code-review-pr-buffer-name))))
 
 (provide 'code-review-comment)
 ;;; code-review-comment.el ends here

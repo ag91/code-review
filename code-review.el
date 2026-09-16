@@ -134,7 +134,7 @@ OUTDATED."
         (pr-alist (code-review-utils--alist-forge-at-point)))
     (code-review-auth-source-debug)
     (code-review-utils-build-obj pr-alist)
-    (code-review--build-buffer code-review-buffer-name)))
+    (code-review--build-buffer)))
 
 ;;;###autoload
 (defun code-review-start (url)
@@ -143,8 +143,7 @@ OUTDATED."
   (let ((code-review-section-full-refresh? t))
     (code-review-auth-source-debug)
     (code-review-utils-build-obj-from-url url)
-    (code-review--build-buffer
-     code-review-buffer-name)))
+    (code-review--build-buffer)))
 
 ;;; Commit buffer
 

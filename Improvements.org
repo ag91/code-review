@@ -15,9 +15,11 @@ clone if needed, fetch PR refs, and check out a worktree.
   - =code-review-projects-root=: default dir to look for clones
     (~ =nil= disables).  Matches clones by git remote URL, one and
     two levels deep, plus the current =magit-toplevel=.
-  - =code-review-repo-cache-dir= (default =~/.cache/code-review=):
-    =repos/= for on-demand clones (=git clone --filter=blob:none=,
-    prompted), =worktrees/= for per-PR checkouts.
+  - On-demand clones (=git clone --filter=blob:none=, prompted) go
+    under =code-review-projects-root= (or =/tmp=) directly at
+    =ROOT/REPO= (just the repository name).  Per-PR worktrees live
+    inside the clone's git directory (=.git/code-review-worktrees/N=),
+    so they never pollute the working tree and survive =git clean=.
   - Fetch =pull/N/head= (GitHub) or =merge-requests/N/head= (GitLab)
     into =refs/remotes/code-review/N/head=, plus the base ref.
   - =git worktree add --detach= at the PR head, hard-updated on
@@ -123,9 +125,80 @@ DONE (implementation notes):
   reliable).  Shown in a toggleable "Analysis" section, clearly
   marked heuristic.
 
+* Phase 6 — Edit submitted comments and PR lifecycle          :STATUS:todo
+
+The biggest write-path gap vs pr-review: everything it can edit
+after submission.
+
+- Edit an already-submitted remote comment
+  (=updatePullRequestReviewComment=), a submitted review summary
+  (=updatePullRequestReview=), and a thread item.  We can only
+  edit local (pending) comments today.
+- Reopen a closed PR (we only close).
+- Toggle draft / mark ready for review (=convertPullRequestToDraft=,
+  =markPullRequestReadyForReview=).
+- Subscribe / unsubscribe / ignore PR notifications
+  (=updateSubscription=).
+- Consider moving the local-comments submit to a single
+  =addPullRequestReview= mutation with a =threads= input (pending
+  comments + replies + summary in one call), as pr-review does.
+
+* Phase 7 — Notifications dashboard and PR search                :STATUS:todo
+
+Cuts the GitHub-website round trips.
+
+- =code-review-notification=: list GitHub notifications in a
+  buffer, dired-style mark/act (mark read, unsubscribe), toggle
+  filters, paginate.  Opening a PR from it marks read and passes
+  the last-read time so newer items get a NEW highlight (pr-review
+  does this by binding =pr-review--last-read-time= around the
+  render).
+- =code-review-search= / =code-review-search-open=: search PRs
+  by GraphQL query, pick from results (completing-read or a
+  listview buffer).
+- =browse-url= integration: register a URL parser in
+  =browse-url-default-handlers= so GitHub PR links (with file/line
+  anchors) open inside Emacs; also find a PR URL in the current
+  buffer (email/notmuch workflow).
+
+* Phase 8 — Diff drill-down: ediff and base views                :STATUS:todo
+
+Nearly free now that phase 1 gives us the worktree and the base
+ref.
+
+- =code-review-ediff-file=: ediff the changed file under point,
+  worktree (head) vs =refs/remotes/code-review/N/base= checkout
+  of the base version.
+- View the file under point at the *base* version (currently we
+  only have head, via the worktree).
+- =code-review-select-commit=: narrow the reviewed diff to a
+  subset of the PR commits (complement to the existing commit-focus
+  buffer).
+
+* Phase 9 — Review ergonomics (pr-review polish)                 :STATUS:todo
+
+- =imenu= index over review sections (files, comments, commits)
+  via =magit--imenu-create-index=.
+- eldoc showing the current context (file, line, section) at
+  point.
+- Global section folding by show-levels (like magit's =C-c +/-=),
+  in addition to per-section TAB.
+- =code-review-hide-commenter=: collapse comments from noisy
+  authors (bots) by default.
+- Fringe markers linking diff lines to their threads.
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N
   days).
 - Commit buffer should reuse the same worktree context.
-- Per-PR buffer names so multiple reviews can stay open.
+
+DONE since: per-PR review buffers
+(=*Code Review: owner/repo#N*=, fallback =*Code Review*=) so
+several reviews stay open at once.  Each buffer remembers the
+database id of its PR; a buffer-local =post-command-hook= makes
+the DB current pullreq follow the buffer you act in, and comment
+buffers record the review buffer they were opened for.  The
+review/worktree locals are =permanent-local= so the
+=(code-review-mode)= activation that follows rendering does not
+wipe them.

@@ -110,6 +110,8 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
   (interactive)
   (setq code-review-comment-cursor-pos (point))
   (let* ((pr (code-review-db-get-pullreq))
+         (buff-name (code-review-pr-buffer-name pr))
+         (pr-id (oref pr id))
          (review-obj (cond
                       ((code-review-github-repo-p pr)
                        (code-review-submit-github-review))
@@ -134,7 +136,7 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
 
     (let ((replies nil)
           (local-comments nil))
-      (with-current-buffer (get-buffer code-review-buffer-name)
+      (with-current-buffer (code-review-review-buffer)
         (save-excursion
           (goto-char (point-min))
           (magit-wash-sequence
@@ -186,8 +188,11 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
                  (oset pr finished t)
                  (oset pr finished-at (current-time-string))
                  (code-review-db-update pr)
+                 ;; async callback: point the DB back at this PR and
+                 ;; rebuild this PR's buffer
+                 (setq code-review-db--pullreq-id pr-id)
                  (code-review--build-buffer
-                  code-review-buffer-name
+                  buff-name
                   nil
                   "Done submitting review")))))
 
@@ -196,8 +201,9 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
              replies-obj
              (lambda (&rest _)
                (let ((code-review-section-full-refresh? t))
+                 (setq code-review-db--pullreq-id pr-id)
                  (code-review--build-buffer
-                  code-review-buffer-name
+                  buff-name
                   nil
                   "Done submitting review and replies"))))))))))
 
@@ -705,7 +711,7 @@ If a valid ASSIGNEE is provided, use that instead."
   "Go to next comment in the buffer."
   (interactive)
   (let ((initial-point (point)))
-    (with-current-buffer (get-buffer code-review-buffer-name)
+    (with-current-buffer (code-review-review-buffer)
       (let ((comment-position))
         (save-excursion
           (forward-line)
@@ -724,7 +730,7 @@ If a valid ASSIGNEE is provided, use that instead."
   "Go to previous comment in the buffer."
   (interactive)
   (let ((initial-point (point)))
-    (with-current-buffer (get-buffer code-review-buffer-name)
+    (with-current-buffer (code-review-review-buffer)
       (let ((comment-position))
         (save-excursion
           (forward-line -1)
@@ -777,7 +783,7 @@ If a valid ASSIGNEE is provided, use that instead."
     (setq code-review-comment-commit-buffer? nil
           code-review-section-full-refresh? t)
     (kill-this-buffer)
-    (code-review--build-buffer code-review-buffer-name)))
+    (code-review--build-buffer)))
 
 ;;; * Handle deprecated commands
 ;;; all these commands were renamed and you should use the new version

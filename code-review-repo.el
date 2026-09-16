@@ -49,17 +49,13 @@ Used to locate a local clone of the PR repository.  Candidate
 directories are matched by git remote URL, so only clones whose
 origin points at the PR repository are used.
 
+It is also where repositories are cloned on demand when no local
+clone is found (under the repository name: ROOT/REPO).  When nil,
+\"/tmp\" is used instead.
+
 Example: \"~/src\"."
   :type '(choice (const :tag "Disabled" nil)
                  (directory :tag "Directory"))
-  :group 'code-review-repo)
-
-(defcustom code-review-repo-cache-dir
-  (expand-file-name "code-review" (or (getenv "XDG_CACHE_HOME") "~/.cache"))
-  "Cache directory for repos cloned on demand and review worktrees.
-Subdirectories \"repos\" (on-demand clones) and \"worktrees\"
-(per-PR checkouts) are created below this directory as needed."
-  :type 'directory
   :group 'code-review-repo)
 
 (defcustom code-review-repo-clone-confirm t
@@ -72,9 +68,11 @@ Subdirectories \"repos\" (on-demand clones) and \"worktrees\"
 
 (defvar-local code-review-repo-worktree nil
   "Worktree directory checked out at the PR head, or nil.")
+(put 'code-review-repo-worktree 'permanent-local t)
 
 (defvar-local code-review-repo-dir nil
   "Local git repository directory for the reviewed PR, or nil.")
+(put 'code-review-repo-dir 'permanent-local t)
 
 ;;; Git plumbing
 
@@ -115,19 +113,21 @@ Supports both https://host/owner/repo(.git) and git@host:owner/repo(.git)."
 
 ;;; Repository resolution
 
-(defun code-review-repo--clone-dir (owner repo)
-  "Return cache directory for an on-demand clone of OWNER/REPO."
-  (expand-file-name (concat "repos/" owner "/" repo)
-                    code-review-repo-cache-dir))
+(defun code-review-repo--base-dir ()
+  "Root directory for on-demand clones.
+`code-review-projects-root' when set, \"/tmp\" otherwise."
+  (expand-file-name (or code-review-projects-root "/tmp")))
+
+(defun code-review-repo--clone-dir (repo)
+  "Return directory for an on-demand clone of REPO.
+The repository is cloned under its own name
+\(BASE-DIR/REPO) directly."
+  (expand-file-name repo
+                    (code-review-repo--base-dir)))
 
 (defun code-review-repo--candidate-dirs (owner repo)
-  "Return candidate directories that may host a clone of OWNER/REPO.
-Directories inside `code-review-repo-cache-dir' (e.g. our own
-review worktrees) are excluded."
+  "Return candidate directories that may host a clone of OWNER/REPO."
   (let* ((repo-name (file-name-nondirectory (directory-file-name repo)))
-         (cache (and code-review-repo-cache-dir
-                     (file-name-as-directory
-                      (expand-file-name code-review-repo-cache-dir))))
          (cands (list (ignore-errors (magit-toplevel)))))
     (when code-review-projects-root
       (setq cands
@@ -137,17 +137,10 @@ review worktrees) are excluded."
                    (file-expand-wildcards
                     (expand-file-name (concat "*/" repo-name)
                                       code-review-projects-root)))))
-    (let ((cached (code-review-repo--clone-dir owner repo)))
-      (when (file-exists-p cached)
-        (setq cands (nconc cands (list cached)))))
-    (seq-uniq
-     (seq-remove (lambda (dir)
-                   (and cache
-                        (string-prefix-p cache
-                                         (file-name-as-directory
-                                          (expand-file-name dir)))))
-                 (delq nil cands))
-     #'equal)))
+    (let ((clone (code-review-repo--clone-dir repo)))
+      (when (file-exists-p clone)
+        (setq cands (nconc cands (list clone)))))
+    (seq-uniq (delq nil cands) #'equal)))
 
 (defun code-review-repo--find-existing (host owner repo)
   "Return a local directory of repository HOST/OWNER/REPO, or nil.
@@ -166,16 +159,16 @@ also matches, so that reviewing upstream PRs works from a fork."
                  cands))))
 
 (defun code-review-repo--clone (host owner repo)
-  "Clone https://HOST/OWNER/REPO into the cache on demand.
+  "Clone https://HOST/OWNER/REPO on demand under the base directory.
 Return the clone directory, or nil."
-  (let* ((dest (code-review-repo--clone-dir owner repo))
+  (let* ((dest (code-review-repo--clone-dir repo))
          (url (format "https://%s/%s/%s.git" host owner repo)))
     (cond
      ((file-exists-p dest)
       (if (code-review-repo--url-matches-p (code-review-repo--remote-url dest)
                                            host owner repo)
           dest
-        (message "code-review: ignoring stale cache clone in %s" dest)
+        (message "code-review: ignoring unrelated directory in %s" dest)
         nil))
      ((or (not code-review-repo-clone-confirm)
           (y-or-n-p (format "No local clone of %s/%s found.  Clone to %s? "
@@ -236,16 +229,23 @@ success, nil otherwise."
         (code-review-repo--git dir "rev-parse"
                                (format "refs/remotes/code-review/%s/head" num))))))
 
-(defun code-review-repo--worktree-dir (owner repo num)
-  "Return worktree path for OWNER/REPO PR NUM."
-  (expand-file-name (format "worktrees/%s/%s/%s" owner repo num)
-                    code-review-repo-cache-dir))
+(defun code-review-repo--worktree-dir (repo-dir num)
+  "Return worktree path for PR NUM of the repository at REPO-DIR.
+The worktree lives inside the repository's git directory
+\(BASE-DIR/OWNER/REPO/.git/code-review-worktrees/NUM), so it never
+pollutes the working tree and survives `git clean'."
+  (let ((gitdir (or (code-review-repo--git repo-dir
+                                          "rev-parse" "--git-common-dir")
+                    ".git")))
+    (expand-file-name (format "code-review-worktrees/%s" num)
+                      (if (file-name-absolute-p gitdir)
+                          gitdir
+                        (expand-file-name gitdir repo-dir)))))
 
-(defun code-review-repo--ensure-worktree (repo-dir owner repo num head-oid)
+(defun code-review-repo--ensure-worktree (repo-dir num head-oid)
   "Return a worktree of REPO-DIR checked out at HEAD-OID, or nil.
-The worktree is created under the cache dir for OWNER/REPO PR NUM
-and is hard-updated when the PR head moved."
-  (let ((wt (code-review-repo--worktree-dir owner repo num)))
+The worktree is hard-updated when the PR head moved."
+  (let ((wt (code-review-repo--worktree-dir repo-dir num)))
     (cond
      ;; existing worktree: update to the current PR head
      ((and (file-exists-p (expand-file-name ".git" wt)) head-oid)
@@ -299,7 +299,7 @@ buffer-local).  Return the worktree directory, or nil on failure."
                           dir fetch-remote forge num base-ref))
                    (wt (and head
                             (code-review-repo--ensure-worktree
-                             dir owner repo num head))))
+                             dir num head))))
               (when wt
                 (setq code-review-repo-dir dir
                       code-review-repo-worktree wt)
