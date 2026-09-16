@@ -810,7 +810,10 @@ Return just the path without the leading b/."
             (let* ((sha (a-get-in c (list 'commit 'abbreviatedOid)))
                    (msg (a-get-in c (list 'commit 'message)))
                    (obj (code-review-commit-section :sha sha :msg msg)))
-              (magit-insert-section commit-section (code-review-commit-section obj)
+              (code-review-section--hide-if-hidden
+               (magit-insert-section (code-review-commit-section obj)
+                                     (and (code-review-github-repo-p pr)
+                                          .commit.statusCheckRollup.contexts.nodes)
                                     (if (and (code-review-github-repo-p pr) .commit.statusCheckRollup.contexts.nodes)
                                         (progn
                                           (insert (format "%s%s %s "
@@ -821,7 +824,6 @@ Return just the path without the leading b/."
                                                             ":x:")))
                                           (insert
                                            (propertize "Expand for Details:" 'font-lock-face 'code-review-checker-detail-face))
-                                          (oset commit-section hidden t)
                                           (magit-insert-heading)
                                           (when (> (length (split-string (oref obj msg) "\n")) 1)
                                             (insert (oref obj msg))
@@ -870,7 +872,7 @@ Return just the path without the leading b/."
                                       (progn
                                         (insert (propertize (format "%-6s " (oref obj sha)) 'font-lock-face 'magit-hash))
                                         (insert (oref obj msg))
-                                        (insert ?\n)))))))
+                                        (insert ?\n))))))))
         (insert ?\n)))))
 
 ;; description
@@ -1562,6 +1564,17 @@ Optionally DELETE? flag must be set if you want to remove it."
             (overlay-put ov 'face face)
             (overlay-put ov 'priority 100)))))))
 
+(defun code-review-section--hide-if-hidden (section)
+  "Fold the body of SECTION when it was created hidden.
+Magit computes the initial visibility of a section when it is
+created, but the actual folding only happens while a buffer is
+refreshed via `magit-refresh-buffer'.  Code Review renders its
+buffers directly, so sections that should start collapsed
+(outdated comments, commit CI details) must be folded here
+explicitly."
+  (when (oref section hidden)
+    (magit-section-hide section)))
+
 (defun code-review-section-insert-outdated-comment (comments amount-loc)
   "Insert outdated COMMENTS in the buffer of PULLREQ-ID considering AMOUNT-LOC.
 Safeguards against non-outdated/local comments accidentally passed in."
@@ -1602,7 +1615,8 @@ Safeguards against non-outdated/local comments accidentally passed in."
                    (oref first-hunk-commit path)
                    amount-new-loc))
 
-            (magit-insert-section outdated-section (code-review-outdated-hunk-section metadata1)
+            (code-review-section--hide-if-hidden
+             (magit-insert-section (code-review-outdated-hunk-section metadata1 t)
                                   (let ((heading (format "Reviewed - [OUTDATED]")))
                                     (add-face-text-property 0 (length heading)
                                                             'code-review-outdated-comment-heading
@@ -1613,8 +1627,6 @@ Safeguards against non-outdated/local comments accidentally passed in."
                                         (insert safe-hunk))
                                       (magit-diff-wash-hunk)
                                       (insert ?\n)
-
-                                      (oset outdated-section hidden t)
 
                                       (dolist (c (alist-get safe-hunk hunk-groups nil nil 'equal))
                                         (let* ((written-loc (code-review--html-written-loc
@@ -1674,7 +1686,7 @@ Safeguards against non-outdated/local comments accidentally passed in."
                                                 (let ((ov (make-overlay start (point))))
                                                   (overlay-put ov 'face face)
                                                   (overlay-put ov 'priority 100))))
-                                            (insert ?\n)))))))))))))
+                                            (insert ?\n))))))))))))))
 
 (defun code-review-section-insert-outdated-comment-missing (path-name missing-paths grouped-comments)
   "Write missing outdated comments in the end of the current path.
