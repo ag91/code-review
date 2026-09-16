@@ -51,7 +51,7 @@ clone if needed, fetch PR refs, and check out a worktree.
   file/hunk), not as the review surface: its output has no line
   numbers, so comments can't anchor to it.
 
-* Phase 4 — Robust GitHub data (pr-review lessons)               :STATUS:todo
+* Phase 4 — Robust GitHub data (pr-review lessons)               :STATUS:done
 
 How /tmp/emacs-pr-review handles comments (it *does* use magit, but
 only as a renderer):
@@ -77,6 +77,39 @@ Plan for code-review:
   line) directly.
 - New comments become pending review threads, submitted in one
   mutation.  Add resolve/unresolve support.
+
+DONE (implementation notes):
+
+- Both GraphQL queries now fetch =reviewThreads(first: 100)= with
+  =id=, =isResolved=, =isOutdated=, =path=, =diffSide=, =line=,
+  =startDiffSide=, =startLine= and their comments'
+  =databaseId=/=fullDatabaseId=.
+  - SCHEMA GOTCHA: =side= / =startSide= do NOT exist on
+    =PullRequestReviewComment= (the query errors out and you get
+    zero comments).  The side lives on the *thread*
+    (=diffSide=/=startDiffSide=).  =code-review-github-fix-infos=
+    now merges =threadId=, =isResolved=, =side=, =startSide= and
+    =line=/=startLine= fallbacks from each thread into the review
+    comments, keyed by =databaseId=.
+- =make-group= keying precedence: outdated -> position key (render
+  from own diffHunk); has line -> exact =path:side:line= key (no
+  buffer arithmetic); else legacy position key.  Comment sections
+  carry =thread-id= / =resolved?= (heading shows a RESOLVED tag).
+- =wash-hunk= tries both RIGHT and LEFT line keys for context
+  lines.
+- =R= toggles resolve/unresolve via GraphQL
+  =resolveReviewThread= / =unresolveReviewThread=
+  (=code-review-threads-toggle-resolved=; fallback user-error for
+  other providers).
+- Validated: unit tests (merge, keying for modern/outdated/legacy/
+  local comments, fallback) + live against real PRs
+  (wandersoncferreira/code-review#96, ag91/code-review#3 with a real
+  outdated thread: thread metadata merged, comment rendered from
+  its diffHunk).
+- NOT done here: converting local (pending) comments to a single
+  =addPullRequestReview= mutation; that needs the write path
+  redesigned (see pr-review).  Current write path already uses the
+  line/side API.
 
 * Phase 5 — Duplicate and dead code detection                    :STATUS:todo
 

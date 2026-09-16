@@ -121,5 +121,16 @@ COMMENT-ID is the provider's identifier (e.g., GitHub review comment id).")
   (ignore obj comment-id callback)
   (user-error "Deleting code comments is not implemented for this provider"))
 
+;; Resolving/unresolving review threads
+(cl-defgeneric code-review-toggle-resolved (obj thread-id resolve? callback)
+  "Toggle RESOLVE? on review thread THREAD-ID in OBJ.
+RESOLVE? non-nil means resolve the thread, nil means unresolve it.
+Call CALLBACK when the provider API call completes.")
+
+(cl-defmethod code-review-toggle-resolved ((obj t) thread-id resolve? callback)
+  "Fallback when provider thread resolution is not implemented."
+  (ignore obj thread-id resolve? callback)
+  (user-error "Toggling resolved threads is not implemented for this provider"))
+
 (provide 'code-review-interfaces)
 ;;; code-review-interfaces.el ends here

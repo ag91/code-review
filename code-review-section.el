@@ -126,6 +126,8 @@ Example:
 (declare-function code-review-promote-comment-to-new-issue "code-review")
 (declare-function code-review-utils--visit-binary-file-at-remote "code-review-utils")
 (declare-function code-review-utils--visit-binary-file-at-point "code-review-utils")
+(declare-function code-review-toggle-resolved "code-review-interfaces"
+  (obj thread-id resolve? callback))
 
 (defvar code-review-section-full-refresh? nil
   "Indicate if we want to perform a complete restart.
@@ -1057,6 +1059,13 @@ Return just the path without the leading b/."
    (start-line   :initarg :start-line
                  :initform nil
                  :documentation "GitHub start_line for multi-line comments")
+   (thread-id   :initarg :thread-id
+                :initform nil
+                :documentation "Forge review thread id (e.g. GraphQL node id) when known.")
+   (resolved?   :initarg :resolved?
+                :initform nil
+                :type boolean
+                :documentation "Whether the review thread is resolved.")
    (reactions  :initarg :reactions
                :type (or null
                          (satisfies
@@ -1474,7 +1483,9 @@ Optionally DELETE? flag must be set if you want to remove it."
                      " - "
                      (code-review--propertize-keyword (oref obj state))
                      " - "
-                     (propertize (code-review-utils--format-timestamp (oref obj createdAt)) 'face 'code-review-timestamp-face))))
+                     (propertize (code-review-utils--format-timestamp (oref obj createdAt)) 'face 'code-review-timestamp-face)
+                     (when (and (slot-boundp obj 'resolved?) (oref obj resolved?))
+                       (concat " - " (code-review--propertize-keyword "RESOLVED"))))))
       (add-face-text-property 0 (length heading) 'code-review-recent-comment-heading t heading)
       (magit-insert-heading heading)
       (save-excursion
@@ -1820,20 +1831,19 @@ Please Report this Bug" path-name))
                      (grouped-pos (code-review-utils--comment-get
                                    code-review-section-grouped-comments
                                    path-pos))
-                     ;; Side/line-keyed comments (locals / GraphQL line API)
-                     (side (cond ((string= ch "+") "RIGHT")
-                                 ((string= ch "-") "LEFT")
-                                 ((string= ch " ") "RIGHT")
-                                 (t nil)))
-                     (side-line (cond ((string= side "LEFT") old-line-current)
-                                      ((string= side "RIGHT") new-line-current)
-                                      (t nil)))
-                     (path-pos-line (and side side-line (code-review-utils--comment-key-from-line path-name side side-line)))
-                     (written-line? (and path-pos-line (-contains-p code-review-section-hold-written-comment-ids path-pos-line)))
-                     (grouped-line (and path-pos-line
-                                        (code-review-utils--comment-get
-                                         code-review-section-grouped-comments
-                                         path-pos-line)))
+                     ;; Side/line-keyed comments (locals / GraphQL line
+                     ;; API).  Context lines can anchor comments on
+                     ;; either side, so try both keys.
+                     (line-keys
+                      (cond
+                       ((string= ch " ")
+                        (list (code-review-utils--comment-key-from-line path-name "RIGHT" new-line-current)
+                              (code-review-utils--comment-key-from-line path-name "LEFT" old-line-current)))
+                       ((string= ch "+")
+                        (list (code-review-utils--comment-key-from-line path-name "RIGHT" new-line-current)))
+                       ((string= ch "-")
+                        (list (code-review-utils--comment-key-from-line path-name "LEFT" old-line-current)))
+                       (t nil)))
                      (did-insert nil))
                 ;; Insert position-keyed comments
                 (when (and (not written-pos?) grouped-pos code-review-section--display-all-comments)
@@ -1841,12 +1851,16 @@ Please Report this Bug" path-name))
                   (let ((comment-written-pos (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0)))
                     (code-review-section-insert-comment grouped-pos comment-written-pos))
                   (setq did-insert t))
-                ;; Insert side/line-keyed local comments
-                (when (and grouped-line (not written-line?) code-review-section--display-all-comments)
-                  (push path-pos-line code-review-section-hold-written-comment-ids)
-                  (let ((comment-written-pos (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0)))
-                    (code-review-section-insert-comment grouped-line comment-written-pos))
-                  (setq did-insert t))
+                ;; Insert side/line-keyed comments
+                (dolist (pos-line line-keys)
+                  (let ((grouped-line (code-review-utils--comment-get
+                                       code-review-section-grouped-comments pos-line))
+                        (written-line? (-contains-p code-review-section-hold-written-comment-ids pos-line)))
+                    (when (and grouped-line (not written-line?) code-review-section--display-all-comments)
+                      (push pos-line code-review-section-hold-written-comment-ids)
+                      (let ((comment-written-pos (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal) 0)))
+                        (code-review-section-insert-comment grouped-line comment-written-pos))
+                      (setq did-insert t))))
                 ;; Advance line only when nothing was inserted (insertion moves point)
                 (unless did-insert
                   (forward-line))
@@ -1998,7 +2012,8 @@ If you want to display a minibuffer MSG in the end."
 
     ;; 1.1 save raw info data e.g. data from GraphQL API
     (progress-reporter-update progress 4)
-    (code-review-db--pullreq-raw-infos-update raw-infos)
+    (code-review-db--pullreq-raw-infos-update
+     (code-review-github-fix-infos raw-infos))
 
     ;; 1.2 trigger renders
     (progress-reporter-update progress 5)
@@ -2202,6 +2217,49 @@ delete remotely via provider API and then drop from local DB."
             (code-review-delete-code-comment pr comment-id callback)))
          (t
           (message "No deletable comment at point.")))))))
+
+;;; Resolving/unresolving review threads
+
+(defun code-review--thread-info-at-point ()
+  "Return (THREAD-ID . RESOLVED?) for the review thread at point, or nil."
+  (let ((info (lambda (v)
+                (ignore-errors
+                  (and (slot-exists-p v 'thread-id)
+                       (slot-boundp v 'thread-id)
+                       (oref v thread-id)
+                       (cons (oref v thread-id)
+                             (and (slot-boundp v 'resolved?)
+                                  (oref v resolved?))))))))
+    (or (let ((sec (magit-current-section)))
+          (and sec
+               (slot-boundp sec 'value)
+               (funcall info (oref sec 'value))))
+        (let* ((sec (magit-current-section))
+               (parent (and sec
+                            (slot-boundp sec 'parent)
+                            (oref sec 'parent))))
+          (when parent
+            (cl-some (lambda (s)
+                       (and (slot-boundp s 'value)
+                            (funcall info (oref s 'value))))
+                     (oref parent children)))))))
+
+;;;###autoload
+(defun code-review-threads-toggle-resolved ()
+  "Toggle the resolved state of the review thread at point."
+  (interactive)
+  (if-let ((info (code-review--thread-info-at-point)))
+      (let ((thread-id (car info))
+            (resolved? (cdr info))
+            (pr (code-review-db-get-pullreq)))
+        (message "code-review: %s thread..."
+                 (if resolved? "Unresolving" "Resolving"))
+        (code-review-toggle-resolved
+         pr thread-id (not resolved?)
+         (lambda (&rest _)
+           (let ((code-review-section-full-refresh? t))
+             (code-review--build-buffer)))))
+    (user-error "No review thread at point")))
 
 ;;; Patch line helpers (skip review UI lines inside hunks)
 

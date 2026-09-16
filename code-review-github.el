@@ -298,6 +298,24 @@ https://github.com/wandersoncferreira/code-review#configuration"))
           }
         }
       }
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          diffSide
+          line
+          startDiffSide
+          startLine
+          comments(first: 100) {
+            nodes {
+              databaseId
+              fullDatabaseId
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -479,6 +497,24 @@ https://github.com/wandersoncferreira/code-review#configuration"))
                   content
                 }
               }
+            }
+          }
+        }
+      }
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          diffSide
+          line
+          startDiffSide
+          startLine
+          comments(first: 100) {
+            nodes {
+              databaseId
+              fullDatabaseId
             }
           }
         }
@@ -985,20 +1021,71 @@ For GitHub, prefer line/side and optional start_line/start_side; do not send pos
                :callback callback
                :errorback #'code-review-github-errback))
 
+(cl-defmethod code-review-toggle-resolved ((_github code-review-github-repo) thread-id resolve? callback)
+  "Resolve (RESOLVE? non-nil) or unresolve review THREAD-ID on GITHUB.
+Call CALLBACK when the API call completes."
+  (let ((query (if resolve?
+                   "mutation($input: ResolveReviewThreadInput!) {
+  resolveReviewThread(input: $input) { thread { isResolved } }
+}"
+                 "mutation($input: UnresolveReviewThreadInput!) {
+  unresolveReviewThread(input: $input) { thread { isResolved } }
+}")))
+    (ghub-graphql query
+                  `((input . ((threadId . ,thread-id))))
+                  :auth code-review-auth-login-marker
+                  :host code-review-github-graphql-host
+                  :callback callback
+                  :errorback #'code-review-github-errback)))
+
 (defun code-review-github-fix-infos (github-infos)
   "Make GitHub GITHUB-INFOS backward compatible.
-
->> (code-review-github-fix-infos '((comments . ((nodes . (((databaseId . 1)) ((databaseId . 1) (fullDatabaseId . "2"))))))))
-=> ((comments . ((nodes . (((databaseId . 1)) ((databaseId . 2) (fullDatabaseId . "2")))))))"
-  (with-temp-file "/tmp/my.txt"
-    (insert (format "%s" github-infos)))
-  (let ((all-comments (--map
-                       (if-let ((fDbId (a-get it 'fullDatabaseId)))
-                           (a-assoc it 'databaseId (string-to-number fDbId))
-                         it)
-                       (a-get-in github-infos '(comments nodes)))))
-
-    (a-assoc-in github-infos '(comments nodes) all-comments)))
+Fix top-level comment `databaseId' from `fullDatabaseId' when
+needed, and merge review thread metadata (`threadId',
+`isResolved', plus the `side'/`startSide' line anchoring from
+`diffSide'/`startDiffSide') into the review comments of
+`reviews.nodes', keyed by comment databaseId."
+  (let* ((all-comments (--map
+                        (if-let ((fDbId (a-get it 'fullDatabaseId)))
+                            (a-assoc it 'databaseId (string-to-number fDbId))
+                          it)
+                        (a-get-in github-infos '(comments nodes))))
+         (infos (a-assoc-in github-infos '(comments nodes) all-comments)))
+    (let* ((threads (a-get-in infos '(reviewThreads nodes)))
+           (thread-by-comment (make-hash-table :test 'eql))
+           (reviews (a-get-in infos '(reviews nodes))))
+      (dolist (th threads)
+        (dolist (c (a-get-in th '(comments nodes)))
+          (let ((id (or (a-get c 'databaseId)
+                        (ignore-errors
+                          (string-to-number (a-get c 'fullDatabaseId))))))
+            (when id
+              (puthash id th thread-by-comment)))))
+      (if (= 0 (hash-table-count thread-by-comment))
+          infos
+        (a-assoc-in
+         infos '(reviews nodes)
+         (mapcar (lambda (rev)
+                   (a-assoc-in
+                    rev '(comments nodes)
+                    (mapcar (lambda (c)
+                              (let ((th (gethash (a-get c 'databaseId)
+                                                 thread-by-comment)))
+                                (if (not th)
+                                    c
+                                  ;; The thread carries the exact line
+                                  ;; anchoring (diffSide/startDiffSide) which
+                                  ;; review comments lack on their own.
+                                  (let ((c (a-assoc (a-assoc c 'threadId (a-get th 'id))
+                                                   'isResolved (a-get th 'isResolved))))
+                                    (a-assoc c
+                                             'side (a-get th 'diffSide)
+                                             'startSide (a-get th 'startDiffSide)
+                                             'line (or (a-get c 'line) (a-get th 'line))
+                                             'startLine (or (a-get c 'startLine)
+                                                            (a-get th 'startLine)))))))
+                            (a-get-in rev '(comments nodes)))))
+                 reviews))))))
 
 
 (defun code-review-jump-to-gh ()

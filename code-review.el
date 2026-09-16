@@ -164,6 +164,7 @@ OUTDATED."
     ("r" "Request Changes" code-review-submit-request-changes)
     ("c" "Comment" code-review-submit-comments)
     ("C" "Close" code-review-close-pr)
+    ("R" "Resolve/unresolve thread at point" code-review-threads-toggle-resolved)
     ("C-c C-s" "Save Unfinished Review" code-review-save-unfinished-review)
     ("C-c C-r" "Open Unfinished Review" code-review-open-unfinished-review)]
    ["Merge"
@@ -206,6 +207,8 @@ OUTDATED."
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)
     (define-key map (kbd "M-?") 'code-review-xref-find-references)
     (define-key map (kbd "w") 'code-review-repo-open-worktree)
+    ;; Review threads
+    (define-key map (kbd "R") 'code-review-threads-toggle-resolved)
     (set-keymap-parent map magit-section-mode-map)
     map))
 

@@ -162,9 +162,20 @@ using COMMENTS."
               (let-alist comment
                 (let* ((handled-pos (or .position .originalPosition))
                        (has-line (or .line .startLine))
-                       (path-pos (if handled-pos
-                                     (code-review-utils--comment-key .path handled-pos)
-                                   (code-review-utils--comment-key-from-line .path .side .line)))
+                       (path-pos (cond
+                                  ;; outdated comments render from their own
+                                  ;; diff hunk; keep them position-keyed
+                                  (.outdated
+                                   (code-review-utils--comment-key .path handled-pos))
+                                  ;; modern line/side anchored comments:
+                                  ;; exact key, no buffer line arithmetic
+                                  (has-line
+                                   (code-review-utils--comment-key-from-line .path .side .line))
+                                  ;; legacy position API: arithmetic key
+                                  (handled-pos
+                                   (code-review-utils--comment-key .path handled-pos))
+                                  (t
+                                   (code-review-utils--comment-key-from-line .path .side .line))))
                        (reactions (-map
                                    (lambda (r)
                                      (code-review-reaction-section
@@ -196,6 +207,8 @@ using COMMENTS."
                                :path .path
                                :diffHunk .diffHunk
                                :id .databaseId
+                               :thread-id .threadId
+                               :resolved? .isResolved
                                :createdAt .createdAt
                                :updatedAt .updatedAt))
                              (.local?
@@ -226,6 +239,8 @@ using COMMENTS."
                                :path .path
                                :diffHunk .diffHunk
                                :id .databaseId
+                               :thread-id .threadId
+                               :resolved? .isResolved
                                :createdAt .createdAt
                                :updatedAt .updatedAt)))))
 
