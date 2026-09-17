@@ -288,6 +288,112 @@ ref.
   subset of the PR commits (complement to the existing commit-focus
   buffer).
 
+* Phase 9a — Reading ergonomics for AI-generated PRs               :STATUS:done
+
+Reviewing a PR authored (and reviewed) by bots means thousands of
+CI-check lines and bot-to-bot chatter bury the code.  The buffer
+now starts folded to the useful parts.
+
+DONE (implementation notes):
+
+- =code-review-fold-header-sections= (default =t=): Commits, each
+  commit's CI checks (grouped behind a single =CI Checks (N)=
+  heading), Description, Your Review Feedback, and Conversation
+  start folded.  Implemented by passing HIDE to the relevant
+  =magit-insert-section= calls and wrapping each with
+  =code-review-section--hide-if-hidden=, which creates the real
+  invisible overlay (this package renders directly, so
+  =magit-refresh-buffer= never does it for us).
+- =C-c C-n= / =C-c C-p= (=code-review-next-hunk= /
+  =code-review-previous-hunk=): jump between diff hunks, skipping
+  comment sections and files collapsed as noise.  The
+  promote-to-issue binding that used to sit on =C-c C-n= in the
+  comment map moved to =C-c C-i=.
+- =code-review-collapse-bot-comments= (default =t=) plus
+  =code-review-bot-author-regexp= (matches =[bot]= suffix,
+  github-actions, devin, cursor, copilot, gemini, codeium,
+  coderabbit, codspeed, greptile, codecov, claassistant,
+  renovate, dependabot, imgbot, semantic-release,
+  all-contributors; case-insensitive): bot comments render
+  collapsed to their
+  one-line heading.  A bot thread that contains a human reply
+  stays expanded.  Run from =code-review--trigger-hooks= after the
+  wash, so it needs no refresh machinery.
+- Sticky file name: =code-review--update-header-line= (on
+  =post-command-hook= and =window-scroll-functions=, buffer-local)
+  shows the current hunk's file in the header line only while the
+  real file heading is scrolled off screen; otherwise nil.
+- Diff colors restored, twice over:
+  - =magit-wash-sequence= loops while the washer returns NON-NIL.
+    The file override's last form became the phase-9a
+    =hide-if-hidden= wrapper (a =when= that evaluates to nil for
+    visible sections), so the file wash silently STOPPED after
+    the first file: the PR's other 11 files stayed in the buffer
+    as raw, uncolored diff text.  The override now returns the
+    section object.  Rule: in any function called from
+    =magit-wash-sequence=, the return value drives the loop.
+  - Hunks are also painted eagerly right after each wash via
+    =code-review--magit-diff-paint-hunk= (see gotchas below);
+    current magit only paints lazily through machinery that
+    never runs in these buffers.
+
+Gotchas discovered (they will bite again):
+
+- HIDE in =magit-insert-section= only applies when a section is
+  created fresh: on re-render the previous visibility is
+  inherited from the matching section of the old tree
+  (=magit-insert-section--oldroot=).  That is desirable (TAB
+  state survives a sync), but it means default folds show up on
+  new buffers only, and old pre-feature buffers keep their
+  unfolded state until manually folded.
+- The inserted section object keeps its own slots unbound; the
+  prebuilt object passed to =magit-insert-section= lands in the
+  =value= slot (comment authors live at
+  =(oref (oref section value) author)=).  Reading a slot a class
+  does not have signals =invalid-slot-name= instead of returning
+  nil, so guard with =slot-exists-p= + =slot-boundp=
+  (=code-review--section-author=).
+- Recursive =(let ((walk (lambda ...))))= self-calls are void
+  under lexical binding; use =magit-map-sections= (it exists as a
+  function in current magit-section) or a named defun.
+- =(defclass name (parents) "doc")= puts the docstring in the
+  slot-list position; eieio iterates it char by char and signals
+  =(wrong-type-argument symbol 71 slot)= (71 is ?G of "Groups").
+  The slot list comes first: =(defclass name (parents) ()
+  "doc")=.
+- Diff colors (magit 4.x): hunk painting moved to
+  =magit-section-paint=, driven lazily by the section-highlight
+  machinery that never runs here (=magit-refresh-buffer= absent,
+  =magit-section-highlight-current= off, and the =painted= slot
+  unbound).  Paint eagerly instead, right after the wash:
+  =magit-insert-section= RETURNS the section (with its =end=
+  marker already set, which the painter needs), so wrap the call.
+  The painter expects point at the section start (it only does
+  =forward-line=), so =goto-char= there first.  Also remove the
+  old =:washer= argument from hunk creation: current magit treats
+  a bound washer as a lazy-body inserter and would corrupt the
+  =content= marker on TAB.
+- Comment classes are dual-role: the same EIEIO class
+  instantiates both the prebuilt data objects and the inserted
+  magit sections (section.value = data obj).  Implement
+  =magit-section-ident-value= for them so =magit-section-ident=
+  keys the visibility cache by forge id.  The method MUST handle
+  both roles (delegate to the value object when called on the
+  section, return id/author when called on the data object);
+  a single-role method shadows magit's fallback, returns nil for
+  the section, and every comment again shares one ident — hiding
+  one bot comment then re-hides ALL comments (humans included)
+  on the next render.  With =magit-section-preserve-visibility=
+  =t= (default), the old-tree visibility matching is OFF: the
+  cache is the only cross-render state.
+- In a live daemon, =defcustom= defaults and =defvar= keymaps do
+  not update on reload (the running value wins); patch them with
+  =set=/=define-key= when testing interactively.
+- Stale native =.eln= caches shadow fresh =.elc=s: delete
+  =~/.emacs.d/eln-cache/<emacs>/code-review-*.eln= (they
+  regenerate) and verify behaviorally; a native function prints
+  as =#<subr NAME>= so its body cannot be inspected.
+
 * Phase 9 — Review ergonomics (pr-review polish)                 :STATUS:todo
 
 - =imenu= index over review sections (files, comments, commits)
@@ -296,9 +402,90 @@ ref.
   point.
 - Global section folding by show-levels (like magit's =C-c +/-=),
   in addition to per-section TAB.
-- =code-review-hide-commenter=: collapse comments from noisy
-  authors (bots) by default.
 - Fringe markers linking diff lines to their threads.
+
+* Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:design
+
+Answer to "is it sustainable that we break anytime magit
+upgrades?": no.  What breaks us, and the way out.
+
+Current coupling to magit-diff (all of it internal API):
+
+- =:override= advices on =magit-diff-insert-file-section= and
+  =magit-diff-wash-hunk=, active only around a render.  Their
+  contract (arguments, which lines they consume, what they
+  return) is private and changed across 4.x: the paint helper
+  was renamed/removed, =:washer= became a lazy-body inserter,
+  and the return value of the file override drives the
+  =magit-wash-sequence= loop (the raw-text bug above).
+- =magit-section-paint= (feature-detected today), the
+  visibility cache + =magit-section-ident-value= methods
+  (supported extension points, fine to keep).
+
+What is actually stable: the =magit-insert-section= macro,
+=magit-section= classes, =magit-section-hide/show=, and the
+whole section UX (TAB, navigation, ident/cache).  All of that
+is magit-SECTION, not magit-DIFF.
+
+Design sketch:
+
+- Stop advising magit-diff entirely.  Run OUR OWN wash loop
+  over the inserted raw diff: a =code-review-wash-diff=
+  (parse =diff --git=, extended headers, call our file
+  inserter) and a =code-review-wash-hunk= — both are already
+  90% copies living inside the overrides; move them to owned
+  names with owned contracts.  An upstream refactor then
+  cannot change behavior under us: we read plain diff text,
+  which git has kept stable for decades.
+- Paint with our own ~10-line painter (per line: first char
+  selects =magit-diff-added/removed/context= face).  When
+  =magit-section-paint= is available, call it on top for the
+  extras (whitespace, tab painting); otherwise our base pass
+  already guarantees red/green.
+- Keep using magit-section for sections, keymaps, visibility,
+  =magit-section-ident-value= methods.
+- Optionally upstream: ask magit for a supported hunk/body
+  extension point so comment interleaving does not need a
+  copy.  Until then the copy is the price of stability.
+
+Cost: we stop inheriting upstream wash improvements
+automatically.  Benefit: renders stop being hostage to magit
+release notes.
+
+* Phase 10 — Tree-sitter semantic hunk highlighting               :STATUS:design
+
+Not implemented yet; design sketch agreed so the next session can
+pick it up.  The daemon runs Emacs 30.2 with =treesit= and the
+python grammar available.
+
+Goal: hunks read as code, not as colored diff text.  For a python
+file, see the import, the =def= name, its arguments, the body,
+dataclass fields; in test files, test names and assertions stand
+out.
+
+Design:
+
+- After =magit-diff-wash-diffs=, each hunk section body is plain
+  diff text inserted by our own washer.  Strip the =+/-/space=
+  prefixes per line, reconstruct the new-side text of the hunk,
+  parse it with =treesit-parser-create= + =treesit-query-capture=.
+- Map node ranges back onto diff line ranges and lay
+  =font-lock-face= overlays on the hunk body (our washer inserted
+  the text, so we can property it directly; magit's diff faces
+  stay as the base).
+- Capture groups per language, python first:
+  =font-lock-keyword-face= for imports and =def=;
+  =font-lock-function-name-face= for def/class names;
+  =font-lock-type-face= for dataclass/NamedTuple names and their
+  field lines; =font-lock-variable-name-face= for args; test
+  files (name or path match =test=) get a dedicated
+  =code-review-test-face= on test def names and assertion lines.
+- =code-review-semantic-highlight= defcustom (default =t= when
+  =treesit-available-p= and the file's grammar is installed; nil
+  otherwise).  No grammar means current faces, no error.
+- Performance: parse per hunk during render, cache results keyed
+  by a hash of the hunk text in a buffer-local table so re-renders
+  skip the work; parsing is bounded by hunk size, not PR size.
 
 * Future ideas
 

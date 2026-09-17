@@ -207,6 +207,9 @@ OUTDATED."
     (define-key map [remap magit-diff-visit-worktree-file] 'code-review-visit-worktree-file)
     (define-key map (kbd "C-c RET") 'code-review-submit-single-diff-comment-at-point)
     (define-key map (kbd "C-c C-s") 'code-review-comment-code-suggestion)
+    ;; hunk navigation: get to the code fast, skip comments
+    (define-key map (kbd "C-c C-n") 'code-review-next-hunk)
+    (define-key map (kbd "C-c C-p") 'code-review-previous-hunk)
     (define-key map (kbd "G") 'code-review-reload)
     ;; Repository context: xref and worktree access from the diff
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)

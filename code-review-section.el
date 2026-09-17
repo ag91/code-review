@@ -131,6 +131,34 @@ See `code-review-diff-noise-rules' and
 Recomputed by `code-review--diff--classify-diff' on every render.
 For internal usage only.")
 
+(defcustom code-review-fold-header-sections t
+  "When non-nil, low-signal top sections start folded.
+\"Commits\" (with their CI checks), \"Description\", \"Your
+Review Feedback\" and \"Conversation\" are collapsed to their
+headings, so the diff is the first thing you see when the buffer
+opens.  Press TAB on any of them to expand."
+  :type 'boolean
+  :group 'code-review)
+
+(defcustom code-review-collapse-bot-comments t
+  "When non-nil, comments authored by bots start folded.
+AI-bot review comments (and bot-to-bot chatter in particular)
+are noise for the human reviewer, so each is collapsed to its
+one-line \"@author - date\" heading.  Threads where a human
+replied stay fully expanded, and TAB unfolds any of them."
+  :type 'boolean
+  :group 'code-review)
+
+(defcustom code-review-bot-author-regexp
+  "\\`\\(github-actions\\|devin\\|cursor\\|copilot\\|gemini\\|codeium\\|coderabbit\\|codspeed\\|greptile\\|codecov\\|claassistant\\|renovate\\|dependabot\\|imgbot\\|semantic-release\\|all-contributors\\)\\|\\[bot\\]\\'"
+  "Regexp matching comment authors considered bots.
+Matched case-insensitively against the login, e.g.
+\"devin-ai-integration\" or \"cursor[bot]\".  Extend this list
+when a new automated reviewer shows up in your PRs.
+See `code-review-collapse-bot-comments'."
+  :type 'regexp
+  :group 'code-review)
+
 (defcustom code-review-buffer-name "*Code Review*"
   "Fallback name of the code review main buffer.
 Buffers are normally named after the reviewed PR
@@ -260,20 +288,37 @@ For internal usage only.")
 
 ;; utility functions
 
-;; In Magit 4.x the internal hunk "paint" helper was renamed and the
-;; public `magit-diff-paint-hunk' was removed.  Older Magit releases
-;; still provide `magit-diff-paint-hunk'.  Use whichever is available
-;; so that our hunk sections can be (re)washed without errors across
-;; Magit versions.
-(defun code-review--magit-diff-paint-hunk (&rest _ignore)
-  "Compat wrapper around Magit's hunk painting helper.
-If the legacy `magit-diff-paint-hunk' exists, call it; otherwise
-fall back to `magit-diff--paint-hunk' when present.  When neither
-is available, do nothing."
-  (cond
-   ((fboundp 'magit-diff-paint-hunk) (magit-diff-paint-hunk))
-   ((fboundp 'magit-diff--paint-hunk) (magit-diff--paint-hunk))
-   (t nil)))
+;; Magit versions disagree on how hunk bodies get their diff colors:
+;; older ones paint the hunk at point (`magit-diff-paint-hunk', later
+;; `magit-diff--paint-hunk'); current ones paint a section lazily via
+;; `magit-section-paint', which never triggers in this package's
+;; buffers.  Use whichever API is available.
+(defun code-review--magit-diff-paint-hunk (&optional section)
+  "Compat wrapper around Magit's hunk painting helpers.
+Current Magit paints hunks lazily via `magit-section-paint',
+which is driven by the section-highlight machinery.  That
+machinery never runs in code-review buffers (they are rendered
+directly, and `magit-section-highlight-current' is off), so we
+call it eagerly on SECTION (or the section at point) right after
+washing a hunk.  Older Magit releases provide
+`magit-diff-paint-hunk' (later `magit-diff--paint-hunk') for the
+hunk at point instead.  When none is available, do nothing."
+  (let ((section (or section (magit-current-section))))
+    (cond
+     ((and section (fboundp 'magit-section-paint))
+      ;; `magit-section-paint' paints from point to the section end,
+      ;; so move to the heading first; afterwards point is back at
+      ;; the section end, where the wash loop expects it.
+      (save-excursion
+        (goto-char (oref section start))
+        (magit-section-paint section nil)))
+     (t
+      (save-excursion
+        (when section (goto-char (oref section start)))
+        (cond
+         ((fboundp 'magit-diff-paint-hunk) (magit-diff-paint-hunk))
+         ((fboundp 'magit-diff--paint-hunk) (magit-diff--paint-hunk))
+         (t nil)))))))
 
 (defun code-review--html-written-loc (body &optional indent)
   "Compute how many lines the HTML BODY will have in the buffer.
@@ -1014,6 +1059,10 @@ buffer; they remain counted in the \"Files changed\" heading."
    (details :initarg :details)
    (check   :initarg :check)))
 
+(defclass code-review-commit-checks-section (magit-section)
+  ()
+  "Groups the CI check details of one commit behind one heading.")
+
 (defvar code-review-commit-check-detail-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-commit-goto-check-at-remote)
@@ -1026,7 +1075,9 @@ buffer; they remain counted in the \"Files changed\" heading."
   "Insert commits from PULL-REQUEST."
   (let ((pr (code-review-db-get-pullreq)))
     (let-alist (oref pr raw-infos)
-      (magit-insert-section (code-review-commits-header-section)
+      (code-review-section--hide-if-hidden
+       (magit-insert-section (code-review-commits-header-section
+                             nil code-review-fold-header-sections)
         (insert (propertize "Commits:" 'font-lock-face 'magit-section-heading))
         (magit-insert-heading)
         (dolist (c .commits.nodes)
@@ -1052,6 +1103,14 @@ buffer; they remain counted in the \"Files changed\" heading."
                                           (when (> (length (split-string (oref obj msg) "\n")) 1)
                                             (insert (oref obj msg))
                                             (insert "\n"))
+                                          (code-review-section--hide-if-hidden
+                                           (magit-insert-section (code-review-commit-checks-section nil t)
+                                             (insert
+                                              (propertize
+                                               (format "  CI Checks (%s)"
+                                                       (length .commit.statusCheckRollup.contexts.nodes))
+                                               'font-lock-face 'code-review-checker-name-face))
+                                             (magit-insert-heading)
                                           (dolist (check .commit.statusCheckRollup.contexts.nodes)
                                             (let-alist check
                                               (let ((obj (code-review-commit-check-detail-section :check check :details (or .detailsUrl .targetUrl))))
@@ -1092,12 +1151,12 @@ buffer; they remain counted in the \"Files changed\" heading."
                                                                           'mouse-face 'code-review-hover-face
                                                                           'help-echo "Visit the page for details"
                                                                           'keymap 'code-review-commit-check-detail-section-map))))))
-                                              (insert "\n"))))
+                                              (insert "\n"))))))
                                       (progn
                                         (insert (propertize (format "%-6s " (oref obj sha)) 'font-lock-face 'magit-hash))
                                         (insert (oref obj msg))
                                         (insert ?\n))))))))
-        (insert ?\n)))))
+        (insert ?\n))))))
 
 ;; description
 
@@ -1132,7 +1191,9 @@ buffer; they remain counted in the \"Files changed\" heading."
              (obj (code-review-description-section :msg description-cleaned
                                                    :id .databaseId
                                                    :reactions reaction-objs)))
-        (magit-insert-section (code-review-description-section obj)
+        (code-review-section--hide-if-hidden
+         (magit-insert-section (code-review-description-section obj
+                                                                code-review-fold-header-sections)
           (insert (propertize "Description" 'font-lock-face 'magit-section-heading))
           (magit-insert-heading)
           (insert ?\n)
@@ -1148,7 +1209,7 @@ buffer; they remain counted in the \"Files changed\" heading."
                reaction-objs
                "pr-description"
                .databaseId))
-            (insert ?\n)))))))
+            (insert ?\n))))))))
 
 ;; feedback
 
@@ -1167,15 +1228,17 @@ buffer; they remain counted in the \"Files changed\" heading."
   "Insert feedback heading."
   (let* ((feedback (code-review-db--pullreq-feedback))
          (obj (code-review-feedback-section :msg feedback)))
-    (magit-insert-section (code-review-feedback-section obj)
-      (insert (propertize "Your Review Feedback" 'font-lock-face 'magit-section-heading))
-      (magit-insert-heading)
+    (code-review-section--hide-if-hidden
+     (magit-insert-section (code-review-feedback-section obj
+                                                          code-review-fold-header-sections)
+       (insert (propertize "Your Review Feedback" 'font-lock-face 'magit-section-heading))
+       (magit-insert-heading)
       (magit-insert-section (code-review-feedback-section obj)
         (if feedback
             (insert feedback)
           (insert (propertize "Leave a comment here." 'font-lock-face 'magit-dimmed))))
       (insert ?\n)
-      (insert ?\n))))
+      (insert ?\n)))))
 
 ;;; general comments - top level comments
 
@@ -1196,7 +1259,7 @@ buffer; they remain counted in the \"Files changed\" heading."
 (defvar code-review-comment-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-r") 'code-review-conversation-reaction-at-point)
-    (define-key map (kbd "C-c C-n") 'code-review-promote-comment-at-point-to-new-issue)
+    (define-key map (kbd "C-c C-i") 'code-review-promote-comment-at-point-to-new-issue)
     map)
   "Keymaps for comment section.")
 
@@ -1297,11 +1360,13 @@ buffer; they remain counted in the \"Files changed\" heading."
 (defun code-review-section-insert-top-level-comments ()
   "Insert general comments for the PULL-REQUEST in the buffer."
   (when-let (pr (code-review-db-get-pullreq))
-    (magit-insert-section (code-review-comment-header-section)
-      (insert (propertize "Conversation" 'font-lock-face 'magit-section-heading))
-      (magit-insert-heading)
-      (when code-review-section--display-top-level-comments
-        (code-review--insert-conversation-section pr)))))
+    (code-review-section--hide-if-hidden
+     (magit-insert-section (code-review-comment-header-section
+                           nil code-review-fold-header-sections)
+       (insert (propertize "Conversation" 'font-lock-face 'magit-section-heading))
+       (magit-insert-heading)
+       (when code-review-section--display-top-level-comments
+         (code-review--insert-conversation-section pr))))))
 
 ;; files report
 
@@ -1359,6 +1424,38 @@ buffer; they remain counted in the \"Files changed\" heading."
                :type boolean)
    (createdAt  :initarg :createdAt)
    (updatedAt  :initarg :updatedAt)))
+
+;; Comment classes are dual purpose: the same class instantiates the
+;; prebuilt data objects AND the inserted magit sections (the section
+;; wraps the data object in its `value' slot).  `magit-section-ident'
+;; therefore calls this generic twice with the same class: first on
+;; the section, then (via magit's fallback) on the data object.
+;; Without these methods both calls return nil, every comment
+;; section gets the SAME ident, and magit's visibility cache plus
+;; old-tree matching treat all comments as one section: hiding one
+;; bot comment then re-hides every comment on the next render, human
+;; ones included.  The dispatch below covers both roles.
+(cl-defmethod magit-section-ident-value ((obj code-review-base-comment-section))
+  "Identify a comment by its forge id, falling back to author/msg.
+When OBJ is the inserted section (its `value' wraps the data
+object), delegate to that data object."
+  (if (and (slot-boundp obj 'value)
+           (eieio-object-p (oref obj value)))
+      (magit-section-ident-value (oref obj value))
+    (or (and (slot-boundp obj 'id) (oref obj id))
+        (and (slot-boundp obj 'author) (oref obj author))
+        (and (slot-boundp obj 'msg) (oref obj msg)))))
+
+(cl-defmethod magit-section-ident-value ((obj code-review-comment-section))
+  "Identify a conversation comment by id, falling back to author.
+When OBJ is the inserted section (its `value' wraps the data
+object), delegate to that data object."
+  (if (and (slot-boundp obj 'value)
+           (eieio-object-p (oref obj value)))
+      (magit-section-ident-value (oref obj value))
+    (or (and (slot-boundp obj 'id) (oref obj id))
+        (and (slot-boundp obj 'author) (oref obj author))
+        (and (slot-boundp obj 'msg) (oref obj msg)))))
 
 (defclass code-review-reaction-section ()
   ((id :initarg :id)
@@ -2028,10 +2125,19 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
     (code-review-db--curr-path-update clean-path)
     ;;; --- end -- code-review specific code.
     (insert ?\n)
-    (magit-insert-section section
+    ;; the HIDE flag above only sets the section's `hidden' slot;
+    ;; code-review renders directly (no `magit-refresh-buffer'
+    ;; pass), so collapse the body here as well.  Return the
+    ;; section afterwards: `magit-wash-sequence' keeps washing
+    ;; files only while this function returns non-nil, so the
+    ;; collapse wrapper must not be the last form (a `when'
+    ;; around a visible section evaluates to nil, which stopped
+    ;; the wash after the first file and left the rest of the
+    ;; diff as uncolored raw text).
+    (let ((section (magit-insert-section section
       (file file (or (equal status "deleted")
-                     (derived-mode-p 'magit-status-mode)
-                     collapse))
+                    (derived-mode-p 'magit-status-mode)
+                    collapse))
       (insert (propertize (format "%-10s %s" status
                                   (if (or (not orig) (equal orig file))
                                       file
@@ -2077,6 +2183,8 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
       (when (and missing-paths code-review-section--display-all-comments)
         (code-review-section-insert-outdated-comment-missing
          clean-path missing-paths code-review-section-grouped-comments))))))
+      (code-review-section--hide-if-hidden section)
+      section)))
 
 (defun code-review-section--magit-diff-wash-hunk ()
   "Overwrite the original Magit function on `magit-diff.el' file.
@@ -2119,13 +2227,16 @@ Please Report this Bug" path-name))
              (combined (= (length ranges) 3))
              (value    (cons about ranges)))
         (magit-delete-line)
-        (magit-insert-section
+        ;; Paint the hunk (diff colors) as soon as it is washed:
+        ;; `magit-insert-section' returns the section object, and by
+        ;; then its `end' marker is set, which the painter needs.
+        (code-review--magit-diff-paint-hunk
+         (magit-insert-section
             ( hunk
               `((value . ,value) ;; TODO not sure if this has to diverge as well
                 (path . ,path-name)
                 (head-pos . ,head-pos))
               nil
-              :washer #'code-review--magit-diff-paint-hunk
               :combined combined
               :from-range (if combined (butlast ranges) (car ranges))
               :to-range (car (last ranges))
@@ -2200,7 +2311,7 @@ Please Report this Bug" path-name))
           ;; in code-review-section--magit-diff-insert-file-section.
 
         ;;; --- end -- code-review specific code.
-          )))
+          ))))
     t))
 
 ;;; * build buffer
@@ -2238,7 +2349,10 @@ If you want to display a minibuffer MSG in the end."
                   (file-name-as-directory code-review-repo-worktree)))
           (let* ((window (get-buffer-window buff-name))
                  (ws (window-start window))
-                 (inhibit-read-only t))
+                 (inhibit-read-only t)
+                 ;; before the render replaces it: t when this buffer
+                 ;; has never been rendered before
+                 (fresh-render? (not magit-root-section)))
             (save-excursion
               (setq code-review-section--file-classifications
                     (code-review--diff--classify-diff
@@ -2261,6 +2375,13 @@ If you want to display a minibuffer MSG in the end."
                                         (run-hooks 'magit-diff-wash-diffs-hook)
                                         (magit-wash-sequence
                                          (apply-partially #'magit-diff-wash-diff ()))))))
+            ;; fold bot-authored comment threads (AI chatter).  Only on
+            ;; a fresh render: on re-render magit inherits each
+            ;; section's previous visibility, and re-folding here would
+            ;; clobber sections the user deliberately expanded.
+            (when (and code-review-collapse-bot-comments
+                       fresh-render?)
+              (code-review--collapse-bot-comments magit-root-section))
             (if window
                 (progn
                   (pop-to-buffer buff-name)
@@ -2275,6 +2396,12 @@ If you want to display a minibuffer MSG in the end."
             ;; variables and hooks.
             (setq code-review-review-buffer-pr-id code-review-db--pullreq-id)
             (add-hook 'post-command-hook #'code-review--sync-db-pullreq nil t)
+            ;; sticky file name while reading deep inside a hunk
+            (setq header-line-format nil)
+            (add-hook 'post-command-hook #'code-review--update-header-line
+                      nil t)
+            (add-hook 'window-scroll-functions #'code-review--update-header-line
+                      nil t)
             (when commit-focus?
               (code-review-commit-minor-mode 1))
             (code-review-section-insert-header-title)
@@ -2844,6 +2971,139 @@ Comments can only be placed in the review buffer, not here.
         (diff-mode)
         (goto-char (point-min)))
       (pop-to-buffer "*Code Review Diff (-w)*"))))
+
+;;; Reading ergonomics: hunk navigation, sticky file name, bot noise
+
+(defun code-review--strip-diff-prefix (path)
+  "Remove a leading \"a/\" or \"b/\" from diff PATH."
+  (cond ((string-prefix-p "a/" path) (substring path 2))
+        ((string-prefix-p "b/" path) (substring path 2))
+        (t path)))
+
+(defun code-review--section-visible-p (section)
+  "Non-nil when SECTION and all its ancestors are expanded."
+  (let ((s section)
+        (visible t))
+    (while (and s visible)
+      (when (oref s hidden) (setq visible nil))
+      (setq s (oref s parent)))
+    visible))
+
+(defun code-review--hunk-sections ()
+  "All visible diff hunk sections of the buffer, in order."
+  (let ((hunks nil))
+    (magit-map-sections
+     (lambda (s)
+       (when (and (eq (eieio-object-class s) 'magit-hunk-section)
+                  (code-review--section-visible-p s))
+         (push s hunks))))
+    (nreverse hunks)))
+
+(defun code-review-next-hunk ()
+  "Move to the next diff hunk, skipping comment sections.
+Files that are collapsed (noise) are skipped, so this walks the
+code that actually needs your attention."
+  (interactive)
+  (let ((target nil))
+    (dolist (h (code-review--hunk-sections))
+      (when (and (not target) (> (oref h start) (point)))
+        (setq target h)))
+    (if target
+        (goto-char (oref target start))
+      (user-error "No next hunk"))))
+
+(defun code-review-previous-hunk ()
+  "Move to the previous diff hunk, skipping comment sections.
+When called from inside a hunk, moves to the hunk before it (not
+to the current hunk's heading)."
+  (interactive)
+  (let ((target nil))
+    (dolist (h (reverse (code-review--hunk-sections)))
+      (when (and (not target)
+                 (< (oref h start) (point))
+                 ;; exclude the hunk the point currently is in
+                 (not (and (>= (point) (oref h start))
+                           (<= (point) (oref h end)))))
+        (setq target h)))
+    (if target
+        (goto-char (oref target start))
+      (user-error "No previous hunk"))))
+
+(defun code-review--section-author (section)
+  "Return the author string of SECTION, or nil.
+Comment sections are created by passing a prebuilt object to
+`magit-insert-section', which stores it in the `value' slot, so
+the author may live either in the section itself or in its
+value object.  Sections of classes with no `author' slot (most
+of them) safely return nil instead of signaling
+`invalid-slot-name'."
+  (or (and (slot-exists-p section 'author)
+           (slot-boundp section 'author)
+           (let ((author (oref section author)))
+             (and (stringp author) author)))
+      (let ((val (and (slot-boundp section 'value)
+                      (oref section value))))
+        (and (eieio-object-p val)
+             (slot-exists-p val 'author)
+             (slot-boundp val 'author)
+             (let ((author (oref val author)))
+               (and (stringp author) author))))))
+
+(defun code-review--bot-comment-p (section)
+  "Non-nil when SECTION is a comment authored by a bot."
+  (let ((author (code-review--section-author section)))
+    (and author
+         (string-match-p code-review-bot-author-regexp
+                         (downcase author))
+         t)))
+
+(defun code-review--section-tree-any (section pred)
+  "Non-nil when PRED holds for SECTION or one of its descendants."
+  (or (funcall pred section)
+      (let ((found nil))
+        (dolist (c (oref section children))
+          (unless found
+            (setq found (code-review--section-tree-any c pred))))
+        found)))
+
+(defun code-review--collapse-bot-comments (section)
+  "Fold bot-authored comment sections under SECTION.
+In plain terms: reviews of AI-generated PRs are full of bots
+commenting on each other.  Those comments are collapsed to their
+one-line \"@author - date\" heading, so what's left reads like a
+human conversation.  Threads where a human replied stay expanded,
+and TAB unfolds any of them."
+  (if (and (code-review--bot-comment-p section)
+           (not (code-review--section-tree-any
+                 section
+                 (lambda (s)
+                   (let ((author (code-review--section-author s)))
+                     (and author
+                          (not (code-review--bot-comment-p s))))))))
+      (magit-section-hide section)
+    (dolist (c (oref section children))
+      (code-review--collapse-bot-comments c))))
+
+(defun code-review--update-header-line (&rest _)
+  "Pin the file of the hunk at point in the header line.
+In plain terms: when you scroll deep into a long hunk, the file
+heading has scrolled off screen and you lose track of which file
+you are in; this keeps its name visible at the top of the window.
+Nothing is shown while the real heading is still on screen."
+  (when (derived-mode-p 'code-review-mode)
+    (let ((section (magit-current-section)))
+      (while (and section (not (magit-file-section-p section)))
+        (setq section (oref section parent)))
+      (let ((file (and section (stringp (oref section value))
+                       (substring-no-properties (oref section value)))))
+        (setq header-line-format
+              (if (and file
+                       (> (point) (oref section start))
+                       (not (pos-visible-in-window-p (oref section start))))
+                  (concat " "
+                          (propertize (code-review--strip-diff-prefix file)
+                                      'face 'magit-diff-file-heading))
+                nil))))))
 
 (provide 'code-review-section)
 ;;; code-review-section.el ends here

@@ -153,10 +153,12 @@ Review` buffer.
 | C-c C-c | Comment Buffer                        | Register your local comment |
 | C-c C-k | Comment Buffer                        | Cancel your local comment   |
 | C-c C-r | comment                               | Add Reaction                |
-| C-c C-n | comment                               | Promote to new issue        |
+| C-c C-i | comment                               | Promote to new issue        |
 | C-c C-r | pr description                        | Add Reaction                |
 | RET     | reaction (on emoji symbol)            | Endorse or Remove Reaction  |
 | RET     | Request Reviewer                      | Request reviewer at point   |
+| C-c C-n | anywhere in buffer                    | Jump to next diff hunk (skips comments and collapsed noise files) |
+| C-c C-p | anywhere in buffer                    | Jump to previous diff hunk |
 | N       | anywhere in buffer                    | Toggle focus mode: hide auto-flagged noise files (lockfiles, docs, whitespace-only changes); the "Files changed" heading reports what is hidden |
 | D       | file section                          | Difftastic drill-down: zoom into one file's real changes in a structural view (read-only; C-u for the whole PR; needs the `difftastic` package and the `difft` command) |
 | V       | anywhere in buffer                    | View-only diff of the whole PR ignoring whitespace |
@@ -179,11 +181,12 @@ local comment or feedback at point.
 (define-key code-review-reply-comment-section-map (kbd "k") 'code-review-section-delete-comment)
 ```
 
-Move between comments using `C-c C-n` and `C-c C-p`
+Move between hunks with the built-in `C-c C-n` and `C-c C-p`.  If you
+prefer to move between comments instead, rebind the jump commands:
 
 ``` emacs-lisp
-(define-key code-review-mode-map (kbd "C-c C-n") 'code-review-comment-jump-next)
-(define-key code-review-mode-map (kbd "C-c C-p") 'code-review-comment-jump-previous)
+(define-key code-review-mode-map (kbd "M-n") 'code-review-comment-jump-next)
+(define-key code-review-mode-map (kbd "M-p") 'code-review-comment-jump-previous)
 ```
 
 # Extension to other forges
