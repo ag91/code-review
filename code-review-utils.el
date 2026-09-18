@@ -569,5 +569,16 @@ Expect the same output as `git diff --no-prefix`"
            t)))
      labels)))
 
+(defun code-review-utils--unknown-errback (forge &rest m)
+  "Log and signal an unknown error talking to FORGE.  M is the error payload."
+  (code-review-utils--log (format "code-review-%s-errback" (downcase forge))
+                          (prin1-to-string m))
+  (error "Unknown error talking to %s: %s" forge m))
+
+(defun code-review-utils--not-supported (forge)
+  "Report that the action is not supported on FORGE yet."
+  (message "Not supported in %s yet." forge)
+  nil)
+
 (provide 'code-review-utils)
 ;;; code-review-utils.el ends here

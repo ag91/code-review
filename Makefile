@@ -25,8 +25,9 @@ deps: ## install package dependencies from MELPA
 compile: ## byte-compile all package files
 	$(EMACS) -Q --batch $(LOAD_PATH) \
 	  --eval "(byte-compile-file \"code-review.el\")" \
-	  --eval "(dolist (f (cdr (directory-files \".\" nil \"^code-review-.*\\\\.el\\\\'\"))) \
-	           (byte-compile-file f))"
+	  --eval "(dolist (f (directory-files \".\" nil \"^code-review-.*\\\\.el\\\\'\")) \
+	           (unless (member f (quote (\"code-review-autoloads.el\" \"code-review-pkg.el\"))) \
+	             (byte-compile-file f)))"
 
 test: ## run the ERT test suite in batch mode
 	$(EMACS) -Q --batch $(LOAD_PATH) -l test/run-tests.el

@@ -38,6 +38,11 @@
 (require 'code-review-db)
 (require 'code-review-utils)
 (require 'code-review-repo)
+(require 'code-review-diff)
+(require 'code-review-reactions)
+
+(declare-function code-review--diff--classify-diff "code-review-diff")
+(declare-function code-review--maybe-reorder-diff "code-review-diff")
 
 (require 'code-review-interfaces)
 (require 'code-review-github)
@@ -59,66 +64,7 @@
   :group 'code-review
   :type 'integer)
 
-(defcustom code-review-diff-file-order-rules nil
-  "Rules to order and classify files in the diff.
-Each element is either a regexp string or a property list:
 
-  (:match REGEXP :tag TAG :collapse BOOL :hide BOOL)
-
-- A string is a pure ordering rule: files matching the first
-  regexp come first, then the second, and so on.
-- `:match' is the regexp (required for plist rules), tested
-  against the file path without the leading \"a/\" or \"b/\".
-- `:tag' shows a [TAG] label on the file heading.
-- `:collapse' starts the file section collapsed.  Files carrying
-  review comments are never auto-collapsed.
-- `:hide' removes the file while focus mode is on (see
-  `code-review-toggle-focus-mode').  The \"Files changed\" heading
-  always reports what is hidden, so nothing is lost.
-
-Files matching no user rule come next, and files matching the
-built-in `code-review-diff-noise-rules' sink to the bottom.
-
-Example:
-  (setq code-review-diff-file-order-rules
-        \\='(\"^src/\"                           ;; source first
-          (:match \"^\\\\(test/\\\\|tests/\\\\)\" :tag \"TEST\") ;; tests last
-          \"^\\\\(config/\\\\|\\\\.github/\\\\|\\\\.gitlab-ci\\\\.yml$\\\\)\")) ;; config"
-  :group 'code-review
-  :type
-  '(repeat
-    (choice (string :tag "Regexp (order only)")
-            (set (cons (const :match) (regexp :tag "Regexp"))
-                 (cons (const :tag) (string :tag "Tag"))
-                 (cons (const :collapse) (boolean :tag "Collapse by default"))
-                 (cons (const :hide) (boolean :tag "Hide in focus mode"))))))
-
-(defcustom code-review-diff-noise-rules
-  '((:match "\\`\\(package-lock\\.json\\|yarn\\.lock\\|pnpm-lock\\.yaml\\|Cargo\\.lock\\|flake\\.lock\\|poetry\\.lock\\|Gemfile\\.lock\\|composer\\.lock\\|mix\\.lock\\|Pipfile\\.lock\\|packages\\.lock\\.json\\)\\'"
-     :tag "GEN" :collapse t)
-    (:match "\\.lock\\'"
-     :tag "GEN" :collapse t)
-    (:match "\\`\\(dist\\|build\\|out\\)/\\|\\.min\\.[cm]?js\\'\\|\\.bundle\\.[cm]?js\\'\\|\\.map\\'"
-     :tag "GEN" :collapse t)
-    (:match "\\`\\(CHANGELOG\\|CHANGES\\|NEWS\\|HISTORY\\|AUTHORS\\|CREDITS\\)\\(\\.[^/]*\\)?\\'\\|/\\(doc\\|docs\\|documentation\\)/\\|\\.\\(md\\|markdown\\|rst\\)\\'\\|\\(^\\|/\\)README\\(\\.[^/]*\\)?\\'"
-     :tag "DOC" :collapse t))
-  "Built-in rules classifying low-signal files as noise.
-These come enabled by default so you don't have to maintain
-anything: lockfiles, generated/minified output and changelog/docs
-are tagged (e.g. [GEN], [DOC]) and collapsed, and focus mode
-(see `code-review-toggle-focus-mode') hides them entirely.
-Set this variable to nil to disable all built-in classification.
-The same plist format of `code-review-diff-file-order-rules'
-applies, so you can add your own entries or place
-`code-review-diff-file-order-rules' entries after these to
-override them."
-  :group 'code-review
-  :type
-  '(repeat
-    (set (cons (const :match) (regexp :tag "Regexp"))
-         (cons (const :tag) (string :tag "Tag"))
-         (cons (const :collapse) (boolean :tag "Collapse by default"))
-         (cons (const :hide) (boolean :tag "Hide in focus mode")))))
 
 (defvar-local code-review-focus-mode nil
   "When non-nil, files auto-flagged as noise are hidden.
@@ -241,16 +187,6 @@ named after the DB's current pullreq."
 (defvar code-review-comment-commit-buffer?)
 (defvar code-review-comment-cursor-pos)
 
-(defvar code-review-reaction-types
-  `(("THUMBS_UP" . ":+1:")
-    ("THUMBS_DOWN" . ":-1:")
-    ("LAUGH" . ":laughing:")
-    ("CONFUSED" . ":confused:")
-    ("HEART" . ":heart:")
-    ("HOORAY" . ":tada:")
-    ("ROCKET" . ":rocket:")
-    ("EYES" . ":eyes:"))
-  "All available reactions.")
 
 (declare-function code-review-promote-comment-to-new-issue "code-review")
 (declare-function code-review-utils--visit-binary-file-at-remote "code-review-utils")
@@ -424,116 +360,15 @@ INDENT count of spaces are added at the start of every line."
             (insert (propertize " " 'display `(space :width (,shr-indentation)))))
           (forward-line))))))
 
-;; headers
 
-(defun code-review--diff--extract-b-path (header-line)
-  "Extract the new-file path from a diff HEADER-LINE.
-Handles both the usual \"diff --git a/old b/new\" form and the
-no-prefix \"diff --git old new\" form some forges return."
-  (cond
-   ((string-match "^diff --git a/\\(.+?\\) b/\\(.+\\)$" header-line)
-    (match-string 2 header-line))
-   ((string-match "^diff --git \\(.+?\\) \\(.+\\)$" header-line)
-    (match-string 2 header-line))))
 
-(defun code-review--diff--split-by-files (diff-text)
-  "Split DIFF-TEXT into a list of (path . block) per file."
-  (let ((pos 0)
-        (len (length diff-text))
-        blocks)
-    (while (and (< pos len)
-                (string-match "^diff --git .+$" diff-text pos))
-      (let* ((start (match-beginning 0))
-             ;; advance to next header or end
-             (next (if (string-match "^diff --git .+$" diff-text (match-end 0))
-                       (match-beginning 0)
-                     len))
-             (block (substring diff-text start next))
-             (first-line-end (string-match "\n" block))
-             (header (if first-line-end
-                         (substring block 0 first-line-end)
-                       block))
-             (path (or (code-review--diff--extract-b-path header) "")))
-        (push (cons path block) blocks)
-        (setq pos next)))
-    (nreverse blocks)))
 
-(defun code-review--diff--rule-regexp (rule)
-  "Return the match regexp of RULE, or nil when it has none.
-A string rule matches as itself."
-  (cond ((stringp rule) rule)
-        ((plist-get rule :match))))
 
-(defun code-review--diff--classify-path (path)
-  "Return plist (:tag ... :collapse ... :hide ...) for PATH.
-Merge `code-review-diff-file-order-rules' and
-`code-review-diff-noise-rules': the first rule that matches and
-sets a property wins for that property."
-  (let ((info nil))
-    (dolist (rule (append code-review-diff-file-order-rules
-                          code-review-diff-noise-rules))
-      (when-let* ((regexp (code-review--diff--rule-regexp rule))
-                  ((string-match-p regexp path)))
-        (dolist (key '(:tag :collapse :hide))
-          (unless (plist-member info key)
-            (when-let* ((val (and (not (stringp rule))
-                                  (plist-get rule key))))
-              (setq info (plist-put info key val)))))))
-    info))
 
-(defun code-review--diff--ws-normalize (line)
-  "Collapse whitespace in LINE for whitespace-only comparisons."
-  (string-join (split-string line "\\s-+" t) " "))
 
-(defun code-review--diff--hunk-ws-only-p (minus plus)
-  "Non-nil when MINUS/PLUS line lists differ only in whitespace."
-  (and (= (length minus) (length plus))
-       (let ((a (mapcar #'code-review--diff--ws-normalize minus))
-             (b (mapcar #'code-review--diff--ws-normalize plus)))
-         (while (and a b (string-equal (car a) (car b)))
-           (setq a (cdr a) b (cdr b)))
-         (null a))))
 
-(defun code-review--diff--block-ws-only-p (block)
-  "Non-nil when every hunk of BLOCK only changes whitespace.
-Blocks without hunks (pure renames, binary, mode-only) return nil."
-  (let ((lines (split-string block "\n"))
-        (saw-hunk nil)
-        (in-hunk nil)
-        (minus nil)
-        (plus nil))
-    (catch 'done
-      (dolist (line lines)
-        (cond
-         ((string-prefix-p "@@" line)
-          (when in-hunk
-            (unless (code-review--diff--hunk-ws-only-p (nreverse minus)
-                                                        (nreverse plus))
-              (throw 'done nil)))
-          (setq in-hunk t
-                saw-hunk t
-                minus nil
-                plus nil))
-         (t
-          (when in-hunk
-            (cond
-             ((string-prefix-p "-" line) (push (substring line 1) minus))
-             ((string-prefix-p "+" line) (push (substring line 1) plus)))))))
-      (when in-hunk
-        (unless (code-review--diff--hunk-ws-only-p (nreverse minus)
-                                                   (nreverse plus))
-          (throw 'done nil)))
-      saw-hunk)))
 
-(defun code-review--diff--block-pure-rename-p (block)
-  "Non-nil when BLOCK is a pure rename with no content hunks."
-  (and (string-match-p "^rename from " block)
-       (not (string-match-p "^@@" block))))
 
-(defun code-review--diff--block-has-content-p (block)
-  "Non-nil when BLOCK has at least one added or removed line."
-  (or (string-match-p "\n\\+[^+]" block)
-      (string-match-p "\n-[^-]" block)))
 
 (defun code-review--diff--file-has-comments-p (path)
   "Non-nil when PATH carries review comments."
@@ -548,113 +383,8 @@ Blocks without hunks (pure renames, binary, mode-only) return nil."
               (setq res t))))))
     res))
 
-(defun code-review--diff--classify-diff (diff-text)
-  "Classify every file of DIFF-TEXT.
-Return a hash table path -> plist (:tag :collapse :hide),
-combining:
-- rule-based classification from
-  `code-review-diff-file-order-rules' and
-  `code-review-diff-noise-rules';
-- pure renames ([MOVED]);
-- whitespace-only files ([WS-ONLY]), detected textually and,
-  when a local worktree is available, with `git diff -w'.
 
-Comment anchors refer to the API diff, so classification only
-tags, collapses and hides: it never replaces the diff itself."
-  (let ((table (make-hash-table :test #'equal))
-        (substantive
-         (ignore-errors
-           (let ((pr (code-review-db-get-pullreq)))
-             (and (slot-boundp pr 'number)
-                  (code-review-repo-substantive-files
-                   (format "%s" (oref pr number))))))))
-    (dolist (blk (code-review--diff--split-by-files diff-text))
-      (let* ((path (car blk))
-             (block (cdr blk))
-             (info (code-review--diff--classify-path path))
-             (tag (plist-get info :tag)))
-        (cond
-         ((code-review--diff--block-pure-rename-p block)
-          (setq tag "MOVED"
-                info (plist-put info :collapse t)))
-         ((code-review--diff--block-ws-only-p block)
-          (setq tag "WS-ONLY"
-                info (plist-put info :collapse t)))
-         ((and substantive
-               (code-review--diff--block-has-content-p block)
-               (not (member path substantive)))
-          (setq tag "WS-ONLY"
-                info (plist-put info :collapse t))))
-        (when tag
-          (setq info (plist-put info :tag tag)))
-        ;; focus mode hides auto-flagged noise, unless a rule
-        ;; explicitly opted out with :hide nil
-        (when (and (member tag '("GEN" "DOC" "WS-ONLY"))
-                   (not (plist-member info :hide)))
-          (setq info (plist-put info :hide t)))
-        (puthash path info table)))
-    table))
 
-(defun code-review--diff--file-order-index (path)
-  "Return the ordering index for PATH.
-User rules come first (in their order); files matching no user
-rule come next; files matching only `code-review-diff-noise-rules'
-sink to the very bottom, keeping noise out of the way."
-  (let ((user code-review-diff-file-order-rules)
-        (noise code-review-diff-noise-rules)
-        (idx 0)
-        (found nil))
-    (while (and user (not found))
-      (let ((rule (pop user)))
-        (if (when-let* ((regexp (code-review--diff--rule-regexp rule)))
-              (string-match-p regexp path))
-            (setq found idx)
-          (setq idx (1+ idx)))))
-    (or found
-        ;; not matched by user rules: check noise rules
-        (let ((j 0)
-              (noise-found nil))
-          (while (and noise (not noise-found))
-            (let ((rule (pop noise)))
-              (when (when-let* ((regexp (code-review--diff--rule-regexp rule)))
-                      (string-match-p regexp path))
-                (setq noise-found (+ idx 1 j))))
-            (setq j (1+ j)))
-          (or noise-found idx)))))
-
-(defun code-review--maybe-reorder-diff (diff-text &optional classifications)
-  "Reorder DIFF-TEXT per the file rules, and honor focus mode.
-CLASSIFICATIONS is the hash table produced by
-`code-review--diff--classify-diff'.  When focus mode is on, files
-whose classification has a non-nil :hide are omitted from the
-buffer; they remain counted in the \"Files changed\" heading."
-  (if (and (not code-review-diff-file-order-rules)
-           (not code-review-diff-noise-rules)
-           (not code-review-focus-mode))
-      diff-text
-    (let* ((first-pos (string-match "^diff --git .+$" diff-text 0))
-           (prefix (if (and first-pos (> first-pos 0))
-                       (substring diff-text 0 first-pos)
-                     ""))
-           (blocks (code-review--diff--split-by-files
-                    (if first-pos (substring diff-text first-pos) diff-text)))
-           (sorted (sort blocks
-                         (lambda (a b)
-                           (let* ((ia (code-review--diff--file-order-index (car a)))
-                                  (ib (code-review--diff--file-order-index (car b))))
-                             (if (= ia ib)
-                                 (string-lessp (car a) (car b))
-                               (< ia ib))))))
-           (kept (if (and code-review-focus-mode classifications)
-                     (let (acc)
-                       (dolist (blk sorted)
-                         (unless (plist-get (gethash (car blk)
-                                                     classifications)
-                                            :hide)
-                           (push blk acc)))
-                       (nreverse acc))
-                   sorted)))
-      (concat prefix (mapconcat #'cdr kept "")))))
 
 (defclass code-review-url-section (magit-section)
   ((keymap :initform 'code-review-url-section-map)
@@ -851,13 +581,6 @@ buffer; they remain counted in the \"Files changed\" heading."
    (name :initarg :name)
    (url :initarg :url)))
 
-(defun code-review-assignee-visit-at-remote (&rest _)
-  (interactive)
-  (with-slots (value) (magit-current-section)
-    (let ((url (oref value url)))
-      (if url
-          (browse-url url)
-        (message "Can't visit the user in remote. Missing profile URL.")))))
 
 (defvar code-review-assignee-section-map
   (let ((map (make-sparse-keymap)))
@@ -1005,13 +728,6 @@ buffer; they remain counted in the \"Files changed\" heading."
     map)
   "Keymaps for reviewer section.")
 
-(defun code-review-reviewer-visit-at-remote (&rest _)
-  (interactive)
-  (with-slots (value) (magit-current-section)
-    (let ((url (oref value url)))
-      (if url
-          (browse-url url)
-        (message "Can't visit the user in remote. Missing profile URL.")))))
 
 (defun code-review-section-insert-reviewers ()
   "Insert the reviewers section."
@@ -1465,17 +1181,7 @@ object), delegate to that data object."
         (and (slot-boundp obj 'author) (oref obj author))
         (and (slot-boundp obj 'msg) (oref obj msg)))))
 
-(defclass code-review-reaction-section ()
-  ((id :initarg :id)
-   (content :initarg :content)))
 
-(defclass code-review-reactions-section (magit-section)
-  ((context-name :initarg :context-name)
-   (comment-id :initarg :comment-id)
-   (reactions :initarg :reactions
-              :type (satisfies
-                     (lambda (it)
-                       (-all-p #'code-review-reaction-section-p it))))))
 
 (defclass code-review-code-comment-section (code-review-base-comment-section)
   ((keymap     :initform 'code-review-code-comment-section-map)
@@ -1500,7 +1206,9 @@ object), delegate to that data object."
    (heading-face :initform 'code-review-recent-comment-heading)
    (body-face    :initform nil)
    (diffHunk     :initform nil)
-   (line-type    :initarg :line-type)))
+   (line-type    :initarg :line-type)
+   (render-heading           :initform "Comment by YOU: " :allocation :class)
+   (render-extra-newline?    :initform nil                :allocation :class)))
 
 (defclass code-review-reply-comment-section (code-review-base-comment-section)
   ((keymap       :initform 'code-review-reply-comment-section-map)
@@ -1509,7 +1217,9 @@ object), delegate to that data object."
    (edit?        :initform nil)
    (outdated?    :initform nil)
    (heading-face :initform 'code-review-recent-comment-heading)
-   (body-face    :initform nil)))
+   (body-face    :initform nil)
+   (render-heading           :initform "Reply by YOU: " :allocation :class)
+   (render-extra-newline?    :initform t               :allocation :class)))
 
 (defclass code-review-outdated-comment-section (code-review-base-comment-section)
   ((keymap       :initform 'code-review-outdated-comment-section-map)
@@ -1564,35 +1274,8 @@ object), delegate to that data object."
     map)
   "Keymaps for binary files sections.")
 
-(defun code-review-description-reaction-at-point ()
-  "Toggle reaction in description sections."
-  (interactive)
-  (let* ((section (magit-current-section))
-         (comment-id (oref (oref section value) id)))
-    (code-review-toggle-reaction-at-point comment-id "pr-description")))
 
-(defun code-review-description-add-reaction (node-id content)
-  "Add NODE-ID with CONTENT in pr description."
-  (let* ((pr (code-review-db-get-pullreq))
-         (infos (oref pr raw-infos))
-         (reactions (cons (a-alist 'content (upcase content) 'id node-id)
-                          (a-get-in infos (list 'reactions 'nodes)))))
-    (setf (alist-get 'reactions infos) (a-alist 'nodes reactions))
-    (oset pr raw-infos infos)
-    (code-review-db-update pr)))
 
-(defun code-review-description-delete-reaction (node-id)
-  "Delete NODE-ID from pr description."
-  (let* ((pr (code-review-db-get-pullreq))
-         (infos (oref pr raw-infos))
-         (reactions (a-get-in infos (list 'reactions 'nodes)))
-         (new-reactions (-filter
-                         (lambda (it)
-                           (not (string-equal node-id (a-get it 'id))))
-                         reactions)))
-    (setf (alist-get 'reactions infos) (a-alist 'nodes new-reactions))
-    (oset pr raw-infos infos)
-    (code-review-db-update pr)))
 
 (cl-defmethod code-review-pretty-milestone ((obj code-review-milestone-section))
   "Get the pretty version of milestone for a given OBJ."
@@ -1606,57 +1289,10 @@ object), delegate to that data object."
    (t
     "No milestone")))
 
-(defun code-review-commit-goto-check-at-remote (&rest _)
-  "Visit the details of the check at point in the remote."
-  (interactive)
-  (let ((section (magit-current-section)))
-    (if (code-review-commit-check-detail-section-p section)
-        (with-slots (value) section
-          (browse-url (oref value details)))
-      (message "Goto check at remote not defined in this section."))))
 
-(defun code-review-conversation-reaction-at-point ()
-  "Toggle reaction in conversation sections."
-  (interactive)
-  (let* ((section (magit-current-section))
-         (comment-id (oref (oref section value) id)))
-    (setq code-review-comment-cursor-pos (point))
-    (code-review-toggle-reaction-at-point comment-id "comment")))
 
-(defun code-review-conversation--add-or-delete-reaction (comment-id reaction-id content &optional delete?)
-  "Add or Delete REACTION-ID in COMMENT-ID given a CONTENT.
-Optionally DELETE? flag must be set if you want to remove it."
-  (let* ((pr (code-review-db-get-pullreq))
-         (infos (oref pr raw-infos))
-         (update-comment (lambda (c)
-                           (let-alist c
-                             (when (equal .databaseId comment-id)
-                               (let ((reactions-nodes (if delete?
-                                                          (-filter (lambda (it)
-                                                                     (not (string-equal (a-get it 'id) reaction-id)))
-                                                                   .reactions.nodes)
-                                                        (append .reactions.nodes
-                                                                (list (a-alist 'id reaction-id
-                                                                               'content (upcase content)))))))
-                                 (setf (alist-get 'reactions c) (a-alist 'nodes reactions-nodes)))))
-                           c)))
-    (let-alist infos
-      (let ((new-comments
-             (-map (lambda (c) (funcall update-comment c)) .comments.nodes))
-            (new-comments-review
-             (-map (lambda (c) (funcall update-comment c)) .reviews.nodes)))
-        (setf (alist-get 'comments infos) (a-alist 'nodes new-comments))
-        (setf (alist-get 'reviews infos) (a-alist 'nodes new-comments-review))
-        (oset pr raw-infos infos)
-        (code-review-db-update pr)))))
 
-(defun code-review-conversation-add-reaction (comment-id reaction-id content)
-  "Add REACTION-ID with CONTENT in PR COMMENT-ID."
-  (code-review-conversation--add-or-delete-reaction comment-id reaction-id content))
 
-(defun code-review-conversation-delete-reaction (comment-id reaction-id)
-  "Delete REACTION-ID from COMMENT-ID."
-  (code-review-conversation--add-or-delete-reaction comment-id reaction-id nil t))
 
 (cl-defmethod code-review-insert-comment-lines ((obj code-review-comment-section))
   "Insert the comment lines given in the OBJ with colored background."
@@ -1674,145 +1310,33 @@ Optionally DELETE? flag must be set if you want to remove it."
       (overlay-put ov 'face face)
       (overlay-put ov 'priority 100))))
 
-(defun code-review--toggle-reaction-at-point (pr context-name comment-id existing-reactions reaction)
-  "Given a PR, use the CONTEXT-NAME to toggle REACTION in COMMENT-ID considering EXISTING-REACTIONS."
-  (let* ((res (code-review-send-reaction pr context-name comment-id reaction))
-         (reaction-id (a-get res 'id))
-         (node-id (a-get res 'node_id))
-         (existing-reaction-ids (when existing-reactions
-                                  (-map (lambda (r) (oref r id)) existing-reactions))))
-    (if (-contains-p existing-reaction-ids node-id)
-        (progn
-          (code-review-delete-reaction pr context-name comment-id reaction-id)
-          (pcase context-name
-            ("pr-description" (code-review-description-delete-reaction node-id))
-            ("comment" (code-review-conversation-delete-reaction comment-id node-id))
-            ("code-comment" (code-review-code-comment-delete-reaction comment-id node-id))))
-      (pcase context-name
-        ("pr-description"
-         (code-review-description-add-reaction node-id reaction))
-        ("comment"
-         (code-review-conversation-add-reaction comment-id node-id reaction))
-        ("code-comment"
-         (code-review-code-comment-add-reaction comment-id node-id reaction))))
-    (code-review--build-buffer)))
 
-(defun code-review-toggle-reaction-at-point (comment-id context-name)
-  "Add reaction at point given a COMMENT-ID and CONTEXT-NAME."
-  (let* ((allowed-reactions (-map
-                             (lambda (it)
-                               `(,(cdr it) . ,(car it)))
-                             code-review-reaction-types))
-         (choice (emojify-completing-read "Reaction: "
-                                          (lambda (string-display)
-                                            (let ((prefix (car (split-string string-display " -"))))
-                                              (-contains-p (a-keys allowed-reactions) prefix)))))
-         (pr (code-review-db-get-pullreq))
-         (reaction (downcase (alist-get choice allowed-reactions nil nil 'equal))))
-    (with-slots (value) (magit-current-section)
-      (code-review--toggle-reaction-at-point
-       pr
-       context-name
-       comment-id
-       (oref value reactions)
-       reaction))))
 
-(defun code-review-reactions-reaction-at-point ()
-  "Endorse or remove your reaction at point."
-  (interactive)
-  (setq code-review-comment-cursor-pos (point))
-  (let* ((section (magit-current-section))
-         (pr (code-review-db-get-pullreq))
-         (obj (oref section value))
-         (map-rev (-map
-                   (lambda (it)
-                     `(,(cdr it) . ,(car it)))
-                   code-review-reaction-types))
-         (reaction-text (get-text-property (point) 'emojify-text))
-         (gh-value (downcase (alist-get reaction-text map-rev nil nil 'equal))))
-    (code-review--toggle-reaction-at-point
-     pr
-     (oref obj context-name)
-     (oref obj comment-id)
-     (oref obj reactions)
-     gh-value)))
 
-(defun code-review-code-comment-reaction-at-point ()
-  "Toggle reaction in code-comment section."
-  (interactive)
-  (let* ((section (magit-current-section))
-         (comment-id (oref (oref section value) id)))
-    (setq code-review-comment-cursor-pos (point))
-    (code-review-toggle-reaction-at-point comment-id "code-comment")))
 
-(defun code-review-code-comment--add-or-delete-reaction (comment-id reaction-id content &optional delete?)
-  "Add or Delete REACTION-ID in COMMENT-ID given a CONTENT.
-Optionally DELETE? flag must be set if you want to remove it."
-  (let* ((pr (code-review-db-get-pullreq))
-         (infos (oref pr raw-infos)))
-    (let-alist infos
-      (let ((new-reviews
-             (-map
-              (lambda (r)
-                (let ((new-comments
-                       (-map
-                        (lambda (c)
-                          (let-alist c
-                            (when (equal .databaseId comment-id)
-                              (let ((reactions-nodes
-                                     (if delete?
-                                         (-filter (lambda (it)
-                                                    (not (string-equal (a-get it 'id) reaction-id)))
-                                                  .reactions.nodes)
-                                       (append .reactions.nodes
-                                               (list (a-alist 'id reaction-id 'content (upcase content)))))))
-                                (setf (alist-get 'reactions c) (a-alist 'nodes reactions-nodes)))))
-                          c)
-                        (a-get-in r (list 'comments 'nodes)))))
-                  (setf (alist-get 'comments r) (a-alist 'nodes new-comments))
-                  r))
-              .reviews.nodes)))
-        (setf (alist-get 'reviews infos) (a-alist 'nodes new-reviews))
-        (oset pr raw-infos infos)
-        (oset pr raw-comments new-reviews)
-        (code-review-db-update pr)))))
 
-(defun code-review-code-comment-add-reaction (comment-id reaction-id content)
-  "Add REACTION-ID with CONTENT in PR COMMENT-ID."
-  (code-review-code-comment--add-or-delete-reaction comment-id reaction-id content))
 
-(defun code-review-code-comment-delete-reaction (comment-id reaction-id)
-  "Delete REACTION-ID for COMMENT-ID."
-  (code-review-code-comment--add-or-delete-reaction comment-id reaction-id nil t))
 
 (cl-defgeneric code-review-comment-insert-lines (obj)
   "Insert comment lines in the code section based on section type denoted by OBJ.")
 
 (cl-defmethod code-review-comment-insert-lines ((obj code-review-local-comment-section))
   "Insert local comment lines present in the OBJ."
-  (magit-insert-section (code-review-local-comment-section obj)
-    (let ((heading "Comment by YOU: "))
-      (add-face-text-property 0 (length heading) (oref obj heading-face) t heading)
-      (magit-insert-heading heading))
-    (magit-insert-section (code-review-local-comment-section obj)
-      (let ((start (point)))
-        (dolist (l (code-review-utils--split-comment
-                    (code-review-utils--wrap-text
-                     (oref obj msg)
-                     code-review-fill-column)))
-          (insert l)
-          (insert ?\n))
-        (let ((ov (make-overlay start (point))))
-          (overlay-put ov 'face 'code-review-comment-self-bg)
-          (overlay-put ov 'priority 1))))))
+  (code-review-comment--insert-you-lines obj 'code-review-local-comment-section))
 
 (cl-defmethod code-review-comment-insert-lines ((obj code-review-reply-comment-section))
   "Insert reply comment lines present in the OBJ."
-  (magit-insert-section (code-review-reply-comment-section obj)
-    (let ((heading "Reply by YOU: "))
+  (code-review-comment--insert-you-lines obj 'code-review-reply-comment-section))
+
+(defun code-review-comment--insert-you-lines (obj type)
+  "Insert the local or reply comment OBJ as a section of TYPE.
+The heading text and the trailing blank line come from the class
+slots `render-heading' and `render-extra-newline?'."
+  (magit-insert-section ((eval type) obj)
+    (let ((heading (oref obj render-heading)))
       (add-face-text-property 0 (length heading) (oref obj heading-face) t heading)
       (magit-insert-heading heading))
-    (magit-insert-section (code-review-reply-comment-section obj)
+    (magit-insert-section ((eval type) obj)
       (let ((start (point)))
         (dolist (l (code-review-utils--split-comment
                     (code-review-utils--wrap-text
@@ -1820,27 +1344,12 @@ Optionally DELETE? flag must be set if you want to remove it."
                      code-review-fill-column)))
           (insert l)
           (insert ?\n))
-        (insert ?\n)
+        (when (oref obj render-extra-newline?)
+          (insert ?\n))
         (let ((ov (make-overlay start (point))))
           (overlay-put ov 'face 'code-review-comment-self-bg)
           (overlay-put ov 'priority 1))))))
 
-(defun code-review-comment-insert-reactions (reactions context-name comment-id)
-  "Insert REACTIONS in CONTEXT-NAME identified by COMMENT-ID."
-  (let* ((reactions-obj (code-review-reactions-section
-                         :comment-id comment-id
-                         :reactions reactions
-                         :context-name context-name)))
-    (magit-insert-section (code-review-reactions-section reactions-obj)
-      (let ((reactions-group (-group-by #'identity reactions)))
-        (dolist (r (a-keys reactions-group))
-          (let ((rit (alist-get r reactions-group nil nil 'equal)))
-            (insert (alist-get (oref (-first-item rit) content)
-                               code-review-reaction-types
-                               nil nil 'equal))
-            (insert (format " %S " (length rit)))))
-        (insert ?\n)
-        (insert ?\n)))))
 
 (cl-defmethod code-review-comment-insert-lines (obj)
   "Default insert comment lines in the OBJ."
@@ -2721,92 +2230,10 @@ with commit-focused hooks and keybindings."
                         (prin1-to-string err))
                        (message "Got an error while fetching commit diff. See `code-review-log-file'."))))))
 
-;;;###autoload
-(defun code-review-section-delete-comment ()
-  "Delete a local comment."
-  (interactive)
-  (with-current-buffer (code-review-review-buffer)
-    (setq code-review-comment-cursor-pos (point))
-    (with-slots (value) (magit-current-section)
-      (code-review-db-delete-raw-comment (oref value internalId))
-      (code-review--build-buffer))))
 
-;;;###autoload
-(defun code-review-section-delete-comment-remote ()
-  "Delete comment at point locally and remotely (when applicable).
-For local comments, only deletes locally. For submitted diff comments,
-delete remotely via provider API and then drop from local DB."
-  (interactive)
-  (with-current-buffer (code-review-review-buffer)
-    (setq code-review-comment-cursor-pos (point))
-    (let* ((section (magit-current-section))
-           (val (and section (oref section value)))
-           (is-local (and val (code-review-local-comment-section-p val)))
-           (prompt (if is-local
-                       "Do you want to delete this comment locally? "
-                     "Do you want to delete this comment locally and remotely? ")))
-      (when (and val (y-or-n-p prompt))
-        (cond
-         ;; Local comments: just delete from DB
-         (is-local
-          (code-review-db-delete-raw-comment (oref val internalId))
-          (code-review--build-buffer))
-         ;; Remote code/reply/outdated comments: delete via provider
-         ((or (code-review-code-comment-section-p val)
-              (code-review-reply-comment-section-p val)
-              (code-review-outdated-comment-section-p val))
-          (let* ((comment-id (oref val id))
-                 (pr (code-review-db-get-pullreq))
-                 (callback (lambda (&rest _)
-                             (code-review-db-delete-raw-comment comment-id)
-                             (let ((code-review-section-full-refresh? t))
-                               (code-review--build-buffer)))))
-            (code-review-delete-code-comment pr comment-id callback)))
-         (t
-          (message "No deletable comment at point.")))))))
 
-;;; Resolving/unresolving review threads
 
-(defun code-review--thread-info-at-point ()
-  "Return (THREAD-ID . RESOLVED?) for the review thread at point, or nil."
-  (let ((info (lambda (v)
-                (ignore-errors
-                  (and (slot-exists-p v 'thread-id)
-                       (slot-boundp v 'thread-id)
-                       (oref v thread-id)
-                       (cons (oref v thread-id)
-                             (and (slot-boundp v 'resolved?)
-                                  (oref v resolved?))))))))
-    (or (let ((sec (magit-current-section)))
-          (and sec
-               (slot-boundp sec 'value)
-               (funcall info (oref sec 'value))))
-        (let* ((sec (magit-current-section))
-               (parent (and sec
-                            (slot-boundp sec 'parent)
-                            (oref sec 'parent))))
-          (when parent
-            (cl-some (lambda (s)
-                       (and (slot-boundp s 'value)
-                            (funcall info (oref s 'value))))
-                     (oref parent children)))))))
 
-;;;###autoload
-(defun code-review-threads-toggle-resolved ()
-  "Toggle the resolved state of the review thread at point."
-  (interactive)
-  (if-let ((info (code-review--thread-info-at-point)))
-      (let ((thread-id (car info))
-            (resolved? (cdr info))
-            (pr (code-review-db-get-pullreq)))
-        (message "code-review: %s thread..."
-                 (if resolved? "Unresolving" "Resolving"))
-        (code-review-toggle-resolved
-         pr thread-id (not resolved?)
-         (lambda (&rest _)
-           (let ((code-review-section-full-refresh? t))
-             (code-review--build-buffer)))))
-    (user-error "No review thread at point")))
 
 ;;; Patch line helpers (skip review UI lines inside hunks)
 
@@ -2883,240 +2310,25 @@ lines with ' ' or '+'. END-POS is exclusive. Review UI lines are ignored."
         (forward-line 1)))
     (cons old new)))
 
-;;; Visiting files from hunks with robust line mapping
 
-(defun code-review--resolve-worktree-position ()
-  "Return (FULL-PATH . LINE) for the diff position at point, or nil.
-LINE is nil when point is not inside a hunk.  Prefer the local
-worktree of the PR (`code-review-repo-worktree') and fall back to
-`magit-toplevel'.  Ignores inline review/comment lines when
-computing the target line inside a hunk."
-  (let* ((sec (magit-current-section))
-         (cur sec)
-         path)
-    ;; Walk up to find a section whose value carries our PATH
-    (while (and cur (not path))
-      (let ((val (and (slot-boundp cur 'value) (oref cur value))))
-        (when (listp val)
-          (setq path (alist-get 'path val))))
-      (unless path
-        (setq cur (and (slot-boundp cur 'parent) (oref cur parent)))))
-    (when path
-      (let* ((root (or code-review-repo-worktree
-                       (ignore-errors (magit-toplevel))))
-             (full (and root (expand-file-name path root))))
-        (when (and full (file-exists-p full))
-          (let* ((hunk (and (magit-hunk-section-p (magit-current-section))
-                            (magit-current-section)))
-                 (target nil))
-            (when hunk
-              (save-excursion
-                (let* ((startc (code-review--hunk-content-start hunk))
-                       (anchor (or (code-review--nearest-patch-line-in-hunk hunk)
-                                   startc))
-                       (adv (code-review--count-patch-advances hunk startc anchor))
-                       (new-start (car (oref hunk to-range)))
-                       (new-adv (cdr adv)))
-                  (setq target (+ new-start new-adv)))))
-            (cons full (and target (integerp target) (> target 0) target))))))))
 
-(defun code-review-visit-worktree-file (&rest _)
-  "Visit the worktree file at point using a robust line choice.
-This ignores inline review/comment lines when computing the target
-line inside a hunk. Falls back to `magit-diff-visit-worktree-file'
-when path cannot be determined or file does not exist."
-  (interactive)
-  (if-let ((pos (code-review--resolve-worktree-position)))
-      (progn
-        (find-file (car pos))
-        (when (cdr pos)
-          (goto-char (point-min))
-          (forward-line (1- (cdr pos)))))
-    (call-interactively 'magit-diff-visit-worktree-file)))
 
-(defun code-review-xref--find (fn)
-  "Run xref FN for the symbol at point.
-Opens the corresponding file of the PR worktree at the matching
-line first, so the xref backend operates on the reviewed version
-of the code."
-  (let ((sym (thing-at-point 'symbol t))
-        (pos (code-review--resolve-worktree-position)))
-    (unless code-review-repo-worktree
-      (user-error
-       "No local repo context for this review (check `code-review-projects-root')"))
-    (unless pos (user-error "No file at point in the diff"))
-    (unless sym (user-error "No symbol at point"))
-    (find-file-other-window (car pos))
-    (when (cdr pos)
-      (goto-char (point-min))
-      (forward-line (1- (cdr pos))))
-    (funcall fn sym)))
 
-(defun code-review-xref-find-definitions ()
-  "Find definitions of the symbol at point in the PR worktree."
-  (interactive)
-  (code-review-xref--find #'xref-find-definitions))
 
-(defun code-review-xref-find-references ()
-  "Find references of the symbol at point in the PR worktree."
-  (interactive)
-  (code-review-xref--find #'xref-find-references))
 
-;;; Noise reduction: difftastic drill-down and -w view
 
 (declare-function difftastic-git-diff-range "difftastic"
                   (&optional rev-or-range args files))
 
-(defun code-review-difftastic--file-at-point ()
-  "Return the repository-relative path of the file section at point."
-  (let ((section (magit-current-section)))
-    (while (and section
-                (not (magit-file-section-p section)))
-      (setq section (oref section parent)))
-    (when section
-      (let ((path (substring-no-properties (oref section value))))
-        (cond ((string-prefix-p "a/" path) (substring path 2))
-              ((string-prefix-p "b/" path) (substring path 2))
-              (t path))))))
 
-(defun code-review-difftastic--range ()
-  "Return the base...HEAD range for the reviewed PR, or nil."
-  (when-let* ((pr (ignore-errors (code-review-db-get-pullreq)))
-              ((slot-boundp pr 'number))
-              (num (format "%s" (oref pr number)))
-              (base (format "refs/remotes/code-review/%s/base" num))
-              ((and code-review-repo-worktree
-                    (code-review-repo--git code-review-repo-worktree
-                                           "rev-parse" "--verify"
-                                           "--quiet" base))))
-    (format "%s...HEAD" base)))
 
-(defun code-review-difftastic-file (&optional whole-pr-p)
-  "Show the changes of the file at point with difftastic.
-In plain terms, this \"drills down\" into one file: it opens a
-side-by-side view that understands syntax, so you see what REALLY
-changed (moved blocks, renamed things), not just line edits.  It
-is for READING only: comments cannot anchor there, so you cannot
-leave reviews in that view.  Press \\[quit-window] in the
-difftastic buffer to come back to the review.
 
-With WHOLE-PR-P (\\[universal-argument]) show the entire pull
-request instead of the file at point.  This needs the `difftastic'
-Emacs package (MELPA) and the external `difft' command."
-  (interactive "P")
-  (cond
-   ((not (fboundp 'difftastic-git-diff-range))
-    (user-error
-     "This needs the `difftastic' Emacs package and the external `difft' command.
-Install it with: M-x package-install RET difftastic RET
-and get difft from https://github.com/Wilfred/difftastic"))
-   ((not (executable-find (if (boundp 'difftastic-executable)
-                              difftastic-executable
-                            "difft")))
-    (user-error
-     "The external `difft' command is not installed; see https://github.com/Wilfred/difftastic"))
-   ((not code-review-repo-worktree)
-    (user-error "No local worktree for this review"))
-   (t
-    (let* ((range (code-review-difftastic--range))
-           (file (and (not whole-pr-p)
-                      (code-review-difftastic--file-at-point))))
-      (unless range
-        (user-error "Base ref not available locally; press G to fully reload this review"))
-      (if (and (not whole-pr-p) (not file))
-          (user-error "Point is not on a file section (use C-u for the whole PR)")
-        (let ((default-directory
-                (file-name-as-directory code-review-repo-worktree)))
-          (difftastic-git-diff-range range nil (and file (list file)))))))))
 
-(defun code-review-view-wdiff ()
-  "Show the whole pull request diff IGNORING whitespace.
-In plain terms, this answers \"what really changed?\" when the PR
-contains formatting churn (reindentation, line wrapping): the
-local git diff skips changes that only touch spaces, tabs and
-blank lines.  The buffer is VIEW-ONLY: comments cannot anchor
-there, so reviews are still left in the review buffer."
-  (interactive)
-  (if (not code-review-repo-worktree)
-      (user-error "No local worktree for this review")
-    (let* ((range (code-review-difftastic--range))
-           (out (and range
-                     (code-review-repo--git code-review-repo-worktree
-                                           "diff" "-w"
-                                           "--ignore-blank-lines"
-                                           range))))
-      (unless range
-        (user-error "Base ref not available locally; press G to fully reload this review"))
-      (with-current-buffer (get-buffer-create "*Code Review Diff (-w)*")
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (propertize
-                   "View-only: what really changed in this PR, ignoring whitespace.
-Comments can only be placed in the review buffer, not here.
 
-"
-                   'face 'font-lock-warning-face))
-          (insert (or out "")))
-        (diff-mode)
-        (goto-char (point-min)))
-      (pop-to-buffer "*Code Review Diff (-w)*"))))
 
-;;; Reading ergonomics: hunk navigation, sticky file name, bot noise
 
-(defun code-review--strip-diff-prefix (path)
-  "Remove a leading \"a/\" or \"b/\" from diff PATH."
-  (cond ((string-prefix-p "a/" path) (substring path 2))
-        ((string-prefix-p "b/" path) (substring path 2))
-        (t path)))
 
-(defun code-review--section-visible-p (section)
-  "Non-nil when SECTION and all its ancestors are expanded."
-  (let ((s section)
-        (visible t))
-    (while (and s visible)
-      (when (oref s hidden) (setq visible nil))
-      (setq s (oref s parent)))
-    visible))
 
-(defun code-review--hunk-sections ()
-  "All visible diff hunk sections of the buffer, in order."
-  (let ((hunks nil))
-    (magit-map-sections
-     (lambda (s)
-       (when (and (eq (eieio-object-class s) 'magit-hunk-section)
-                  (code-review--section-visible-p s))
-         (push s hunks))))
-    (nreverse hunks)))
-
-(defun code-review-next-hunk ()
-  "Move to the next diff hunk, skipping comment sections.
-Files that are collapsed (noise) are skipped, so this walks the
-code that actually needs your attention."
-  (interactive)
-  (let ((target nil))
-    (dolist (h (code-review--hunk-sections))
-      (when (and (not target) (> (oref h start) (point)))
-        (setq target h)))
-    (if target
-        (goto-char (oref target start))
-      (user-error "No next hunk"))))
-
-(defun code-review-previous-hunk ()
-  "Move to the previous diff hunk, skipping comment sections.
-When called from inside a hunk, moves to the hunk before it (not
-to the current hunk's heading)."
-  (interactive)
-  (let ((target nil))
-    (dolist (h (reverse (code-review--hunk-sections)))
-      (when (and (not target)
-                 (< (oref h start) (point))
-                 ;; exclude the hunk the point currently is in
-                 (not (and (>= (point) (oref h start))
-                           (<= (point) (oref h end)))))
-        (setq target h)))
-    (if target
-        (goto-char (oref target start))
-      (user-error "No previous hunk"))))
 
 (defun code-review--section-author (section)
   "Return the author string of SECTION, or nil.
@@ -3173,26 +2385,6 @@ and TAB unfolds any of them."
     (dolist (c (oref section children))
       (code-review--collapse-bot-comments c))))
 
-(defun code-review--update-header-line (&rest _)
-  "Pin the file of the hunk at point in the header line.
-In plain terms: when you scroll deep into a long hunk, the file
-heading has scrolled off screen and you lose track of which file
-you are in; this keeps its name visible at the top of the window.
-Nothing is shown while the real heading is still on screen."
-  (when (derived-mode-p 'code-review-mode)
-    (let ((section (magit-current-section)))
-      (while (and section (not (magit-file-section-p section)))
-        (setq section (oref section parent)))
-      (let ((file (and section (stringp (oref section value))
-                       (substring-no-properties (oref section value)))))
-        (setq header-line-format
-              (if (and file
-                       (> (point) (oref section start))
-                       (not (pos-visible-in-window-p (oref section start))))
-                  (concat " "
-                          (propertize (code-review--strip-diff-prefix file)
-                                      'face 'magit-diff-file-heading))
-                nil))))))
 
 (provide 'code-review-section)
 ;;; code-review-section.el ends here

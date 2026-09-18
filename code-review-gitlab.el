@@ -66,11 +66,7 @@ For internal usage only.")
 
 (defun code-review-gitlab-errback (&rest m)
   "Error callback, displays the error message M."
-  (let-alist m
-    (code-review-utils--log
-     "code-review-gitlab-errback"
-     (prin1-to-string m))
-    (error "Unknown error talking to Gitlab: %s" m)))
+  (apply #'code-review-utils--unknown-errback "Gitlab" m))
 
 (defun code-review-gitlab--graphql (graphql variables callback)
   "Make GRAPHQL call to GITLAB.
@@ -525,8 +521,7 @@ Optionally sets FALLBACK? to get minimal query."
 
 (defun code-review-gitlab-not-supported-message ()
   "Default warning message."
-  (message "Not supported in Gitlab yet.")
-  nil)
+  (code-review-utils--not-supported "Gitlab"))
 
 (cl-defmethod code-review-get-assignable-users ((_gitlab code-review-gitlab-repo))
   "Get a list of assignable users for current PR at GITLAB."

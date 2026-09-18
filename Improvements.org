@@ -441,7 +441,7 @@ Design:
 
 BONUS POINT: keep this as a separate library and make sure it works
 also with magit diffs, so the user can reuse this work for reading better diffs.
-* Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:doing:
+* Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit
 upgrades?": no.  What breaks us, and the way out.
@@ -595,23 +595,59 @@ render runs entirely through owned washers over plain diff text:
 
 
 
-**11c — split section.el** (3,109 lines today) along its
-seams: =code-review-diff.el= (the phase-3 classification
-engine, pure functions), reactions and their dedup, the
-interactive/navigation commands into the existing
-=code-review-actions.el=, leaving =code-review-section.el=
-the rendering core (~1,300 lines).  Pure moves + requires, no
-logic changes; recompile + live render after each move.
+**11c — split section.el (STATUS:done, 2026-09-18).**  Split
+along the seams: new =code-review-diff.el= (14 defs: the
+phase-3 classification engine + two defcustoms, pure
+functions on raw diff text; requires db + repo), new
+=code-review-reactions.el= (18 defs: reaction classes and the
+toggle machinery; requires db + interfaces), and 22
+interactive/navigation commands moved into
+=code-review-actions.el= (with =(require 'code-review-repo)=
+and declare-functions for section helpers).
+=code-review-section.el= went 3,198 -> 2,394 lines and now
+=(require '= code-review-diff/reactions).  Pure moves, no logic
+changes.  Makefile =compile= was silently skipping the first
+directory entry (the =cdr= bug: =actions.el= was never
+byte-compiled) and trying to compile autoloads/pkg; fixed with
+a plain =member= exclusion list (do not put regexps through
+make/shell escaping — "Unmatched (" is what you get).
+Verified: all 13 files load, classification tag renders from
+the new home, fresh render 11 files / 28 hunks / 1,481 painted
+/ 0 unpainted, bots 45/34 hidden, 13 folded; re-render
+identical; live litellm buffer healthy; ERT 35/35.
 
-**11d — reaction dedup** (the only step that rewrites live
-logic, so it comes last when the diff is smallest): 17
-functions / ~300 lines in three near-identical families
-(conversation, code-comment, description) collapse into one
-generic engine parameterized by context (~120 lines).  Same
-pass: merge trio in actions.el (=merge-merge/rebase/squash=),
-gitlab/bitbucket =errback= and =not-supported-message= pairs,
-=assignee/reviewer-visit-at-remote= pair, and
-=comment-insert-lines= defmethods via two class slots.
+**11d — dedup (STATUS:done, 2026-09-18).**  The reaction
+families collapsed into one engine in
+=code-review-reactions.el=:
+=code-review-reaction--update-node= (upsert/delete one
+reaction on one comment alist, by =databaseId=),
+=--update-flat= (conversation: comments + reviews nodes),
+=--update-nested= (code-comment: reviews -> comments, syncs
+=raw-comments= too), =--update-description= (PR-level
+reactions), and =--update-context= (pcase dispatcher that
+persists via =code-review-db-update=).  Eight fns deleted
+(description/conversation/code-comment add + delete and the
+two =--add-or-delete= drivers); the three
+=*-reaction-at-point= commands are 3-line wrappers over
+=code-review-reaction--toggle-in-context= (which now also
+restores the cursor in the description context).  Same pass:
+merge trio in actions.el -> =code-review-merge--with=
+(strategy arg) + three autoloaded wrappers;
+=code-review-utils--unknown-errback= and
+=code-review-utils--not-supported= in utils (gitlab/bitbucket
+public fns now delegate, call sites untouched);
+=code-review-user-visit-at-remote= + two defaliases;
+=comment-insert-lines= local/reply defmethods share
+=code-review-comment--insert-you-lines=, driven by two new
+class slots =render-heading= and =render-extra-newline?= on
+the local/reply defclasses.  One intentional behavior change:
+the description reaction toggle now records the cursor
+position like the other two contexts.
+Verified: engine add/delete upserts checked on synthetic
+alists; fresh render 11 files / 28 hunks / 1,481 painted /
+0 unpainted, re-render identical; live litellm buffer healthy;
+ERT 35/35; no source references to the deleted fns remain;
+stale daemon bindings fmakunbound.
 
 Not worth touching: =internal-build= per forge (bodies differ
 in real per-forge mapping), comment.el, utils.el,

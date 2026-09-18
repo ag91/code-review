@@ -21,10 +21,12 @@ phase moves forward or a new gotcha is discovered.
 | File | Role |
 |---|---|
 | `code-review.el` | entrypoints, `code-review-mode`, transient menus |
-| `code-review-section.el` | the big one: section rendering, diff wash, classification engine (~3.1k lines) |
+| `code-review-section.el` | section rendering, the owned diff wash, comment/reaction section classes (~2.4k lines) |
+| `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
+| `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
-| `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support |
+| `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support (`actions.el` also holds the interactive/navigation commands) |
 | `test/` | ERT tests (`make test`) |
 
 ## Build and test

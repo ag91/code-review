@@ -41,11 +41,7 @@
 
 (defun code-review-bitbucket-errback (&rest m)
   "Error callback, displays the error message M."
-  (let-alist m
-    (code-review-utils--log
-     "code-review-bitbucket-errback"
-     (prin1-to-string m))
-    (error "Unknown error talking to Bitbucket: %s" m)))
+  (apply #'code-review-utils--unknown-errback "Bitbucket" m))
 
 (defun code-review-bitbucket--ghub-post (url payload &optional callback)
   "Given URL and PAYLOAD perform a POST.
@@ -362,8 +358,7 @@ For internal usage only.")
 
 (defun code-review-bitbucket-not-supported-message ()
   "Default warning message."
-  (message "Not supported in Bitbucket yet.")
-  nil)
+  (code-review-utils--not-supported "Bitbucket"))
 
 (cl-defmethod code-review-get-assignable-users ((_bitbucket code-review-bitbucket-repo))
   "Get a list of assignable users for current PR at BITBUCKET."
