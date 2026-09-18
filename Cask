@@ -13,7 +13,3 @@
 (depends-on "forge" "0.3.0")
 
 (package-file "code-review.el")
-
-(development
-  (depends-on "undercover")
-  (depends-on "buttercup"))

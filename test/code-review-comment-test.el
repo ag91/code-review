@@ -1,13 +1,11 @@
-;;; code-review-comment-test.el --- Test our utility functions
-;;; Commentary:
-;;; Code:
+;;; code-review-comment-test.el --- ERT tests for comment grouping -*- lexical-binding: t; -*-
 
+(require 'ert)
 (require 'a)
-(require 'buttercup)
-(require 'forge-pullreq)
 (require 'code-review-comment)
+(require 'code-review-utils)
 
-(defconst sample-raw-comments
+(defconst code-review-comment-test--sample-raw-comments
   `(;; comment 1
     ((author (login . "wandersoncferreira"))
      (bodyHTML . "<p>This PR looks great</p>")
@@ -48,7 +46,7 @@
               (path . "README.md")
               (databaseId . 735203148)))))))
 
-(defconst sample-grouped-raw-comments
+(defconst code-review-comment-test--sample-grouped-raw-comments
   (a-alist "README.md:3"
            (list
             (code-review-code-comment-section
@@ -84,20 +82,32 @@
              :internalId nil
              :id 735203148))))
 
-(describe "GROUPING"
-  (it "should use PATH + `position' or `originalPosition' fields as key."
-    (let ((group (code-review-utils-make-group sample-raw-comments)))
-      (expect (a-keys group)
-              :to-equal `("README.md:3"))))
+(ert-deftest code-review-comment-test/grouping-key-is-path-and-position ()
+  "Should use PATH + `position' or `originalPosition' fields as key."
+  (let ((group (code-review-utils-make-group
+                code-review-comment-test--sample-raw-comments)))
+    (should (equal (a-keys group)
+                   `("README.md:3")))))
 
-  (it "should keep all the comments under the key value"
-    (let ((group (code-review-utils-make-group sample-raw-comments)))
-      (expect (length (alist-get "README.md:3" group nil nil 'equal))
-              :to-equal 2)))
+(ert-deftest code-review-comment-test/grouping-keeps-all-comments ()
+  "Should keep all the comments under the key value."
+  (let ((group (code-review-utils-make-group
+                code-review-comment-test--sample-raw-comments)))
+    (should (equal (length (alist-get "README.md:3" group nil nil 'equal))
+                   2))))
 
-  (it "should flat the structure, add state and login to the comment level."
-    (let ((group (code-review-utils-make-group sample-raw-comments)))
-      (expect group :to-have-same-items-as sample-grouped-raw-comments))))
+(ert-deftest code-review-comment-test/grouping-flattens-structure ()
+  "Should flat the structure, add state and login to the comment level."
+  (let ((group (code-review-utils-make-group
+                code-review-comment-test--sample-raw-comments))
+        (expected code-review-comment-test--sample-grouped-raw-comments))
+    ;; order-insensitive comparison of the two comment objects
+    (should (= (length group) (length expected)))
+    (dolist (entry expected)
+      (let ((got (alist-get (car entry) group nil nil 'equal)))
+        (should got)
+        (should (= (length got) (length (cdr entry))))
+        (dolist (obj (cdr entry))
+          (should (member obj got)))))))
 
-(provide 'code-review-comment-test)
 ;;; code-review-comment-test.el ends here

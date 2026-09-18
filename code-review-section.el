@@ -1893,7 +1893,8 @@ refreshed via `magit-refresh-buffer'.  Code Review renders its
 buffers directly, so sections that should start collapsed
 (outdated comments, commit CI details) must be folded here
 explicitly."
-  (when (oref section hidden)
+  (when (and (oref section hidden)
+             (not (eq section magit-root-section)))
     (magit-section-hide section)))
 
 (defun code-review-section-insert-outdated-comment (comments amount-loc)

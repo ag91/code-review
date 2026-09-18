@@ -483,7 +483,37 @@ lines of duplication:
   dangling calls exist (reverse scan: every called
   =code-review-*=-prefixed symbol is defined).
 
+**11a2 — test infrastructure (STATUS:done, 2026-09-18).**  Converted
+the buttercup suite to plain ERT and dropped cask from the loop
+entirely:
+
+- =make compile= / =make test= / =make deps= / =make clean= in a new
+  Makefile (batch =emacs -Q=, =PKG_DIR= points at package.el
+  installs); =test/run-tests.el= is the batch ERT runner; CI
+  =test_suite= job now uses =make deps && make test= (no
+  setup-python/setup-cask).
+- =test/code-review-test-helpers.el=: DB tests run inside
+  =code-review-test--with-db=, which swaps the closql singleton onto
+  a fresh =/tmp= sqlite file (close connection, forget singleton,
+  reset =code-review-db--pullreq-id=).  Without it the old suite
+  wrote to the user's real DB: the old =:var= bindings referenced
+  pre-rename variable names that no longer exist.
+- Two bugs surfaced by the conversion, fixed:
+  - sample PR objects must be constructed *per test* —
+    closql specializes =eieio-oset= so every =oset= writes through
+    to the database; a shared =defconst= object accumulated an id
+    and a stale database pointer across tests.
+  - =code-review-section--hide-if-hidden= now guards against the
+    buffer's root section (a standalone =code-review-section-insert-*
+    call in a temp buffer makes its own section the root, and hiding
+    the root is a =user-error=).  Live render unaffected.
+- =AGENTS.md= added: layout, build/test commands, the
+  verification protocol (recompile, purge =code-review-*.eln=,
+  daemon reload, fresh-render check) and the magit-wash gotchas.
+
 **11b — own the wash** (stability; the design sketch above).
+
+
 
 **11c — split section.el** (3,109 lines today) along its
 seams: =code-review-diff.el= (the phase-3 classification
