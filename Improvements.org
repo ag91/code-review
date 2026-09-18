@@ -111,9 +111,9 @@ property list:
   (:match REGEX :tag "docs" :collapse t :hide t)
 
 - =:tag= shows a =[\[DOC]]= style tag on the file heading
-  (=code-review-section--magit-diff-insert-file-section= already
-  overrides file sections, so heading + default hidden state are
-  easy to control).
+  (=code-review-wash-insert-file-section= builds the file
+  sections, so heading + default hidden state are easy to
+  control).
 - =:collapse= starts the file section hidden.
 - =:hide= omits the file entirely in "focus mode" (never silently:
   the files-changed summary counts them).
@@ -171,10 +171,9 @@ property list:
 How /tmp/emacs-pr-review handles comments (it *does* use magit, but
 only as a renderer):
 
-- Renders the diff with public =magit-wash-sequence=
-  / =magit-diff-wash-diff=.  No =advice-add= overrides of magit
-  internals (code-review currently overrides
-  =magit-diff-insert-file-section= and =magit-diff-wash-hunk=).
+- Renders the diff with public =magit-wash-sequence= over owned
+  washers (=code-review-wash-diff= since phase 11b).  No
+  =advice-add= overrides of magit internals anymore.
 - After washing, walks the buffer once and stamps every diff line
   with =pr-review-diff-line-left/right= text properties carrying
   =((path ...) (line ...))=.  Anchoring a comment becomes an exact
@@ -333,7 +332,7 @@ DONE (implementation notes):
     section object.  Rule: in any function called from
     =magit-wash-sequence=, the return value drives the loop.
   - Hunks are also painted eagerly right after each wash via
-    =code-review--magit-diff-paint-hunk= (see gotchas below);
+    =code-review-wash--paint-hunk= (see gotchas below);
     current magit only paints lazily through machinery that
     never runs in these buffers.
 
@@ -404,7 +403,45 @@ Gotchas discovered (they will bite again):
   in addition to per-section TAB.
 - Fringe markers linking diff lines to their threads.
 
-* Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:design
+* Phase 10 — Tree-sitter semantic hunk highlighting               :STATUS:design
+
+Not implemented yet; design sketch agreed so the next session can
+pick it up.  The daemon runs Emacs 30.2 with =treesit= and the
+python grammar available.
+
+Goal: hunks read as code, not as colored diff text.  For a python
+file, see the import, the =def= name, its arguments, the body,
+dataclass fields; in test files, test names and assertions stand
+out.
+
+Design:
+
+- After =magit-diff-wash-diffs=, each hunk section body is plain
+  diff text inserted by our own washer.  Strip the =+/-/space=
+  prefixes per line, reconstruct the new-side text of the hunk,
+  parse it with =treesit-parser-create= + =treesit-query-capture=.
+- Map node ranges back onto diff line ranges and lay
+  =font-lock-face= overlays on the hunk body (our washer inserted
+  the text, so we can property it directly; magit's diff faces
+  stay as the base).
+- Capture groups per language, python first:
+  =font-lock-keyword-face= for imports and =def=;
+  =font-lock-function-name-face= for def/class names;
+  =font-lock-type-face= for dataclass/NamedTuple names and their
+  field lines; =font-lock-variable-name-face= for args; test
+  files (name or path match =test=) get a dedicated
+  =code-review-test-face= on test def names and assertion lines.
+- =code-review-semantic-highlight= defcustom (default =t= when
+  =treesit-available-p= and the file's grammar is installed; nil
+  otherwise).  No grammar means current faces, no error.
+- Performance: parse per hunk during render, cache results keyed
+  by a hash of the hunk text in a buffer-local table so re-renders
+  skip the work; parsing is bounded by hunk size, not PR size.
+
+
+BONUS POINT: keep this as a separate library and make sure it works
+also with magit diffs, so the user can reuse this work for reading better diffs.
+* Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:doing:
 
 Answer to "is it sustainable that we break anytime magit
 upgrades?": no.  What breaks us, and the way out.
@@ -511,7 +548,50 @@ entirely:
   verification protocol (recompile, purge =code-review-*.eln=,
   daemon reload, fresh-render check) and the magit-wash gotchas.
 
-**11b — own the wash** (stability; the design sketch above).
+**11b — own the wash (STATUS:done, 2026-09-18).**  The two
+=:override= advices and the paint compat wrapper are gone; the
+render runs entirely through owned washers over plain diff text:
+
+- =code-review-wash-diff=: owned copy of magit's file-block
+  washer — parses =diff --git=/--cc= and the extended headers
+  (status, rename, binary) from raw text, delegates to the file
+  inserter.  Only handles the plain-diff branch (API diffs never
+  carry submodule/unmerged/conflict blocks); terminates the
+  header scan at =^@@=/=^diff --=/=^Submodule=.
+- =code-review-wash-insert-file-section=: the former advice
+  override under its owned name, called directly (no dispatch
+  through magit).  Keeps classification, collapse, comment
+  bookkeeping and the trailing "missing comments" pass; still
+  returns the section (=magit-wash-sequence= contract).
+- =code-review-wash-hunk=: the former hunk override under its
+  owned name; interleaves position- and side/line-keyed comments
+  into the hunk body.
+- =code-review-wash--paint-hunk=: our own base pass (first char
+  of each line selects =magit-diff-added/removed/context=),
+  which guarantees red/green on every magit version; the stable
+  =magit-section-paint= generic is called on top when available
+  for the extras.  Replaces the three-way compat wrapper.
+- =code-review-wash--decode-git-path=: =magit-decode-git-path=
+  behind an =fboundp= guard (identity fallback).
+- Driver: =(magit-wash-sequence #'code-review-wash-diff)=; the
+  =unwind-protect= advice add/remove pair is deleted;
+  =magit-diff-wash-diffs-hook= still runs (public hook).
+- Bonus fix discovered while restoring a render context:
+  =code-review-db-all-unfinished= referenced the pre-rename
+  free variable =code-review-db-connection= (void-variable on
+  every call); the stale close block is deleted — connections
+  are owned by the closql singleton.
+- What we still use from magit: =magit-insert-section=, section
+  classes, =magit-wash-sequence=, =magit-section-hide/show=,
+  the visibility cache + =magit-section-ident-value= methods,
+  and =magit-section-paint= as an optional extra — all
+  magit-SECTION (stable).  Nothing in magit-DIFF is called
+  except the public =magit-diff-wash-diffs-hook= run.
+- Verified: 11 files / 28 hunks / 1422 painted / 0 unpainted /
+  0 raw headers, bots 40/30 hidden, 12 folded; re-render
+  identical; user's live litellm buffer healthy; ERT 35/35.
+
+
 
 
 
@@ -536,41 +616,6 @@ gitlab/bitbucket =errback= and =not-supported-message= pairs,
 Not worth touching: =internal-build= per forge (bodies differ
 in real per-forge mapping), comment.el, utils.el,
 interfaces.el, repo.el (all clean).
-
-* Phase 10 — Tree-sitter semantic hunk highlighting               :STATUS:design
-
-Not implemented yet; design sketch agreed so the next session can
-pick it up.  The daemon runs Emacs 30.2 with =treesit= and the
-python grammar available.
-
-Goal: hunks read as code, not as colored diff text.  For a python
-file, see the import, the =def= name, its arguments, the body,
-dataclass fields; in test files, test names and assertions stand
-out.
-
-Design:
-
-- After =magit-diff-wash-diffs=, each hunk section body is plain
-  diff text inserted by our own washer.  Strip the =+/-/space=
-  prefixes per line, reconstruct the new-side text of the hunk,
-  parse it with =treesit-parser-create= + =treesit-query-capture=.
-- Map node ranges back onto diff line ranges and lay
-  =font-lock-face= overlays on the hunk body (our washer inserted
-  the text, so we can property it directly; magit's diff faces
-  stay as the base).
-- Capture groups per language, python first:
-  =font-lock-keyword-face= for imports and =def=;
-  =font-lock-function-name-face= for def/class names;
-  =font-lock-type-face= for dataclass/NamedTuple names and their
-  field lines; =font-lock-variable-name-face= for args; test
-  files (name or path match =test=) get a dedicated
-  =code-review-test-face= on test def names and assertion lines.
-- =code-review-semantic-highlight= defcustom (default =t= when
-  =treesit-available-p= and the file's grammar is installed; nil
-  otherwise).  No grammar means current faces, no error.
-- Performance: parse per hunk during render, cache results keyed
-  by a hash of the hunk text in a buffer-local table so re-renders
-  skip the work; parsing is bounded by hunk size, not PR size.
 
 * Future ideas
 

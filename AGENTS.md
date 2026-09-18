@@ -77,7 +77,7 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   wrapped into the wash pipeline must return the section.
 - magit 4.x paints hunk faces lazily via `magit-section-paint` from the
   highlight machinery, which never runs in code-review buffers; we paint
-  eagerly (`code-review--magit-diff-paint-hunk`).
+  eagerly (`code-review-wash--paint-hunk`).
 - The dual-role comment classes (`code-review-base-comment-section` /
   `code-review-comment-section` are used both as sections and as data
   objects) need the `magit-section-ident-value` methods to delegate
@@ -85,6 +85,13 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
 - The db is an `eieio-singleton`: once connected, changing
   `code-review-db-database-file` has no effect until the singleton and
   its connection are reset (see the test helper).
-- Two `:override` advices on magit-diff internals remain (phase 11b in
-  `Improvements.org` plans to replace them with an owned wash pipeline).
-  They are the known fragility point across magit upgrades.
+- The diff wash is OWNED (phase 11b): `code-review-wash-diff`,
+  `code-review-wash-insert-file-section`, `code-review-wash-hunk`,
+  `code-review-wash--paint-hunk` read plain diff text and insert
+  magit sections.  Do NOT reintroduce advices on magit-diff
+  internals (`magit-diff-wash-diff`, `magit-diff-wash-hunk`,
+  `magit-diff-insert-file-section`) — their contracts changed across
+  magit 4.x and that is what phase 11b removed.  What we use from
+  magit is magit-SECTION (stable): `magit-insert-section`, section
+  classes, `magit-wash-sequence`, `magit-section-hide/show`, the
+  visibility cache, and optional `magit-section-paint`.

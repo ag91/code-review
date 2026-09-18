@@ -288,37 +288,45 @@ For internal usage only.")
 
 ;; utility functions
 
-;; Magit versions disagree on how hunk bodies get their diff colors:
-;; older ones paint the hunk at point (`magit-diff-paint-hunk', later
-;; `magit-diff--paint-hunk'); current ones paint a section lazily via
-;; `magit-section-paint', which never triggers in this package's
-;; buffers.  Use whichever API is available.
-(defun code-review--magit-diff-paint-hunk (&optional section)
-  "Compat wrapper around Magit's hunk painting helpers.
-Current Magit paints hunks lazily via `magit-section-paint',
-which is driven by the section-highlight machinery.  That
-machinery never runs in code-review buffers (they are rendered
-directly, and `magit-section-highlight-current' is off), so we
-call it eagerly on SECTION (or the section at point) right after
-washing a hunk.  Older Magit releases provide
-`magit-diff-paint-hunk' (later `magit-diff--paint-hunk') for the
-hunk at point instead.  When none is available, do nothing."
-  (let ((section (or section (magit-current-section))))
-    (cond
-     ((and section (fboundp 'magit-section-paint))
-      ;; `magit-section-paint' paints from point to the section end,
-      ;; so move to the heading first; afterwards point is back at
-      ;; the section end, where the wash loop expects it.
-      (save-excursion
-        (goto-char (oref section start))
-        (magit-section-paint section nil)))
-     (t
-      (save-excursion
-        (when section (goto-char (oref section start)))
-        (cond
-         ((fboundp 'magit-diff-paint-hunk) (magit-diff-paint-hunk))
-         ((fboundp 'magit-diff--paint-hunk) (magit-diff--paint-hunk))
-         (t nil)))))))
+;; Phase 11b: code-review OWNS the diff wash.  Up to this point the
+;; render went through magit-diff internals (`magit-diff-wash-diff',
+;; `magit-diff-insert-file-section', `magit-diff-wash-hunk') via
+;; :override advices, whose private contracts changed repeatedly
+;; across magit 4.x (paint helpers renamed/removed, `:washer' became
+;; a lazy-body inserter, return values silently drive the wash loop).
+;; The wash primitives below read plain unified-diff text, whose
+;; format git has kept stable for decades.  Only magit-SECTION is
+;; used (the `magit-insert-section' macro, section classes,
+;; visibility), which is the stable part of magit.
+
+(defun code-review-wash--delete-line ()
+  "Delete the current line, including its newline."
+  (delete-region (line-beginning-position)
+                 (min (point-max) (1+ (line-end-position)))))
+
+(defun code-review-wash--paint-hunk (section)
+  "Paint the body of hunk SECTION with the diff faces.
+Our own base pass: the first character of each line selects the
+face (`magit-diff-added', `magit-diff-removed' or
+`magit-diff-context'), which guarantees red/green hunks on every
+magit version.  When the stable `magit-section-paint' generic is
+available, call it on top for the extras (whitespace and
+refinement details)."
+  (save-excursion
+    (goto-char (oref section start))
+    (forward-line)                       ; skip the hunk heading
+    (let ((end (oref section end)))
+      (while (< (point) end)
+        (put-text-property (point) (line-end-position)
+                           'font-lock-face
+                           (cond ((eq (char-after) ?+) 'magit-diff-added)
+                                 ((eq (char-after) ?-) 'magit-diff-removed)
+                                 (t 'magit-diff-context)))
+        (forward-line))))
+  (when (fboundp 'magit-section-paint)
+    (save-excursion
+      (goto-char (oref section start))
+      (magit-section-paint section nil))))
 
 (defun code-review--html-written-loc (body &optional indent)
   "Compute how many lines the HTML BODY will have in the buffer.
@@ -1947,7 +1955,7 @@ Safeguards against non-outdated/local comments accidentally passed in."
                                     (magit-insert-section ()
                                       (save-excursion
                                         (insert safe-hunk))
-                                      (magit-diff-wash-hunk)
+                                      (code-review-wash-hunk)
                                       (insert ?\n)
 
                                       (dolist (c (alist-get safe-hunk hunk-groups nil nil 'equal))
@@ -2100,10 +2108,96 @@ A quite good assumption: every comment in an outdated hunk will be outdated."
                'magit-section-heading)))
     (magit-insert-heading)))
 
-(defun code-review-section--magit-diff-insert-file-section
+(defun code-review-wash-diff ()
+  "Wash one `diff --git' block of a raw unified diff at point.
+Owned copy of magit-diff's file-block washer (phase 11b): it
+parses the diff header (status, rename, binary) from plain diff
+text and delegates to `code-review-wash-insert-file-section'.
+The only inputs are the text at point and the `magit-wash-sequence'
+loop contract: returns non-nil while a block was washed, nil when
+nothing matches (which ends the loop)."
+  (when (looking-at
+         ;; The file names on this line may be ambiguous due to
+         ;; whitespace; that is fine, the subsequent `---'/`+++'
+         ;; headers are authoritative.
+         "^diff --\\(?:\\(?1:git\\) \\(?2:.+?\\) \\2\\|\\(?3:cc\\|combined\\) \\(?4:.+\\)\\)")
+    (let ((status (cond ((equal (match-string 1) "git") "modified")
+                        ((match-string 3)              "resolved")
+                        (t                            "unmerged")))
+          (orig nil)
+          (file (or (match-string 2) (match-string 4)))
+          (header (list (buffer-substring-no-properties
+                         (line-beginning-position) (1+ (line-end-position)))))
+          (modes nil)
+          (rename nil)
+          (binary nil))
+      (code-review-wash--delete-line)
+      (while (not (or (eobp) (looking-at "^@@\\|^diff --\\|^Submodule")))
+        (cond
+          ((looking-at "old mode \\(?:[^\n]+\\)\nnew mode \\(?:[^\n]+\\)\n")
+           (setq modes (match-string 0)))
+          ((looking-at "deleted file .+\n")
+           (setq status "deleted"))
+          ((looking-at "new file .+\n")
+           (setq status "new file"))
+          ((looking-at "rename from \\(.+\\)\nrename to \\(.+\\)\n")
+           (setq rename (match-string 0))
+           (setq orig (match-string 1))
+           (setq file (match-string 2))
+           (setq status "renamed"))
+          ((looking-at "copy from \\(.+\\)\ncopy to \\(.+\\)\n")
+           (setq orig (match-string 1))
+           (setq file (match-string 2))
+           (setq status "copied"))
+          ((looking-at "similarity index .+\n"))
+          ((looking-at "dissimilarity index .+\n"))
+          ((looking-at "index .+\n"))
+          ((looking-at "--- \\(.+?\\)\t?\n")
+           (unless (equal (match-string 1) "/dev/null")
+             (setq orig (match-string 1))))
+          ((looking-at "\\+\\+\\+ \\(.+?\\)\t?\n")
+           (unless (equal (match-string 1) "/dev/null")
+             (setq file (match-string 1))))
+          ((looking-at "Binary files .+ and .+ differ\n")
+           (setq binary t))
+          ((looking-at "Binary files differ\n")
+           (setq binary t))
+          ;; TODO Use all combined diff extended headers.
+          ((looking-at "mode .+\n"))
+          (t (error "code-review-wash-diff: unknown extended header: %S"
+                    (buffer-substring (point) (line-end-position)))))
+        ;; `old mode' and `rename' headers are shown as special
+        ;; hunks, not part of the section header text.
+        (unless (or (string-prefix-p "old mode" (match-string 0))
+                    (string-prefix-p "rename" (match-string 0)))
+          (push (match-string 0) header))
+        (delete-region (point) (match-end 0)))
+      (when orig
+        (setq orig (code-review-wash--decode-git-path orig)))
+      (setq file (code-review-wash--decode-git-path file))
+      (setq header (string-join (nreverse header)))
+      (code-review-wash-insert-file-section
+       file orig status modes rename header binary nil))))
+
+(defun code-review-wash--decode-git-path (path)
+  "Decode git-quoted PATH (\"\\226...\" style) to its raw form.
+Delegates to magit's utility when available; identity otherwise."
+  (if (fboundp 'magit-decode-git-path)
+      (magit-decode-git-path path)
+    path))
+
+(defun code-review-wash-insert-file-section
     (file orig status modes rename header binary long-status)
-  "Overwrite the original Magit function on `magit-diff.el' FILE.
-ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the original fn."
+  "Insert the file section for FILE and wash its hunks.
+ORIG is the original file name (renames), STATUS the change type,
+MODES a mode-change header, RENAME a rename header, HEADER the
+raw extended headers, BINARY non-nil for binary files and
+LONG-STATUS an alternative status text.  This is an owned copy of
+magit-diff's file inserter (phase 11b); ours adds the
+code-review specifics: file classification (tags, collapse),
+comment bookkeeping and the trailing `missing comments' pass.
+Returns the section: `magit-wash-sequence' keeps washing while
+this is non-nil."
 
   ;;; --- beg -- code-review specific code.
   ;;; I need to set a reference point for the first hunk header
@@ -2169,7 +2263,7 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
                             'help-echo "Visit the file in Dired buffer"
                             'keymap 'code-review-binary-file-section-map))
         (magit-insert-heading)))
-    (magit-wash-sequence #'magit-diff-wash-hunk)
+    (magit-wash-sequence #'code-review-wash-hunk)
     ;; After washing all hunks for this file, insert any remaining
     ;; comments (e.g., local or outdated ones keyed by side/line)
     ;; that weren’t anchored to a concrete diff position.
@@ -2187,10 +2281,13 @@ ORIG, STATUS, MODES, RENAME, HEADER, BINARY and LONG-STATUS are arguments of the
       (code-review-section--hide-if-hidden section)
       section)))
 
-(defun code-review-section--magit-diff-wash-hunk ()
-  "Overwrite the original Magit function on `magit-diff.el' file.
-Code Review inserts PR comments sections in the diff buffer.
-Argument GROUPED-COMMENTS comments grouped by path and diff position."
+(defun code-review-wash-hunk ()
+  "Wash the hunk at point, inserting PR comment sections inline.
+Owned copy of magit-diff's hunk washer (phase 11b), interleaving
+the grouped comments (`code-review-section-grouped-comments',
+keyed by path and diff position or by side/line) into the hunk
+body as it is washed.  Returns t when a hunk was washed, nil
+otherwise, per the `magit-wash-sequence' contract."
   (when (looking-at "^@\\{2,\\} \\(.+?\\) @\\{2,\\}\\(?: \\(.*\\)\\)?")
 
     ;;; --- beg -- code-review specific code.
@@ -2207,7 +2304,7 @@ Argument GROUPED-COMMENTS comments grouped by path and diff position."
 
       (when (not head-pos)
         (code-review-utils--log
-         "code-review-section--magit-diff-wash-hunk"
+         "code-review-wash-hunk"
          (format "Every diff is associated with a PATH (the file). Head pos nil for %S"
                  (prin1-to-string path)))
         (message "ERROR: Head position for path %s was not found.
@@ -2231,7 +2328,7 @@ Please Report this Bug" path-name))
         ;; Paint the hunk (diff colors) as soon as it is washed:
         ;; `magit-insert-section' returns the section object, and by
         ;; then its `end' marker is set, which the painter needs.
-        (code-review--magit-diff-paint-hunk
+        (code-review-wash--paint-hunk
          (magit-insert-section
             ( hunk
               `((value . ,value) ;; TODO not sure if this has to diverge as well
@@ -2309,7 +2406,7 @@ Please Report this Bug" path-name))
                   (when old-line-current (setq old-line-current (1+ old-line-current))))))))
 
           ;; Remaining comments for this file are handled once per file
-          ;; in code-review-section--magit-diff-insert-file-section.
+          ;; in code-review-wash-insert-file-section.
 
         ;;; --- end -- code-review specific code.
           ))))
@@ -2324,99 +2421,90 @@ Please Report this Bug" path-name))
   "Trigger magit section hooks and draw BUFF-NAME.
 Run code review commit buffer hook when COMMIT-FOCUS? is non-nil.
 If you want to display a minibuffer MSG in the end."
-  (unwind-protect
-      (progn
-        ;; advices
-        (advice-add 'magit-diff-insert-file-section :override #'code-review-section--magit-diff-insert-file-section)
-        (advice-add 'magit-diff-wash-hunk :override #'code-review-section--magit-diff-wash-hunk)
+  (progn
+    (setq code-review-section-grouped-comments
+          (code-review-utils-make-group
+           (code-review-db--pullreq-raw-comments))
+          code-review-section-hold-written-comment-count nil
+          code-review-section-hold-written-comment-ids nil)
 
-        (setq code-review-section-grouped-comments
-              (code-review-utils-make-group
-               (code-review-db--pullreq-raw-comments))
-              code-review-section-hold-written-comment-count nil
-              code-review-section-hold-written-comment-ids nil)
-
-        (with-current-buffer (get-buffer-create buff-name)
-          ;; local repository context: worktree checked out at PR head
-          (when (and code-review-repo-enable
-                     (or (not code-review-repo-worktree)
-                         code-review-section-full-refresh?))
-            (condition-case err
-                (code-review-repo-setup (code-review-db-get-pullreq))
-              (error (message "code-review: repo setup failed: %s"
-                              (error-message-string err)))))
-          (when code-review-repo-worktree
-            (setq default-directory
-                  (file-name-as-directory code-review-repo-worktree)))
-          (let* ((window (get-buffer-window buff-name))
-                 (ws (window-start window))
-                 (inhibit-read-only t)
-                 ;; before the render replaces it: t when this buffer
-                 ;; has never been rendered before
-                 (fresh-render? (not magit-root-section)))
-            (save-excursion
-              (setq code-review-section--file-classifications
-                    (code-review--diff--classify-diff
-                     (code-review-db--pullreq-raw-diff)))
-              (erase-buffer)
-              (insert (code-review--maybe-reorder-diff
-                       (code-review-db--pullreq-raw-diff)
-                       code-review-section--file-classifications))
-              (insert ?\n))
-            (magit-insert-section section (code-review--root-section)
-                                  (magit-insert-section (code-review)
-                                    (magit-run-section-hook (if commit-focus?
-                                                                'code-review-sections-commit-hook
-                                                              'code-review-sections-hook)))
-                                  (magit-insert-section (code-review-files-report-section)
-                                    (code-review-section-insert-files-changed)
-                                    (magit-insert-section (code-review-files-chnged)
-                                      (save-restriction
-                                        (narrow-to-region (point) (point-max))
-                                        (run-hooks 'magit-diff-wash-diffs-hook)
-                                        (magit-wash-sequence
-                                         (apply-partially #'magit-diff-wash-diff ()))))))
-            ;; fold bot-authored comment threads (AI chatter).  Only on
-            ;; a fresh render: on re-render magit inherits each
-            ;; section's previous visibility, and re-folding here would
-            ;; clobber sections the user deliberately expanded.
-            (when (and code-review-collapse-bot-comments
-                       fresh-render?)
-              (code-review--collapse-bot-comments magit-root-section))
-            (if window
-                (progn
-                  (pop-to-buffer buff-name)
-                  (set-window-start window ws))
-              (progn
-                (funcall code-review-new-buffer-window-strategy buff-name)
-                (goto-char (point-min))))
-            (code-review-mode)
-            ;; per-PR review buffers: remember which PR this buffer
-            ;; shows, and make commands issued here act on that PR.
-            ;; Done after `code-review-mode', which kills local
-            ;; variables and hooks.
-            (setq code-review-review-buffer-pr-id code-review-db--pullreq-id)
-            (add-hook 'post-command-hook #'code-review--sync-db-pullreq nil t)
-            ;; sticky file name while reading deep inside a hunk
-            (setq header-line-format nil)
-            (add-hook 'post-command-hook #'code-review--update-header-line
-                      nil t)
-            (add-hook 'window-scroll-functions #'code-review--update-header-line
-                      nil t)
-            (when commit-focus?
-              (code-review-commit-minor-mode 1))
-            (code-review-section-insert-header-title)
-            (when code-review-comment-cursor-pos
-              (goto-char code-review-comment-cursor-pos))
-            (when msg
-              (message nil)
-              (message msg))
-            ;; Run post hook after everything is rendered and mode is active
-            (run-hooks 'code-review-post-hook))))
-
-    ;; remove advices
-    (advice-remove 'magit-diff-insert-file-section #'code-review-section--magit-diff-insert-file-section)
-    (advice-remove 'magit-diff-wash-hunk #'code-review-section--magit-diff-wash-hunk)))
+    (with-current-buffer (get-buffer-create buff-name)
+      ;; local repository context: worktree checked out at PR head
+      (when (and code-review-repo-enable
+                 (or (not code-review-repo-worktree)
+                     code-review-section-full-refresh?))
+        (condition-case err
+            (code-review-repo-setup (code-review-db-get-pullreq))
+          (error (message "code-review: repo setup failed: %s"
+                          (error-message-string err)))))
+      (when code-review-repo-worktree
+        (setq default-directory
+              (file-name-as-directory code-review-repo-worktree)))
+      (let* ((window (get-buffer-window buff-name))
+             (ws (window-start window))
+             (inhibit-read-only t)
+             ;; before the render replaces it: t when this buffer
+             ;; has never been rendered before
+             (fresh-render? (not magit-root-section)))
+        (save-excursion
+          (setq code-review-section--file-classifications
+                (code-review--diff--classify-diff
+                 (code-review-db--pullreq-raw-diff)))
+          (erase-buffer)
+          (insert (code-review--maybe-reorder-diff
+                   (code-review-db--pullreq-raw-diff)
+                   code-review-section--file-classifications))
+          (insert ?\n))
+        (magit-insert-section section (code-review--root-section)
+                              (magit-insert-section (code-review)
+                                (magit-run-section-hook (if commit-focus?
+                                                            'code-review-sections-commit-hook
+                                                          'code-review-sections-hook)))
+                              (magit-insert-section (code-review-files-report-section)
+                                (code-review-section-insert-files-changed)
+                                (magit-insert-section (code-review-files-chnged)
+                                  (save-restriction
+                                    (narrow-to-region (point) (point-max))
+                                    (run-hooks 'magit-diff-wash-diffs-hook)
+                                    (magit-wash-sequence
+                                     #'code-review-wash-diff)))))
+        ;; fold bot-authored comment threads (AI chatter).  Only on
+        ;; a fresh render: on re-render magit inherits each
+        ;; section's previous visibility, and re-folding here would
+        ;; clobber sections the user deliberately expanded.
+        (when (and code-review-collapse-bot-comments
+                   fresh-render?)
+          (code-review--collapse-bot-comments magit-root-section))
+        (if window
+            (progn
+              (pop-to-buffer buff-name)
+              (set-window-start window ws))
+          (progn
+            (funcall code-review-new-buffer-window-strategy buff-name)
+            (goto-char (point-min))))
+        (code-review-mode)
+        ;; per-PR review buffers: remember which PR this buffer
+        ;; shows, and make commands issued here act on that PR.
+        ;; Done after `code-review-mode', which kills local
+        ;; variables and hooks.
+        (setq code-review-review-buffer-pr-id code-review-db--pullreq-id)
+        (add-hook 'post-command-hook #'code-review--sync-db-pullreq nil t)
+        ;; sticky file name while reading deep inside a hunk
+        (setq header-line-format nil)
+        (add-hook 'post-command-hook #'code-review--update-header-line
+                  nil t)
+        (add-hook 'window-scroll-functions #'code-review--update-header-line
+                  nil t)
+        (when commit-focus?
+          (code-review-commit-minor-mode 1))
+        (code-review-section-insert-header-title)
+        (when code-review-comment-cursor-pos
+          (goto-char code-review-comment-cursor-pos))
+        (when msg
+          (message nil)
+          (message msg))
+        ;; Run post hook after everything is rendered and mode is active
+        (run-hooks 'code-review-post-hook)))))
 
 (cl-defmethod code-review--auth-token-set? ((_github code-review-github-repo) res)
   "Check if the RES has a message for auth token not set for GITHUB."

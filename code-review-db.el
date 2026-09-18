@@ -270,9 +270,6 @@
 
 (defun code-review-db-all-unfinished ()
   "Get a list of all unfinished Reviews."
-  (when (and code-review-db-connection (emacsql-live-p code-review-db-connection))
-    (emacsql-close code-review-db-connection)
-    (setq code-review-db-connection nil))
   (let ((class 'code-review-db-pullreq)
         (db (code-review-db)))
     (->> (emacsql db
