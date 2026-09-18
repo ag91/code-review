@@ -103,28 +103,6 @@ to 'forge."
 
 ;;; Entrypoint
 
-(defun code-review-jump-to-code-review-for-a-comment-and-back ()
-  "Jump from code-review buffer to file or back if you jumped already."
-  (interactive)
-  (save-excursion
-    (if (equal "*Code Review*" (buffer-name))
-        ;; I have already jumped: go back
-        (let ((reg (or
-                    (when (region-active-p)
-                      (substring-no-properties (funcall region-extract-function)))
-                    (s-chop-left 1 (thing-at-point 'line t)))))
-          (find-file (alist-get 'path (oref (magit-current-section) value)))
-          (goto-char (point-min))
-          (search-forward reg))
-      (let ((reg
-             (or
-              (when (region-active-p)
-                (substring-no-properties (funcall region-extract-function)))
-              (thing-at-point 'line t))))
-        (switch-to-buffer "*Code Review*")
-        (goto-char (point-min))
-        (search-forward reg)))))
-
 ;;;###autoload
 (defun code-review-forge-pr-at-point ()
   "Review the forge pull request at point.
@@ -192,6 +170,7 @@ OUTDATED."
     code-review-difftastic-file)
    ("V" "View: whole diff ignoring whitespace (view-only)"
     code-review-view-wdiff)
+   ("u" "Copy PR URL (C-u: browse)" code-review-kill-pr-url)
    ("G" "Full reload" code-review-reload)
    ("q" "Quit" transient-quit-one)])
 
@@ -258,12 +237,6 @@ inside Code Review buffers is redirected."
         (define-key map (kbd "C-RET") #'code-review-visit-worktree-file)
         (define-key map [remap magit-diff-visit-worktree-file] #'code-review-visit-worktree-file)))
     ))
-
-(defun code-review--maybe-visit-worktree (orig-fn &rest args)
-  "Advice wrapper to use robust visitor in Code Review buffers."
-  (if (derived-mode-p 'code-review-mode)
-      (apply #'code-review-visit-worktree-file args)
-    (apply orig-fn args)))
 
 (defun code-review-kill-pr-url (jump?)
   "Kill (or browse if JUMP?) pr at point."

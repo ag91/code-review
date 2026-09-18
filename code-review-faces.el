@@ -40,16 +40,6 @@
   "Face for timestamps."
   :group 'code-review)
 
-(defface code-review-comment-face
-  `((((class color) (background light))
-     ,@(and (>= emacs-major-version 27) '(:extend t))
-     :foreground "DimGrey")
-    (((class color) (background  dark))
-     ,@(and (>= emacs-major-version 27) '(:extend t))
-     :foreground "LightGrey"))
-  "Face for comment sections."
-  :group 'code-review)
-
 (defface code-review-diff-tag-face
   `((((class color) (background light))
      :inherit font-lock-builtin-face

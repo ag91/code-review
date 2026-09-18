@@ -1089,18 +1089,26 @@ needed, and merge review thread metadata (`threadId',
 
 
 (defun code-review-jump-to-gh ()
+  "Browse the file at point on the GitHub PR page.
+Jumps straight to the file's diff section using GitHub's stable
+anchor: the sha256 hexdigest of the repository-relative path
+(see https://github.com/orgs/community/discussions/55764)."
   (interactive)
-  (unless (equal "*Code Review*" (buffer-name)) (error "Need to be in code-review buffer for this"))
-  (let* ((pr (code-review-db-get-pullreq))
-         (url (oref pr url))
-         (path (alist-get 'path (oref (magit-current-section) value)))
-         (sha256 (--> (shell-command-to-string (format "echo -n \"%s\" | shasum -a 256 | cut -d ' ' -f1" path)) ;; kindly discovered via https://github.com/orgs/community/discussions/55764
-                      s-lines
-                      -butlast ; there is a new line at the end of the output
-                      -last-item
-                      s-trim))
-         (url (format "%s/files#diff-%s" url sha256)))
-    (browse-url url)))
+  (unless (derived-mode-p 'code-review-mode)
+    (error "Need to be in a code-review buffer for this"))
+  (let ((section (magit-current-section)))
+    (while (and section (not (magit-file-section-p section)))
+      (setq section (oref section parent)))
+    (unless section
+      (error "Point is not inside a file section"))
+    (let* ((path (substring-no-properties (oref section value)))
+           (path (cond ((string-prefix-p "a/" path) (substring path 2))
+                       ((string-prefix-p "b/" path) (substring path 2))
+                       (t path)))
+           (pr (code-review-db-get-pullreq))
+           (url (oref pr url))
+           (anchor (secure-hash 'sha256 path)))
+      (browse-url (format "%s/files#diff-%s" url anchor)))))
 
 (provide 'code-review-github)
 ;;; code-review-github.el ends here

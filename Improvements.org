@@ -452,6 +452,61 @@ Cost: we stop inheriting upstream wash improvements
 automatically.  Benefit: renders stop being hostage to magit
 release notes.
 
+Steps (each independently shippable, in this order so every
+step stays verifiable):
+
+**11a — dead code and shrink (STATUS:done, 2026-09-18).**  Full-package
+survey (2026-09-18) found ~150 lines of dead code and ~250
+lines of duplication:
+
+- Dead, deleted: 12 orphaned db helpers
+  (=code-review-db-get-path=, =-get-buffer-paths=,
+  =-get-curr-head-pos=, =-get-pr-alist=,
+  =-get-comment-written-pos=, =--pullreq-title-update=,
+  =--pullreq-description=, =--pullreq-description-update=,
+  =--head-pos=, =--curr-path-comment-count-update=,
+  =--curr-path-comment-written-update=,
+  =--comment-already-written?=), the never-wired
+  =code-review--maybe-visit-worktree= advice wrapper, the
+  unused =code-review-comment-face=, and the legacy
+  =code-review-jump-to-code-review-for-a-comment-and-back=
+  (hardcoded the pre-per-PR buffer name, broken and uncalled).
+- =code-review-jump-to-gh= kept but fixed (same
+  hardcoded-name bug; also =secure-hash= instead of a
+  =shasum= shell round-trip, and the file path is taken from
+  the file section instead of assuming a hunk value alist).
+- =code-review-kill-pr-url= was dead by reference but useful:
+  bound it in the transient menu instead of deleting.
+- Survey method worth reusing: extract all defined symbols,
+  count word occurrences across the package (autoloads
+  included); zero outside the definition means dead.  No
+  dangling calls exist (reverse scan: every called
+  =code-review-*=-prefixed symbol is defined).
+
+**11b — own the wash** (stability; the design sketch above).
+
+**11c — split section.el** (3,109 lines today) along its
+seams: =code-review-diff.el= (the phase-3 classification
+engine, pure functions), reactions and their dedup, the
+interactive/navigation commands into the existing
+=code-review-actions.el=, leaving =code-review-section.el=
+the rendering core (~1,300 lines).  Pure moves + requires, no
+logic changes; recompile + live render after each move.
+
+**11d — reaction dedup** (the only step that rewrites live
+logic, so it comes last when the diff is smallest): 17
+functions / ~300 lines in three near-identical families
+(conversation, code-comment, description) collapse into one
+generic engine parameterized by context (~120 lines).  Same
+pass: merge trio in actions.el (=merge-merge/rebase/squash=),
+gitlab/bitbucket =errback= and =not-supported-message= pairs,
+=assignee/reviewer-visit-at-remote= pair, and
+=comment-insert-lines= defmethods via two class slots.
+
+Not worth touching: =internal-build= per forge (bodies differ
+in real per-forge mapping), comment.el, utils.el,
+interfaces.el, repo.el (all clean).
+
 * Phase 10 — Tree-sitter semantic hunk highlighting               :STATUS:design
 
 Not implemented yet; design sketch agreed so the next session can
