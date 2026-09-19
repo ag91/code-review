@@ -297,6 +297,8 @@ Optionally define a MSG."
   "Add or edit comment depending on context.
 Inform if a SUGGESTION-CODE? is being proposed."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((section (magit-current-section)))
     (with-current-buffer (code-review-review-buffer)
       (setq code-review-comment-cursor-pos (point)

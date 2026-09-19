@@ -44,6 +44,7 @@
 (require 'code-review-interfaces)
 (require 'code-review-faces)
 (require 'code-review-actions)
+(require 'code-review-local)
 (require 's)
 
 (defgroup code-review nil
@@ -241,6 +242,8 @@ inside Code Review buffers is redirected."
 (defun code-review-kill-pr-url (jump?)
   "Kill (or browse if JUMP?) pr at point."
   (interactive "P")
+  (when (code-review-db-local-pr-p)
+    (user-error "Local review has no URL"))
   (with-slots (url) (code-review-db-get-pullreq)
     (when jump?
       (browse-url url))

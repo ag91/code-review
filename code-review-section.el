@@ -130,10 +130,13 @@ determined."
              (slot-boundp pr 'owner)
              (slot-boundp pr 'repo)
              (slot-boundp pr 'number))
-        (format "*Code Review: %s/%s#%s*"
-                (oref pr owner)
-                (replace-regexp-in-string "%2F" "/" (oref pr repo))
-                (oref pr number))
+        (if (equal (oref pr state) "LOCAL")
+            (format "*Code Review: local: %s*"
+                    (replace-regexp-in-string "%2F" "/" (oref pr repo)))
+          (format "*Code Review: %s/%s#%s*"
+                  (oref pr owner)
+                  (replace-regexp-in-string "%2F" "/" (oref pr repo))
+                  (oref pr number)))
       code-review-buffer-name)))
 
 (defun code-review-review-buffer ()
@@ -949,20 +952,22 @@ INDENT count of spaces are added at the start of every line."
   "Keymaps for feedback section.")
 
 (defun code-review-section-insert-feedback-heading ()
-  "Insert feedback heading."
-  (let* ((feedback (code-review-db--pullreq-feedback))
-         (obj (code-review-feedback-section :msg feedback)))
-    (code-review-section--hide-if-hidden
-     (magit-insert-section (code-review-feedback-section obj
-                                                          code-review-fold-header-sections)
-       (insert (propertize "Your Review Feedback" 'font-lock-face 'magit-section-heading))
-       (magit-insert-heading)
-      (magit-insert-section (code-review-feedback-section obj)
-        (if feedback
-            (insert feedback)
-          (insert (propertize "Leave a comment here." 'font-lock-face 'magit-dimmed))))
-      (insert ?\n)
-      (insert ?\n)))))
+  "Insert feedback heading.
+Local diff reviews are read-only: no feedback section."
+  (when (not (code-review-db-local-pr-p))
+    (let* ((feedback (code-review-db--pullreq-feedback))
+           (obj (code-review-feedback-section :msg feedback)))
+      (code-review-section--hide-if-hidden
+       (magit-insert-section (code-review-feedback-section obj
+                                                            code-review-fold-header-sections)
+         (insert (propertize "Your Review Feedback" 'font-lock-face 'magit-section-heading))
+         (magit-insert-heading)
+        (magit-insert-section (code-review-feedback-section obj)
+          (if feedback
+              (insert feedback)
+            (insert (propertize "Leave a comment here." 'font-lock-face 'magit-dimmed))))
+        (insert ?\n)
+        (insert ?\n))))))
 
 ;;; general comments - top level comments
 
@@ -1083,7 +1088,8 @@ INDENT count of spaces are added at the start of every line."
 
 (defun code-review-section-insert-top-level-comments ()
   "Insert general comments for the PULL-REQUEST in the buffer."
-  (when-let (pr (code-review-db-get-pullreq))
+  (when-let (pr (and (not (code-review-db-local-pr-p))
+                     (code-review-db-get-pullreq)))
     (code-review-section--hide-if-hidden
      (magit-insert-section (code-review-comment-header-section
                            nil code-review-fold-header-sections)
@@ -1938,14 +1944,22 @@ If you want to display a minibuffer MSG in the end."
           code-review-section-hold-written-comment-ids nil)
 
     (with-current-buffer (get-buffer-create buff-name)
-      ;; local repository context: worktree checked out at PR head
-      (when (and code-review-repo-enable
-                 (or (not code-review-repo-worktree)
-                     code-review-section-full-refresh?))
-        (condition-case err
-            (code-review-repo-setup (code-review-db-get-pullreq))
-          (error (message "code-review: repo setup failed: %s"
-                          (error-message-string err)))))
+      ;; local repository context: worktree checked out at PR head.
+      ;; For a local diff review the repository itself is the worktree.
+      (if (code-review-db-local-pr-p)
+          (when (and code-review-repo-enable
+                     (not code-review-repo-worktree))
+            (setq code-review-repo-worktree
+                  (or (let ((root (oref (code-review-db-get-pullreq) host)))
+                        (and root (file-name-as-directory root)))
+                       (magit-toplevel))))
+        (when (and code-review-repo-enable
+                   (or (not code-review-repo-worktree)
+                       code-review-section-full-refresh?))
+          (condition-case err
+              (code-review-repo-setup (code-review-db-get-pullreq))
+            (error (message "code-review: repo setup failed: %s"
+                            (error-message-string err))))))
       (when code-review-repo-worktree
         (setq default-directory
               (file-name-as-directory code-review-repo-worktree)))
@@ -2037,8 +2051,11 @@ If you want to display a minibuffer MSG in the end."
                 " <->"))
   (error "Unknown backend obj created.  Look at `code-review-log-file' and report the bug upstream"))
 
-(cl-defmethod code-review--internal-build ((_github code-review-github-repo) progress res &optional buff-name msg)
+(cl-defmethod code-review--internal-build ((obj code-review-github-repo) progress res &optional buff-name msg)
   "Helper function to build process for GITHUB based on the fetched RES informing PROGRESS."
+  ;; This runs in a timer: the db's current pullreq may have been
+  ;; switched to another buffer's PR meanwhile, so re-assert it.
+  (setq code-review-db--pullreq-id (oref obj id))
   (let* ((errors-complete-query (a-get (-second-item res) 'errors))
          (raw-infos-complete (a-get-in (-second-item res) (list 'data 'repository 'pullRequest)))
          (raw-infos-fallback (a-get-in (-third-item res) (list 'data 'repository 'pullRequest)))
@@ -2077,8 +2094,11 @@ If you want to display a minibuffer MSG in the end."
     (code-review--trigger-hooks buff-name nil msg)
     (progress-reporter-done progress)))
 
-(cl-defmethod code-review--internal-build ((_gitlab code-review-gitlab-repo) progress res &optional buff-name msg)
+(cl-defmethod code-review--internal-build ((obj code-review-gitlab-repo) progress res &optional buff-name msg)
   "Helper function to build process for GITLAB based on the fetched RES informing PROGRESS."
+  ;; This runs in a timer: the db's current pullreq may have been
+  ;; switched to another buffer's PR meanwhile, so re-assert it.
+  (setq code-review-db--pullreq-id (oref obj id))
 
   (when-let (err (a-get (-second-item res) 'errors))
     (code-review-utils--log
@@ -2108,8 +2128,11 @@ If you want to display a minibuffer MSG in the end."
   (code-review--trigger-hooks buff-name nil msg)
   (progress-reporter-done progress))
 
-(cl-defmethod code-review--internal-build ((_bitbucket code-review-bitbucket-repo) progress res &optional buff-name msg)
+(cl-defmethod code-review--internal-build ((obj code-review-bitbucket-repo) progress res &optional buff-name msg)
   "Helper function to build process for BITBUCKET based on the fetched RES informing PROGRESS."
+  ;; This runs in a timer: the db's current pullreq may have been
+  ;; switched to another buffer's PR meanwhile, so re-assert it.
+  (setq code-review-db--pullreq-id (oref obj id))
   (prin1 (format "RESULT:%s\n" (-second-item res)))
   (let* ((raw-infos (let-alist (-second-item res)
                       `((title . ,.title)

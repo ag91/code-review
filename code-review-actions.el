@@ -212,6 +212,8 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
   "Approve current PR.
 Optionally set a FEEDBACK message."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let* ((pr (code-review-db-get-pullreq))
          (last-commit (-> (oref pr raw-infos)
                           (a-get-in (list 'commits 'nodes))
@@ -235,30 +237,40 @@ Optionally set a FEEDBACK message."
 (defun code-review-submit-comments ()
   "Submit a Review Comment for the current PR."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review--submit "COMMENT"))
 
 ;;;###autoload
 (defun code-review-submit-request-changes ()
   "Submit a Request Change for the current PR."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review--submit "REQUEST_CHANGES"))
 
 ;;;###autoload
 (defun code-review-submit-lgtm ()
   "Submit an Approve Review with a LGTM message."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review-submit-approve code-review-lgtm-message))
 
 ;;;###autoload
 (defun code-review-submit-only-replies ()
   "Submit only replies comments."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review--submit nil nil t))
 
 ;;;###autoload
 (defun code-review-submit-single-top-level-comment ()
   "Submit a single comment without an attached Review."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((code-review-comment-single-comment? t))
     (code-review-comment-add
      code-review-comment-single-comment-msg)))
@@ -267,6 +279,8 @@ Optionally set a FEEDBACK message."
 (defun code-review-submit-single-diff-comment-at-point ()
   "Submit a single diff comment without an attached Review."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((section (magit-current-section)))
     (with-slots (value) section
       (if (magit-hunk-section-p section)
@@ -285,6 +299,8 @@ Optionally set a FEEDBACK message."
 (defun code-review-save-unfinished-review ()
   "Save unfinished Review."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (oset pr saved t)
     (oset pr saved-at (current-time-string))
@@ -354,18 +370,24 @@ Optionally set a FEEDBACK message."
 (defun code-review-merge-merge ()
   "Merge PR with MERGE strategy."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review-merge--with "merge"))
 
 ;;;###autoload
 (defun code-review-merge-rebase ()
   "Merge PR with REBASE strategy."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review-merge--with "rebase"))
 
 ;;;###autoload
 (defun code-review-merge-squash ()
   "Merge PR with SQUASH strategy."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (code-review-merge--with "squash"))
 
 
@@ -377,6 +399,8 @@ Optionally set a FEEDBACK message."
 (defun code-review-set-feedback ()
   "Add review FEEDBACK locally.  Required to Comment and Request Change reviews."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((buffer (get-buffer-create code-review-comment-buffer-name))
         (pr (code-review-db-get-pullreq)))
     (setq code-review-comment-feedback? t)
@@ -392,6 +416,8 @@ Optionally set a FEEDBACK message."
 (defun code-review-close-pr ()
   "Close current PR.  Sent immediately."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((buffer (get-buffer-create code-review-comment-buffer-name))
         (pr (code-review-db-get-pullreq)))
     (if (code-review-github-repo-p pr)
@@ -412,6 +438,8 @@ Optionally set a FEEDBACK message."
 (defun code-review-set-title ()
   "Change the title of current PR.  Sent immediately."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((buffer (get-buffer-create code-review-comment-buffer-name))
         (pr (code-review-db-get-pullreq)))
     (if (or (code-review-github-repo-p pr)
@@ -447,6 +475,8 @@ This function will make sure we clean the list of labels and/or disable all of t
   "Change the labels of current PR.  Sent immediately.
 Rewrite all current labels with the options chosen here."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (when-let (options (code-review-get-labels pr))
       (let* ((choices (completing-read-multiple "Choose: " (append
@@ -481,12 +511,16 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-set-assignee (&rest _)
   "Change assignee for the current PR.  Sent immediately.."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (code-review--set-assignee-field pr)))
 
 (defun code-review-set-yourself-assignee ()
   "Assign yourself for the current PR.  Sent immediately."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (code-review--set-assignee-field
      pr
@@ -495,6 +529,8 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-set-milestone ()
   "Change the milestone for the current PR.  Sent immediately."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (if (code-review-github-repo-p pr)
         (progn
@@ -522,6 +558,8 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-set-description ()
   "Submit new PR description.  Sent immediately."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((buffer (get-buffer-create code-review-comment-buffer-name))
         (pr (code-review-db-get-pullreq)))
     (setq code-review-comment-description? t)
@@ -542,6 +580,8 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-delete-feedback ()
   "Delete review FEEDBACK locally."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (oset pr feedback nil)
     (code-review-db-update pr)
@@ -569,6 +609,8 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-promote-comment-at-point-to-new-issue ()
   "Promote comment at point to a new issue.  Sent immediately."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (if (code-review-gitlab-repo-p pr)
         (message "Promote comment to issue not supported in Gitlab yet.")
@@ -584,6 +626,8 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-request-reviews (&optional login)
   "Request reviewers for current PR using LOGIN if available."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let* ((pr (code-review-db-get-pullreq))
          (users (code-review-get-assignable-users pr))
          (choices
@@ -629,6 +673,8 @@ If a valid ASSIGNEE is provided, use that instead."
 (defun code-review-request-review-at-point (&rest _)
   "Request reviewer at point."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((pr (code-review-db-get-pullreq)))
     (if (code-review-github-repo-p pr)
         (progn
@@ -694,6 +740,8 @@ again brings everything back."
 (defun code-review-comment-code-suggestion ()
   "Add code suggestion box."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((section (magit-current-section))
         (pr (code-review-db-get-pullreq)))
     (if (code-review-github-repo-p pr)
@@ -859,6 +907,8 @@ again brings everything back."
 (defun code-review-section-delete-comment ()
   "Delete a local comment."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (with-current-buffer (code-review-review-buffer)
     (setq code-review-comment-cursor-pos (point))
     (with-slots (value) (magit-current-section)
@@ -870,6 +920,8 @@ again brings everything back."
 For local comments, only deletes locally. For submitted diff comments,
 delete remotely via provider API and then drop from local DB."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (with-current-buffer (code-review-review-buffer)
     (setq code-review-comment-cursor-pos (point))
     (let* ((section (magit-current-section))
@@ -924,6 +976,8 @@ delete remotely via provider API and then drop from local DB."
 (defun code-review-threads-toggle-resolved ()
   "Toggle the resolved state of the review thread at point."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (if-let ((info (code-review--thread-info-at-point)))
       (let ((thread-id (car info))
             (resolved? (cdr info))
@@ -1021,15 +1075,18 @@ of the code."
               (t path))))))
 (defun code-review-difftastic--range ()
   "Return the base...HEAD range for the reviewed PR, or nil."
-  (when-let* ((pr (ignore-errors (code-review-db-get-pullreq)))
-              ((slot-boundp pr 'number))
-              (num (format "%s" (oref pr number)))
-              (base (format "refs/remotes/code-review/%s/base" num))
-              ((and code-review-repo-worktree
-                    (code-review-repo--git code-review-repo-worktree
-                                           "rev-parse" "--verify"
-                                           "--quiet" base))))
-    (format "%s...HEAD" base)))
+  (let ((pr (ignore-errors (code-review-db-get-pullreq))))
+    (if (and pr (equal (oref pr state) "LOCAL"))
+        ;; local diff review: the stored git diff args
+        (oref pr base-ref-name)
+      (when-let* (((and pr (slot-boundp pr 'number)))
+                  (num (format "%s" (oref pr number)))
+                  (base (format "refs/remotes/code-review/%s/base" num))
+                  ((and code-review-repo-worktree
+                        (code-review-repo--git code-review-repo-worktree
+                                               "rev-parse" "--verify"
+                                               "--quiet" base))))
+        (format "%s...HEAD" base)))))
 (defun code-review-difftastic-file (&optional whole-pr-p)
   "Show the changes of the file at point with difftastic.
 In plain terms, this \"drills down\" into one file: it opens a

@@ -441,7 +441,10 @@ Expect the same output as `git diff --no-prefix`"
                (rx line-start (group-n 1 (or "+++" "---")) " " (or "a/" "b/") (group-n 2 (+? not-newline)) line-end)
                "\\1 \\2"
                res))
-    (string-trim res)))
+    ;; trim only LEADING whitespace: eating the trailing newline
+    ;; glues the last diff block to whatever follows it (e.g. a
+    ;; reordered block) and breaks the wash
+    (replace-regexp-in-string "\\`\\s-+" "" res)))
 
 
 ;;; DATE

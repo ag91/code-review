@@ -1,6 +1,6 @@
 ;;; code-review-repo.el --- Local repository context for code-review -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 code-review contributors
+;; Copyright (C) 2026 Andrea <andrea-dev@hotmail.com>
 ;;
 ;; This file is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published

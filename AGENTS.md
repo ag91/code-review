@@ -24,6 +24,7 @@ phase moves forward or a new gotcha is discovered.
 | `code-review-section.el` | section rendering, the owned diff wash, comment/reaction section classes (~2.4k lines) |
 | `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
+| `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
 | `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support (`actions.el` also holds the interactive/navigation commands) |
@@ -87,6 +88,28 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
 - The db is an `eieio-singleton`: once connected, changing
   `code-review-db-database-file` has no effect until the singleton and
   its connection are reset (see the test helper).
+- `oset` on the closql pullreq objects is memory-only (no per-slot
+  write-through).  Persist with an explicit `(closql-insert db obj t)`;
+  that is what every `code-review-db--pullreq-*-update` does.
+- `magit-git-string` returns the FIRST line only.  For multi-line
+  git output (diffs!) use `magit-git-output`.
+- The build chain runs in a timer: never rely on ambient
+  `default-directory` or on `code-review-db--pullreq-id` surviving
+  into `code-review--internal-build` (it re-asserts the id from the
+  dispatched obj).
+- `(require 'foo)` is a no-op once `foo` is loaded: when reloading in
+  the daemon use `(load "foo")` for EVERY touched file, or stale
+  definitions (including native-jit subrs) survive and lie to you.
+- A long-lived daemon makes ANY "it still works" check unreliable
+  after moving functions between files: old defuns survive in
+  memory and byte-compile stays quiet behind `declare-function`.
+  Prove extracted functions exist with a fresh batch emacs
+  (`make test`) — the regression tests in
+  `test/code-review-diff-test.el` exist for exactly this reason.
+- Never trim the trailing newline of stored diff text
+  (`string-trim` on a diff does this): the reorder joins file
+  blocks, and a block missing its final newline glues onto the
+  next block's `diff --git` header, breaking the wash downstream.
 - The diff wash is OWNED (phase 11b): `code-review-wash-diff`,
   `code-review-wash-insert-file-section`, `code-review-wash-hunk`,
   `code-review-wash--paint-hunk` read plain diff text and insert

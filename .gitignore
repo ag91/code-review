@@ -2,6 +2,6 @@
 .idea
 *.log
 tmp/
-
+.agent-shell/
 *.elc
 .cask

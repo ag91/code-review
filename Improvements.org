@@ -227,6 +227,12 @@ DONE (implementation notes):
 
 * Phase 5 — Duplicate and dead code detection                    :STATUS:todo
 
+NOTE (phase 12): detection must work in LOCAL diff reviews too
+(=M-x code-review-review-local-diff= buffers) — reviewing your
+own changes for duplicated code before committing is a main use
+case.  It operates on the diff text and the repo, both available
+locally.
+
 - Similar code: normalize added lines (mask strings/numbers), take
   4-line shingles, match against an index of the repo built at the
   *base* commit.  Report "18/20 added lines similar to
@@ -404,6 +410,11 @@ Gotchas discovered (they will bite again):
 - Fringe markers linking diff lines to their threads.
 
 * Phase 10 — Tree-sitter semantic hunk highlighting               :STATUS:design
+
+NOTE (phase 12): highlighting must work in LOCAL diff reviews
+too (=M-x code-review-review-local-diff= buffers); the wash/paint
+path is shared so it should inherit for free — verify with a
+local buffer when implementing.
 
 Not implemented yet; design sketch agreed so the next session can
 pick it up.  The daemon runs Emacs 30.2 with =treesit= and the
@@ -595,10 +606,11 @@ render runs entirely through owned washers over plain diff text:
 
 
 
-**11c — split section.el (STATUS:done, 2026-09-18).**  Split
-along the seams: new =code-review-diff.el= (14 defs: the
-phase-3 classification engine + two defcustoms, pure
-functions on raw diff text; requires db + repo), new
+**11c — split section.el (STATUS:done, 2026-09-18;
+correction 2026-09-19).**  Split along the seams: new
+=code-review-diff.el= (14 defs: the phase-3 classification
+engine + two defcustoms, pure functions on raw diff text;
+requires db + repo), new
 =code-review-reactions.el= (18 defs: reaction classes and the
 toggle machinery; requires db + interfaces), and 22
 interactive/navigation commands moved into
@@ -615,6 +627,36 @@ Verified: all 13 files load, classification tag renders from
 the new home, fresh render 11 files / 28 hunks / 1,481 painted
 / 0 unpainted, bots 45/34 hidden, 13 folded; re-render
 identical; live litellm buffer healthy; ERT 35/35.
+
+CORRECTION (2026-09-19): the verification above was partly a
+LIE.  =code-review-diff.el= on disk had only the two
+defcustoms: the 12 classification functions (and
+=code-review--maybe-reorder-diff=) were extracted out of
+section.el but never landed in diff.el.  Three things hid it:
+byte-compile was silenced by the =declare-function= forms in
+section.el, ERT never called them, and the daemon kept the
+pre-split definitions in memory (defuns survive =load=).
+The stale definitions made every live render look perfect.
+Symptom that exposed it: in a local diff review the LAST
+hunk's lines lost their faces —
+=code-review-utils--clean-diff-prefixes= ends with
+=(string-trim res)= which eats the diff's trailing newline;
+=code-review--maybe-reorder-diff= joined blocks with
+=(mapconcat #'cdr kept "")=, so when reordering moved a file
+after the (trimmed) raw-last block, its ="diff --git"= header
+glued onto the dangling hunk line and the wash could not
+recognize it (raw text rendered inside the previous hunk).
+Both fixed: =clean-diff-prefixes= now trims only LEADING
+whitespace, and the reorder join terminates every block with
+a newline.  Functions restored from
+=/tmp/code-review-section.el.bak-11c= (3,198-line pre-split
+backup).  New regression tests
+(=test/code-review-diff-test.el=: split, classify tags,
+reorder-never-glues) force a FRESH batch emacs to load and
+run the engine, which is the only check that cannot be
+fooled by daemon staleness.  38/38 pass.  Lesson: after any
+extraction, prove the new file's functions exist in a fresh
+batch process, not in the long-lived daemon.
 
 **11d — dedup (STATUS:done, 2026-09-18).**  The reaction
 families collapsed into one engine in
@@ -652,6 +694,158 @@ stale daemon bindings fmakunbound.
 Not worth touching: =internal-build= per forge (bodies differ
 in real per-forge mapping), comment.el, utils.el,
 interfaces.el, repo.el (all clean).
+
+* Phase 12 — Local diff review (review your own changes)      :STATUS:done:
+
+Review the working tree as if it were a PR: fold docs/noise, see
+classification tags, difftastic drill-down, xref, the works —
+before committing.  Everything phase 11 made forge-agnostic
+(owned wash, classification, folding) works on local diff text
+for free.
+
+Design decisions (2026-09-18, user):
+
+- =code-review-review-local-diff=: no prefix =3D =git diff HEAD=
+  (staged + unstaged), one prefix = =git diff --cached=, two
+  prefixes = prompt for a ref.  New file =code-review-local.el=.
+- The local "PR" is a real DB row: class =code-review-local-diff=
+  (subclass of =code-review-db-pullreq=, NO extra slots — the
+  closql schema is fixed; the git diff args ride the existing
+  =base-ref-name= column, the worktree comes from
+  =magit-toplevel= at render time).  =state= = "LOCAL" is the
+  marker everywhere.  Rows are deleted on the next local review
+  start (=code-review-local--cleanup-rows=); they are never
+  =saved=3D= so they never appear in unfinished reviews.
+- Render path reuses the real machinery: local =cl-defmethods=3D
+  for =code-review-diff-deferred= (runs git diff),
+  =code-review-infos-deferred= (empty),
+  =code-review--auth-token-set?= (nil) and
+  =code-review--internal-build= (stores raw-diff, triggers
+  hooks).  So =G= (full reload) re-runs =git diff= for free.
+- Header shows the title "Local changes (<args>)" and state
+  LOCAL; info-driven headers render empty when raw-infos is nil.
+- Difftastic: =code-review-difftastic--range= returns the stored
+  diff args for local rows (=HEAD=, =--cached= or the ref), so
+  =D= and =C-u D= work unchanged.
+- Comments and reactions are READ-ONLY (user decision): every
+  comment/reaction entry point and every forge-mutating command
+  user-errors early ("local diff reviews are read-only").
+  Guards: =code-review--submit= (covers approve/comments/request
+  changes/LGTM/only-replies), the single-comment and setter
+  commands, close-pr, merge, save-unfinished, delete-comment,
+  threads-toggle-resolved, comment-add-or-edit,
+  comment-code-suggestion, the reaction toggles, kill-pr-url.
+- Constraint carried forward: any Phase 10 (tree-sitter) or
+  Phase 5 (duplicate/dead code) machinery MUST apply to local
+  reviews as well — both operate on the diff text/sections, so
+  they inherit this for free, but verify with a local buffer.
+
+**Implementation (STATUS:done, 2026-09-19).**  =code-review-local.el=
+as designed; =code-review-db-local-pr-p= in db.el;
+=code-review-pr-buffer-name= and =code-review--trigger-hooks= local
+branches in section.el; ~25 read-only/forge guards (one line after
+the interactive form of every mutating command in actions.el,
+comment.el, reactions.el, code-review.el).
+
+Verified live on this repo's own diff (7 files / 36 hunks / 461
+painted / 0 unpainted): render, re-render via =G= (re-runs git
+diff), difftastic range, guards 5/5, ERT 35/35, litellm buffer
+healthy.
+
+Hard-won gotchas (all bit during implementation):
+
+- =magit-git-string= returns the FIRST LINE ONLY.  Diff text
+  needs =magit-git-output=.  (Symptom: 44-char "diff".)
+- =oset= on the closql pullreq is memory-only: these classes
+  have no per-slot =:closql-table= props, so nothing writes
+  through.  Persistence is an explicit =(closql-insert db obj t)=
+  (exactly what =code-review-db--pullreq-raw-diff-update= always
+  did).  Symptom: state nil on refetch, generic buffer name.
+- The pullreq schema is FIXED at 32 columns and matches the
+  forge classes, which each define exactly one extra =callback=
+  slot; a subclass with a different slot count fails insert
+  with "32 columns but 31 values".
+- The deferred render runs in a TIMER: ambient
+  =default-directory= is arbitrary (the repo root is stored in
+  the =host= column) and =code-review-db--pullreq-id= may have
+  been switched to another buffer's PR by the
+  =post-command-hook= sync.  =code-review--internal-build= now
+  re-asserts =(setq code-review-db--pullreq-id (oref obj id))=
+  first — in the local method AND in the three forge methods
+  (that race predates phase 12).
+- =(require 'foo)= is a no-op once the feature is loaded:
+  reloading via require keeps STALE definitions (including
+  native-jit subrs) in the daemon.  Reload every touched file
+  with =load=, and add new files to the verify probe's file
+  list.
+- The ref header inserts =head-ref-name= unconditionally: local
+  rows set it to "working tree".
+
+* Phase 13 — Read tracking: mark files/hunks as reviewed      :STATUS:todo:
+
+Problem: folding a hunk once you have read it is the natural
+review workflow, but magit's visibility state lives only in the
+session: re-renders, restarts and =G= keep the folding only by
+accident, and nothing survives between review sessions.  There
+is no memory of what has already been reviewed.
+
+Goal: =v= marks the file (or hunk) at point as read; the state
+persists, syncs with GitHub's "Viewed files" feature, and
+un-marks itself when the diff changes underneath it — exactly
+like the GitHub web UI, where a viewed file flips back to
+unviewed when a new contributor commit touches it.
+
+Design:
+
+- SOURCE OF TRUTH for forge PRs: GitHub itself.  The web UI's
+  "Viewed" checkbox is file-level and already has the wanted
+  reset semantics (new commits to the file mark it unviewed
+  again).  So do not reimplement staleness logic for GitHub:
+  mirror it.
+  - Mutations: GraphQL =markFileAsViewed= /
+    =unmarkFileAsViewed= (input: =pullRequestId=, =path=).
+  - Query side: fetch the per-file viewed state with the rest
+    of the infos and seed the local DB from it (verify the
+    exact field name in the GraphQL schema during
+    implementation; the REST files endpoint does not carry it).
+  - Marking is optimistic: update the local DB, re-render, and
+    push the mutation asynchronously; an errback reverts the
+    local state and messages the user.
+- LOCAL STATE (needed for hunks, for GitLab/Bitbucket which
+  lack the same API, and for local diff reviews): a new closql
+  table (e.g. =reviewed=: pullreq, path, hunk-key, updated-at).
+  - Hunk granularity keyed by =file + hunk header=
+    (=@@ -a,b +c,d @@=), which survives most re-renders; a
+    changed header means the diff changed =3D read state
+    expires — that reproduces GitHub's reset semantics
+    locally without diffing diffs.
+  - File viewed =3D all its hunks read; then the GitHub sync
+    fires (for GitHub PRs).
+  - Schema note: new TABLE, not new columns (the pullreq schema
+    is fixed and closql insert maps the whole object); create
+    it =IF NOT EXISTS= on connect so existing user DBs migrate
+    transparently.
+- UX:
+  - =v= on a hunk section: mark that hunk read (dim + auto-fold
+    on next render); =v= on a file section: mark the whole file
+    read; =C-u v= unmarks.  Also works in =*Code Review:
+    local...*= buffers, DB-only.
+  - Read files get a =VIEWED= tag on the file heading (same
+    mechanism as =DOC=/=GEN= tags) and stay folded by default;
+    =code-review-toggle-focus-mode= gets a companion that hides
+    them entirely.
+  - "Files changed" heading reports "8/14 viewed".
+  - =G= (full reload) must reconcile: GitHub state wins for
+    GitHub PRs, local state fills in for the rest.
+- Implementation order: (1) DB table + =v= command with local
+  persistence and rendering (works everywhere, including local
+  reviews); (2) GitHub sync on top (query seed + optimistic
+  push); (3) GitLab/Bitbucket if their APIs allow, DB-only
+  otherwise.
+- Verification lessons already learned apply: batch tests in a
+  FRESH emacs for the DB table and hunk-key expiry; render
+  checks for the tag/folding; live litellm buffer health; and
+  beware that daemon staleness lies (see phase 11c correction).
 
 * Future ideas
 

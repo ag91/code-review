@@ -1,6 +1,6 @@
 ;;; code-review-reactions.el --- Reactions on PR comments and description -*- lexical-binding: t; -*-
 ;;
-;; Copyright (C) 2021 Wanderson Ferreira
+;; Copyright (C) 2026 Andrea <andrea-dev@hotmail.com>
 ;;
 ;; This file is part of code-review.
 ;;
@@ -154,6 +154,8 @@ NODE-ID is the reaction node id and REACTION-ID its database id."
 
 (defun code-review-toggle-reaction-at-point (comment-id context-name)
   "Add reaction at point given a COMMENT-ID and CONTEXT-NAME."
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let* ((allowed-reactions (-map
                              (lambda (it)
                                `(,(cdr it) . ,(car it)))
@@ -175,6 +177,8 @@ NODE-ID is the reaction node id and REACTION-ID its database id."
 (defun code-review-reactions-reaction-at-point ()
   "Endorse or remove your reaction at point."
   (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
   (setq code-review-comment-cursor-pos (point))
   (let* ((section (magit-current-section))
          (pr (code-review-db-get-pullreq))

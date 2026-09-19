@@ -292,6 +292,13 @@
   "Get buffer obj from BUFFER-ID."
   (closql-get (code-review-db) code-review-db--pullreq-id 'code-review-db-buffer))
 
+(defun code-review-db-local-pr-p ()
+  "Return non-nil when the current review is a local diff (not a forge PR)."
+  (and code-review-db--pullreq-id
+       (ignore-errors
+         (equal (oref (code-review-db-get-pullreq) state)
+                "LOCAL"))))
+
 (defun code-review-db-get-comment (id)
   "Get comment obj from ID."
   (closql-get (code-review-db) id 'code-review-db-comment))
