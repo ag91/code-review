@@ -225,23 +225,58 @@ DONE (implementation notes):
   redesigned (see pr-review).  Current write path already uses the
   line/side API.
 
-* Phase 5 — Duplicate and dead code detection                    :STATUS:todo
+* Phase 5 — Duplicate and dead code detection                   :STATUS:done
 
-NOTE (phase 12): detection must work in LOCAL diff reviews too
+NOTE (phase 12): detection works in LOCAL diff reviews too
 (=M-x code-review-review-local-diff= buffers) — reviewing your
 own changes for duplicated code before committing is a main use
 case.  It operates on the diff text and the repo, both available
 locally.
 
-- Similar code: normalize added lines (mask strings/numbers), take
-  4-line shingles, match against an index of the repo built at the
-  *base* commit.  Report "18/20 added lines similar to
-  src/foo.py:120-140" with a jump link.
-- Dead code: (a) newly added definitions with zero references in
-  the head tree -> "possibly dead"; (b) symbols deleted by the PR
-  still referenced elsewhere -> "dangling reference" (this one is
-  reliable).  Shown in a toggleable "Analysis" section, clearly
-  marked heuristic.
+DONE (implementation notes):
+
+- =code-review-analysis.el=: pure engine.  Similar code = normalize
+  added lines (mask strings/numbers/comments), 4-line shingles,
+  match against an index of repository files.  Dead code = (a)
+  added definitions with zero references in the worktree ->
+  "possibly dead"; (b) deleted definitions still referenced ->
+  "dangling".  Results cached per (PR id, diff md5) so re-renders
+  are instant; =code-review-analysis-reset= clears the cache.
+- Rendering: =code-review-analysis-section= class +
+  =code-review-section-insert-analysis= in =code-review-sections-hook=
+  (between Commits and Files changed).  Only inserted when there
+  are findings; clearly marked "(heuristic)"; jump buttons to
+  worktree files.
+- PERFORMANCE (measured on litellm #41667, 11k files):
+  - NEVER grep the packed base tree: =git grep <rev>= inflated every
+    blob and froze the user's live daemon for 106 s (C-g incident —
+    this is unacceptable, see Gotchas in AGENTS.md).  Candidate
+    discovery greps the WORKTREE instead.
+  - =git grep -n -F -f probes= scans every match of every probe:
+    106 s.  =git grep -l= stops at the first match per file: 1.6 s.
+    Hit-count ranking is lost (walk order instead), accepted.
+  - References: ONE batched =git grep= for all definition names
+    (was one grep per name: 46 greps).  2 s.
+  - Hard caps: 250 probes, 100 candidate files, 3 MB index budget.
+  - Total worst case ~3.7 s synchronous (litellm-sized repo);
+    small repos are instant.  Findings on the real litellm PR:
+    similar=0 dead=36 dangling=1 (the 36 possibly-dead defs on an
+    AI-authored PR is a useful heuristic on its own).
+- SELF-MATCHES: diff files are NOT excluded from candidates (a PR
+  copying code between two files both in the diff is the primary
+  similar case); each analyzed file's hits against its own
+  worktree copy are filtered in =--analyze-one-file=.
+- Gotchas found: =magit-git-output= breaks with glob pathspecs
+  (magit sets =GIT_LITERAL_PATHSPECS=1=; use plain =call-process=);
+  match-data is GLOBAL — bind match-strings before any nested
+  =string-match=; cl-loop =unless= BEFORE a =for= clause does not
+  filter (use =cl-remove-if= on the list); using a =_=-prefixed
+  cl-loop destructure variable as a value is a =void-variable=
+  error.  Details in AGENTS.md.
+- UX: the analysis runs synchronously inside the render.  Worst
+  case ~3.7 s on a huge repo; instant on normal ones and cached
+  afterwards.  Async idle-sliced rendering or an on-demand
+  keybinding are possible follow-ups if this ever feels slow.
 
 * Phase 6 — Edit submitted comments and PR lifecycle          :STATUS:todo
 

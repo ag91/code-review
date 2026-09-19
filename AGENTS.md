@@ -106,6 +106,30 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   Prove extracted functions exist with a fresh batch emacs
   (`make test`) — the regression tests in
   `test/code-review-diff-test.el` exist for exactly this reason.
+- NEVER run heavy or unbounded compute in the live daemon: the
+  phase 5 analysis once froze the user's Emacs for two full minutes
+  (git grep on a packed base tree).  Measure anything heavy in
+  batch emacs (`make test`), and design every engine so its cost
+  is bounded and measurable before it ever reaches the daemon.
+- `magit-git-output` / `magit-git-string` run git with
+  GIT_LITERAL_PATHSPECS=1: glob-style pathspecs (`:(exclude)*.el`)
+  are taken literally and match nothing.  Use plain `call-process`
+  when a git call needs glob pathspecs.
+- The match-data is GLOBAL and gets clobbered by any nested
+  `string-match` (even inside a helper): bind `match-string` results
+  to variables BEFORE calling anything that might match.
+- cl-loop traps: an `unless` clause placed BEFORE a `for` clause
+  does not filter (the body still runs for every iteration — use
+  `cl-remove-if` on the list instead); referencing a `_`-prefixed
+  destructured `for` variable raises void-variable at runtime —
+  name it normally if you use it.
+- `git grep -n -F -f probe-file` reports every match of every
+  probe and can take minutes on big worktrees; `git grep -l` stops
+  at the first match per file and is ~25x faster when you only
+  need which files matched.
+- When an edit loops (paren surgery, region transplants): stop and
+  ask the user instead of iterating — they will fix it faster than
+  the loop will.
 - Never trim the trailing newline of stored diff text
   (`string-trim` on a diff does this): the reorder joins file
   blocks, and a block missing its final newline glues onto the

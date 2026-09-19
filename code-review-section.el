@@ -39,6 +39,7 @@
 (require 'code-review-utils)
 (require 'code-review-repo)
 (require 'code-review-diff)
+(require 'code-review-analysis)
 (require 'code-review-reactions)
 
 (declare-function code-review--diff--classify-diff "code-review-diff")
@@ -968,6 +969,73 @@ Local diff reviews are read-only: no feedback section."
             (insert (propertize "Leave a comment here." 'font-lock-face 'magit-dimmed))))
         (insert ?\n)
         (insert ?\n))))))
+
+(defclass code-review-analysis-section (magit-section)
+  (()))
+
+(defun code-review-section--insert-analysis-jump (worktree path line)
+  "Insert a button jumping to PATH at LINE in WORKTREE."
+  (insert-button (format "%s:%s" path line)
+                 'face 'code-review-url-header-face
+                 'follow-link t
+                 'help-echo "Visit this location in the worktree"
+                 'action (lambda (&rest _)
+                           (find-file-other-window
+                            (expand-file-name path worktree))
+                           (goto-char (point-min))
+                           (forward-line (1- line)))))
+
+(defun code-review-section-insert-analysis ()
+  "Insert the heuristic Analysis section (phase 5).
+Duplicate and dead code findings; toggle it with TAB like any
+other section.  Nothing is inserted when the analysis found
+nothing (or is disabled, or there is no worktree)."
+  (let ((res (code-review-analysis-run)))
+    (when res
+      (let ((similar (plist-get res :similar))
+            (dead (plist-get res :dead))
+            (dangling (plist-get res :dangling))
+            (worktree code-review-repo-worktree))
+        (magit-insert-section (code-review-analysis-section)
+          (insert (propertize "Analysis" 'font-lock-face 'magit-section-heading))
+          (insert (propertize " (heuristic)" 'font-lock-face 'magit-dimmed))
+          (magit-insert-heading)
+          (pcase-dolist (`(,diff-path ,total ,repo-path ,covered ,lo ,hi)
+                         similar)
+            (insert "  ")
+            (insert (propertize "similar: " 'font-lock-face 'magit-dimmed))
+            (insert (format "%s: %s/%s added lines also in "
+                            diff-path covered total))
+            (insert-button (format "%s:%s-%s" repo-path lo hi)
+                           'face 'code-review-url-header-face
+                           'follow-link t
+                           'help-echo "Visit the similar code in the worktree"
+                           'action (lambda (&rest _)
+                                     (find-file-other-window
+                                      (expand-file-name repo-path worktree))
+                                     (goto-char (point-min))
+                                     (forward-line (1- lo))))
+            (insert ?\n))
+          (pcase-dolist (`(,name ,path ,line) dead)
+            (insert "  ")
+            (insert (propertize "possibly dead: " 'font-lock-face 'magit-dimmed))
+            (insert (format "%s (added in %s:%s; no references found in the "
+                            name path line))
+            (insert "worktree)\n"))
+          (pcase-dolist (`(,name ,path ,refs) dangling)
+            (insert "  ")
+            (insert (propertize "dangling: " 'font-lock-face 'magit-dimmed))
+            (insert (format "%s (deleted in %s; still used at "
+                            name path))
+            (let ((first t))
+              (pcase-dolist (`(,rpath ,rline ,_rtext)
+                             (cl-subseq refs 0 (min (length refs) 3)))
+                (unless first (insert ", "))
+                (setq first nil)
+                (code-review-section--insert-analysis-jump
+                 worktree rpath rline)))
+            (insert ")\n"))
+          (insert ?\n))))))
 
 ;;; general comments - top level comments
 
