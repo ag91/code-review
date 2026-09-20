@@ -187,6 +187,7 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
                (let ((code-review-section-full-refresh? t))
                  (oset pr finished t)
                  (oset pr finished-at (current-time-string))
+                 (oset pr feedback nil)
                  (code-review-db-update pr)
                  ;; async callback: point the DB back at this PR and
                  ;; rebuild this PR's buffer
