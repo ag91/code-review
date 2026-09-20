@@ -627,6 +627,54 @@ SCALA + LITERALS (scalafmt#5264 review, 2026-09-20):
   overlays (691 constant / 208 variable / 31 type / 22 function
   / 7 return), test-name strings get =font-lock-constant-face=,
   imports stay plain, added lines only.
+
+ELISP + CLOJURE (ag91/code-review#8 review, same day):
+
+- Both grammars probed the same way (capture-exercised, never
+  compile-only).  The grammars are structurally different, which
+  shaped the queries:
+  - ELISP: =defun= forms are =function_definition= nodes with a
+    named ="defun"= token child; =defvar=/=defconst=/=let= are
+    =special_form=.  =defmacro= is NOT special (structure error
+    at capture time) and =defsubst= leaks params into the name
+    capture — both left out deliberately.  Queries: defun name +
+    params, defvar, defconst, let bindings, =[(string)
+    (integer)]= literals.
+  - CLOJURE: everything is =list_lit= of =sym_lit=s, so
+    definitions are matched positionally by the head symbol with
+    =#match= (NOTE: =#eq= is NOT supported at capture time in
+    Emacs 30.2 either — same rule as =#not-match=: compile is
+    happy, capture errors).  Queries: defn-family names
+    (defn/defn-/defmacro/defonce/defmulti/defprotocol/
+    defrecord/deftype), def = variable, fn/let/loop vector
+    symbols, =[(str_lit) (num_lit)]= literals.  The defn
+    params pattern needs the vector IMMEDIATELY after the name
+    (an =_= between them eats the vector and matches nothing).
+- =language-map= now also maps =.el= and =.clj/.cljs/.cljc=.
+- Verified: batch ERT for both languages (they run, not skip —
+  grammars visible even in =emacs -Q=); live walker run on
+  =*Code Review: ag91/code-review#8*= (no rebuild): 16 overlays
+  (13 constants — strings/ints pop nicely in elisp — 3
+  variables), 0 function names because that PR adds no =defun=s,
+  which is the correct answer, not a failure.
+- No clojure review buffer at hand yet: the walker covers any
+  existing one (or just open one; the wash paints on render).
+
+CONSTANT FACE (user readability, same day): the theme's
+=font-lock-constant-face= is low-contrast on the green added
+background ("dark green/light blue", hard to read).  All
+constant captures (literal values AND UPPER_CASE constants) now
+use a dedicated =code-review-constant-face=: =dark violet= bold
+on light frames, =MediumPurple1= bold on dark ones — distinct
+from the keyword purple and the function-name blue, and
+customizable via =M-x customize-face=.  Both live buffers were
+repainted (scalafmt: 691 constants, code-review#8: 13).  This
+exposed a cache flaw: cached ranges carry RESOLVED faces, so a
+face/query change silently repainted the OLD faces until the
+buffer-local cache was cleared.  Fix: the cache key now hashes
+the language's query+face defcustom entries together with the
+hunk body, so any customization invalidates the cache
+automatically.
 * Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit
@@ -1026,6 +1074,9 @@ Design:
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N
   days).
+- =code-compass= integrate information from code-compass analyses to prioritize review
+
+  things like addding to an hotspot file, or the author not having experience with the module should contribute to inform the reviewer of how much attention to put in the review or what bits are most critical
 - Commit buffer should reuse the same worktree context.
 
 DONE since: per-PR review buffers

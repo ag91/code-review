@@ -99,15 +99,15 @@ overlay face at that position."
                   (code-review-hunkhighlight-test--face-at "(a")))
     (should (memq 'font-lock-variable-name-face
                   (code-review-hunkhighlight-test--face-at "total")))
-    (should (memq 'font-lock-constant-face
+    (should (memq 'code-review-constant-face
                   (code-review-hunkhighlight-test--face-at "MAX_RETRIES")))
     ;; UPPER_CASE is a constant, not a plain variable
     (should-not (memq 'font-lock-variable-name-face
                       (code-review-hunkhighlight-test--face-at "MAX_RETRIES")))
     ;; literal constant VALUES also stand out
-    (should (memq 'font-lock-constant-face
+    (should (memq 'code-review-constant-face
                   (code-review-hunkhighlight-test--face-at "ES = 3")))
-    (should (memq 'font-lock-constant-face
+    (should (memq 'code-review-constant-face
                   (code-review-hunkhighlight-test--face-at "msg = \"hi")))
     ;; return is the one keyword we keep
     (should (memq 'font-lock-keyword-face
@@ -145,8 +145,64 @@ overlay face at that position."
     (should (memq 'font-lock-keyword-face
                   (code-review-hunkhighlight-test--face-at "return")))
     ;; the test case NAME string stands out as a constant value
-    (should (memq 'font-lock-constant-face
+    (should (memq 'code-review-constant-face
                   (code-review-hunkhighlight-test--face-at "some test name")))))
+
+(ert-deftest code-review-hunkhighlight/elisp-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'elisp)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+(defun my-fun (a b)"
+        "+  \"docstring\""
+        "+  (let ((x 1)) (list a b x)))"
+        "+(defconst MY-CONST 10)"
+        "+(defvar my-var nil)")
+    (should (code-review-hunkhighlight-region beg end "code-review-fun.el"))
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "my-fun")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "(a")))
+    ;; let-bound symbols are variables
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "((x")))
+    ;; literals stand out
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "MY-CONST")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "\"docstring")))
+    ;; plain calls stay diff-colored
+    (should-not (memq 'font-lock-function-name-face
+                      (code-review-hunkhighlight-test--face-at "list a")))))
+
+(ert-deftest code-review-hunkhighlight/clojure-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'clojure)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+(def x 1)"
+        "+(defn foo [a b]"
+        "+  (+ a b 2))"
+        "+(defonce c \"val\")"
+        "+(let [q 3] q)")
+    (should (code-review-hunkhighlight-region beg end "src/my/ns.clj"))
+    ;; defn name and its params
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "foo")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "[a")))
+    ;; def/defonce: variable vs function
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "def x")))
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "defonce c")))
+    ;; let bindings are variables
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "[q")))
+    ;; literals stand out
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "\"val\"")))
+    ;; plain calls stay diff-colored
+    (should-not (memq 'font-lock-function-name-face
+                      (code-review-hunkhighlight-test--face-at "+ a")))))
 
 (ert-deftest code-review-hunkhighlight/test-file-faces ()
   (skip-unless (and (fboundp 'treesit-language-available-p)

@@ -139,9 +139,9 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   to one alternative inside a `[...]` alternation — write such
   patterns as separate top-level query patterns.
 - treesit predicates: `treesit-query-compile` ACCEPTS predicates
-  that are unsupported at RUNTIME (e.g. `#not-match` — Emacs 30.2
-  only supports equal/match/pred at capture time, and the error
-  fires from `treesit-query-capture`).  So a compiling query is
+  that are unsupported at RUNTIME (e.g. `#not-match` and `#eq` —
+  Emacs 30.2 only supports equal/match/pred at capture time, and
+  the error fires from `treesit-query-capture`).  So a compiling query is
   not a valid query: always exercise the capture, and isolate
   per-query captures in a condition-case so one bad query only
   disables itself (see `code-review-hunkhighlight--ranges`).

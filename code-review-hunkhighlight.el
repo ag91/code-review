@@ -78,7 +78,9 @@ diff faces and no error is signaled."
   '(("\\.py\\'" . python)
     ("\\.scala\\'" . scala)
     ("\\.sc\\'" . scala)
-    ("\\.sbt\\'" . scala))
+    ("\\.sbt\\'" . scala)
+    ("\\.el\\'" . elisp)
+    ("\\.clj[scx]?\\'" . clojure))
   "Map file-name regexp to tree-sitter language symbol.
 Extend this (and `code-review-hunkhighlight-queries') when adding
 languages: only ship queries you have validated against the
@@ -101,6 +103,20 @@ general ones."
 Used by the tree-sitter hunk highlighting in test files."
   :group 'code-review-hunkhighlight)
 
+(defface code-review-constant-face
+  '((((class color) (background light))
+     :foreground "tomato" :weight bold)
+    (((class color) (background dark))
+     :foreground "MediumPurple1" :weight bold)
+    (t :weight bold))
+  "Face for literal constant values (strings, numbers) in hunks.
+Theme `font-lock-constant-face's are often low-contrast over the
+green/red diff backgrounds (the one in use renders as a murky
+dark cyan there); this face is tuned to stay clearly readable on
+top of `magit-diff-added' while staying distinct from the keyword
+purple and the function-name blue."
+  :group 'code-review-hunkhighlight)
+
 (defcustom code-review-hunkhighlight-queries
   '((python
      ;; Deliberately MINIMAL (user request): definition names,
@@ -118,7 +134,7 @@ Used by the tree-sitter hunk highlighting in test files."
       . ((param . font-lock-variable-name-face)))
      ("((assignment left: (identifier) @const)
        (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"
-      . ((const . font-lock-constant-face)))
+      . ((const . code-review-constant-face)))
      ("((assignment left: (identifier) @var)
        (#match \"\\\\`[a-z_]\" @var))"
       . ((var . font-lock-variable-name-face)))
@@ -126,7 +142,7 @@ Used by the tree-sitter hunk highlighting in test files."
      ;; every language: in test code they are the test case names
      ;; and expected values — the stuff the reviewer wants to see
      ("[(string) (integer) (float)] @cval"
-      . ((cval . font-lock-constant-face))))
+      . ((cval . code-review-constant-face))))
     (scala
      ("\"return\" @kw"
       . ((kw . font-lock-keyword-face)))
@@ -142,14 +158,52 @@ Used by the tree-sitter hunk highlighting in test files."
       . ((param . font-lock-variable-name-face)))
      ("((val_definition pattern: (identifier) @const)
        (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"
-      . ((const . font-lock-constant-face)))
+      . ((const . code-review-constant-face)))
      ("((val_definition pattern: (identifier) @var)
        (#match \"\\\\`[a-z_]\" @var))"
       . ((var . font-lock-variable-name-face)))
      ("(string) @cval"
-      . ((cval . font-lock-constant-face)))
+      . ((cval . code-review-constant-face)))
      ("[(integer_literal) (floating_point_literal)] @cval"
-      . ((cval . font-lock-constant-face)))))
+      . ((cval . code-review-constant-face))))
+    (elisp
+     ;; grammar nodes (probed): defun forms are
+     ;; `function_definition' with a named "defun" token child;
+     ;; defvar/defconst/let are `special_form'.  defmacro/defsubst
+     ;; are NOT special nodes here (defmacro: structure error,
+     ;; defsubst: params leak into the name capture) — left out.
+     ("(function_definition \"defun\" (symbol) @fn (list (symbol) @param))"
+      . ((fn . font-lock-function-name-face)
+         (param . font-lock-variable-name-face)))
+     ("(special_form \"defvar\" (symbol) @var)"
+      . ((var . font-lock-variable-name-face)))
+     ("(special_form \"defconst\" (symbol) @const)"
+      . ((const . code-review-constant-face)))
+     ("(special_form \"let\" (list (list (symbol) @v)))"
+      . ((v . font-lock-variable-name-face)))
+     ("[(string) (integer)] @cval"
+      . ((cval . code-review-constant-face))))
+    (clojure
+     ;; grammar nodes (probed): everything is list_lit of sym_lits,
+     ;; so definitions are matched by the head symbol with #match
+     ;; (#eq is NOT supported at capture time in Emacs 30.2).
+     ;; defn-family name-only pattern first (defprotocol etc lack a
+     ;; name-adjacent vector), then name+params for defn shapes.
+     ("((list_lit . (sym_lit) @_h . (sym_lit) @name)
+       (#match \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\|defmulti\\\\|defprotocol\\\\|defrecord\\\\|deftype\\\\)\\\\'\" @_h))"
+      . ((name . font-lock-function-name-face)))
+     ("((list_lit . (sym_lit) @_h . (sym_lit) @name . (vec_lit (sym_lit) @param))
+       (#match \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\)\\\\'\" @_h))"
+      . ((name . font-lock-function-name-face)
+         (param . font-lock-variable-name-face)))
+     ("((list_lit . (sym_lit) @_h . (sym_lit) @name)
+       (#match \"\\\\`def\\\\'\" @_h))"
+      . ((name . font-lock-variable-name-face)))
+     ("((list_lit . (sym_lit) @_h . (vec_lit (sym_lit) @param))
+       (#match \"\\\\`\\\\(fn\\\\|let\\\\|loop\\\\)\\\\'\" @_h))"
+      . ((param . font-lock-variable-name-face)))
+     ("[(str_lit) (num_lit)] @cval"
+      . ((cval . code-review-constant-face)))))
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
 CAPTURE names must match the @captures in QUERY-STRING; a capture
@@ -364,9 +418,22 @@ Never signals; returns non-nil when faces were applied."
                           code-review-hunkhighlight-test-path-regexp
                           (downcase path)))
                  (body (buffer-substring-no-properties beg end))
+                 ;; the cache key includes the query+face MAPPINGS:
+                 ;; cached ranges carry resolved faces, so a
+                 ;; changed defcustom must invalidate the cache
+                 ;; (learned live: repainting after a face swap
+                 ;; silently reapplied the old face)
                  (key (concat (symbol-name lang) "|"
                               (if test-p "t" "nil") "|"
-                              (md5 body)))
+                              (md5 (concat
+                                    body "\e"
+                                    (prin1-to-string
+                                     (cons
+                                      (assq lang
+                                            code-review-hunkhighlight-queries)
+                                      (when test-p
+                                        (assq lang
+                                              code-review-hunkhighlight-test-queries))))))))
                  (cache (or code-review-hunkhighlight--cache
                             (setq code-review-hunkhighlight--cache
                                   (make-hash-table :test #'equal))))
