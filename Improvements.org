@@ -278,6 +278,31 @@ DONE (implementation notes):
   afterwards.  Async idle-sliced rendering or an on-demand
   keybinding are possible follow-ups if this ever feels slow.
 
+TUNING (scalafmt#5264 review, 2026-09-20): on a real scala PR
+the raw heuristics produced noise, and three rules fixed it:
+
+- "possibly dead: FileHeaderTest/FileHeaderConfigTest" was a
+  FALSE POSITIVE: *Test classes are invoked by BUILD-TOOL
+  CONVENTION (sbt/munit/pytest), zero references is normal.  New
+  defcustom =code-review-analysis-dead-test-name-regexp= (names
+  ending Test/Tests/Spec/Suite/Case/IT, =test_*=/=testX= prefixes)
+  skips them in the dead check.
+- "similar" findings were IMPORT BOILERPLAPE: test files all
+  start with the same import block, so a new test file "matches"
+  every other test file at 12/574 covered lines.  New defcustom
+  =code-review-analysis-boilerplate-line-regexp= (import/from/
+  package/using/require/#include) drops such lines from the
+  index, the added-side shingles AND the grep probes.
+- An absolute covered-line count alone is meaningless on big
+  additions: new =code-review-analysis-min-covered-ratio= (0.1)
+  also requires the match to cover a fraction of the file's
+  added lines.
+- Verified on the real scalafmt worktree (analysis cache reset +
+  rerun in the daemon): before 6 similar + 2 dead; after
+  3 similar (11-16% coverage, FileHeaderConfigTest only) and
+  0 dead.  The remaining 3 are munit-scaffolding-shaped; raise
+  the ratio defcustom to 0.2 to silence them if still noisy.
+
 * Phase 6 — Edit submitted comments and PR lifecycle          :STATUS:todo
 
 The biggest write-path gap vs pr-review: everything it can edit
@@ -578,6 +603,30 @@ TUNING (first user review, same day):
   bad query disables only itself.  Note the =#match= anchors:
   ="\\`[a-z_]"= for plain variables vs
   ="\\`[A-Z_][A-Z0-9_]*\\'"= for constants.
+
+SCALA + LITERALS (scalafmt#5264 review, 2026-09-20):
+
+- SCALA queries added (all validated against the installed
+  grammar, capture-exercised, node names probed first): def /
+  class / object / trait names, =def= parameters, =val= targets
+  (UPPER_CASE = constant, lowercase = variable, same =#match=
+  anchors as python), =return=, and literals.  =language-map=
+  now maps =.scala= / =.sc= / =.sbt=.
+- LITERAL CONSTANT VALUES (strings, numbers) are highlighted in
+  EVERY language with queries (user request): in test code they
+  are the test case names and expected values — =test("comment
+  starting with 'format: off' ...")= pops out.  Node names
+  probed per grammar: python =string/integer/float=, scala
+  =string= and =integer_literal/floating_point_literal= (scala
+  has NO =number= node — that error only surfaces at capture
+  time, compile is happy; the per-entry condition-case added
+  earlier now contains such mistakes).
+- Verified on the real =*Code Review: scalameta/scalafmt#5264*=
+  buffer (safe path: =code-review-hunkhighlight-magit-buffer=
+  walks existing sections, no rebuild, no comment loss): 959
+  overlays (691 constant / 208 variable / 31 type / 22 function
+  / 7 return), test-name strings get =font-lock-constant-face=,
+  imports stay plain, added lines only.
 * Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit

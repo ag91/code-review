@@ -77,6 +77,35 @@
   :group 'code-review-analysis
   :type 'integer)
 
+(defcustom code-review-analysis-min-covered-ratio 0.1
+  "Minimum fraction of the file's ADDED lines a similarity must
+cover to be reported.  Absolute line counts alone invite noise:
+a 12-line import-and-boilerplate overlap in a 574-line test file
+is 2% and meaningless, while 7 of 9 added lines in a small file
+is a real duplication.  0 disables the ratio check."
+  :group 'code-review-analysis
+  :type 'number)
+
+(defcustom code-review-analysis-boilerplate-line-regexp
+  "\\`[ \t]*\\(?:import\\|from[ \t]\\|package\\|using[ \t]\\|require[ \t]\\|#include\\)"
+  "Regexp matching STRUCTURAL boilerplate lines (imports, package
+declarations) that carry no duplication signal: they look alike in
+every file of a codebase, so they are dropped from the similarity
+index, the added-line shingles AND the grep probes.  Set to nil
+to disable the filter."
+  :group 'code-review-analysis
+  :type '(choice regexp (const nil)))
+
+(defcustom code-review-analysis-dead-test-name-regexp
+  "\\(?:Test\\|Tests\\|Spec\\|Suite\\|Case\\|IT\\)\\'\\|\\`test[_[:upper:]]"
+  "Regexp matching definition names that are TEST ENTRY POINTS
+(*Test classes, *Suite, pytest test_* functions...).  Those are
+invoked by BUILD-TOOL CONVENTION, not by explicit references:
+zero references in the worktree is normal for them, so the
+dead-code check skips them.  Set to nil to disable."
+  :group 'code-review-analysis
+  :type '(choice regexp (const nil)))
+
 (defcustom code-review-analysis-probe-min-length 10
   "Minimum length of a probe line to seed candidate discovery.
 Short lines (closing parens, `return y') appear everywhere and
@@ -160,6 +189,14 @@ This is heuristic: it trades precision for language-agnosticism."
              "\\_<[0-9][0-9_.a-fA-FxX]*\\_>" "N" s))
     (string-trim (replace-regexp-in-string "[ \t]+" " " s))))
 
+(defun code-review-analysis--boilerplate-p (line)
+  "Non-nil when raw LINE is structural boilerplate (imports etc).
+Such lines match everywhere in a codebase and carry no
+duplication signal; `code-review-analysis-boilerplate-line-regexp'
+is the tunable."
+  (and code-review-analysis-boilerplate-line-regexp
+       (string-match-p code-review-analysis-boilerplate-line-regexp line)))
+
 ;;; Diff line extraction (pure)
 
 (defun code-review-analysis--parse-hunk-header (line)
@@ -224,6 +261,13 @@ Return a hash table SHINGLE -> ((PATH . START-LINE) ...)."
                             (split-string text "\n")))
              (items (cl-loop for txt in lines
                             for ln from 1
+                            ;; structural lines (imports) match
+                            ;; everywhere: no signal, pure noise.
+                            ;; (empty lines stay: `--shingles' has
+                            ;; its own blank-stretch rule, and a
+                            ;; single blank inside a copied block
+                            ;; is a legitimate match)
+                            unless (code-review-analysis--boilerplate-p txt)
                             collect (cons ln txt))))
         (pcase-dolist (`(,start . ,shingle)
                        (code-review-analysis--shingles items size))
@@ -385,6 +429,10 @@ Return ((PATH . 1) ...)."
                   (cl-loop for (_ln . text) in added
                            when (>= (length text)
                                     code-review-analysis-probe-min-length)
+                           ;; imports/package lines are in EVERY file:
+                           ;; as probes they just flood the candidate
+                           ;; list with the whole repository
+                           unless (code-review-analysis--boilerplate-p text)
                            collect text)))
          (probes (cl-subseq probes 0
                             (min (length probes)
@@ -466,11 +514,14 @@ Return (SIMILAR DEAD DANGLING) findings for this file."
          (added (plist-get lines :added))
          (deleted (plist-get lines :deleted))
          (size code-review-analysis-shingle-size)
-         (added-items (mapcar (lambda (x)
-                                (cons (car x)
-                                      (code-review-analysis--normalize-line
-                                       (cdr x))))
-                              added))
+         (added-items (cl-loop for x in added
+                               ;; boilerplate (imports, package lines)
+                               ;; matches everywhere: not a signal
+                               unless (code-review-analysis--boilerplate-p
+                                        (cdr x))
+                               collect (cons (car x)
+                                             (code-review-analysis--normalize-line
+                                              (cdr x)))))
          (similar
           (when (and index (>= (length added-items) size))
             ;; self-matches (the file's own worktree copy, which of
@@ -483,11 +534,26 @@ Return (SIMILAR DEAD DANGLING) findings for this file."
                           code-review-analysis-min-covered))
                      for n from 1
                      while (<= n code-review-analysis-max-findings-per-file)
+                     ;; an absolute line count alone is noise: a
+                     ;; 12-line boilerplate overlap in a 574-line
+                     ;; test file is 2% and meaningless.  Require a
+                     ;; minimum FRACTION of the added lines too.
+                     when (or (zerop code-review-analysis-min-covered-ratio)
+                              (>= covered
+                                  (* code-review-analysis-min-covered-ratio
+                                     (length added))))
                      collect (list path (length added) repo-path covered lo hi))))
          (dead
           (cl-loop for (name . ln) in (code-review-analysis--definitions-in
                                        path added)
                    unless (gethash name refs)
+                   ;; *Test classes, test_* functions... are entry
+                   ;; points BY CONVENTION (sbt, pytest, scalatest):
+                   ;; zero references is normal, not death
+                   unless (and code-review-analysis-dead-test-name-regexp
+                               (string-match-p
+                                code-review-analysis-dead-test-name-regexp
+                                name))
                    collect (list name path ln)))
          (dangling
           (cl-loop for (name . _ln) in (code-review-analysis--definitions-in

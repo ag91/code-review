@@ -24,8 +24,10 @@
 ;;  hunks read as CODE.  The face set is deliberately MINIMAL so
 ;;  the reviewer's eyes focus on the important identifiers:
 ;;  definition names, parameters, assignment targets, UPPER_CASE
-;;  constants, the `return' keyword — and in test files, test
-;;  definition names and assertion lines.  Only ADDED lines get
+;;  constants, literal CONSTANT VALUES (strings/numbers — in test
+;;  code those are the test case names and expected values), the
+;;  `return' keyword — and in test files, test definition names
+;;  and assertion lines.  Only ADDED lines get
 ;;  semantic faces (context is parse input, not signal; deleted
 ;;  lines are not part of the new side).
 ;;
@@ -73,7 +75,10 @@ diff faces and no error is signaled."
   :group 'code-review-hunkhighlight)
 
 (defcustom code-review-hunkhighlight-language-map
-  '(("\\.py\\'" . python))
+  '(("\\.py\\'" . python)
+    ("\\.scala\\'" . scala)
+    ("\\.sc\\'" . scala)
+    ("\\.sbt\\'" . scala))
   "Map file-name regexp to tree-sitter language symbol.
 Extend this (and `code-review-hunkhighlight-queries') when adding
 languages: only ship queries you have validated against the
@@ -116,12 +121,41 @@ Used by the tree-sitter hunk highlighting in test files."
       . ((const . font-lock-constant-face)))
      ("((assignment left: (identifier) @var)
        (#match \"\\\\`[a-z_]\" @var))"
-      . ((var . font-lock-variable-name-face)))))
+      . ((var . font-lock-variable-name-face)))
+     ;; literal CONSTANT VALUES (strings, numbers) stand out in
+     ;; every language: in test code they are the test case names
+     ;; and expected values — the stuff the reviewer wants to see
+     ("[(string) (integer) (float)] @cval"
+      . ((cval . font-lock-constant-face))))
+    (scala
+     ("\"return\" @kw"
+      . ((kw . font-lock-keyword-face)))
+     ("(function_definition name: (identifier) @fn)"
+      . ((fn . font-lock-function-name-face)))
+     ("(class_definition name: (identifier) @cls)"
+      . ((cls . font-lock-type-face)))
+     ("(object_definition name: (identifier) @obj)"
+      . ((obj . font-lock-type-face)))
+     ("(trait_definition name: (identifier) @trait)"
+      . ((trait . font-lock-type-face)))
+     ("(parameters (parameter name: (identifier) @param))"
+      . ((param . font-lock-variable-name-face)))
+     ("((val_definition pattern: (identifier) @const)
+       (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"
+      . ((const . font-lock-constant-face)))
+     ("((val_definition pattern: (identifier) @var)
+       (#match \"\\\\`[a-z_]\" @var))"
+      . ((var . font-lock-variable-name-face)))
+     ("(string) @cval"
+      . ((cval . font-lock-constant-face)))
+     ("[(integer_literal) (floating_point_literal)] @cval"
+      . ((cval . font-lock-constant-face)))))
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
 CAPTURE names must match the @captures in QUERY-STRING; a capture
 can map to any face.  A query that fails to compile against the
-installed grammar disables that entry silently."
+installed grammar disables that entry silently (and capture-time
+predicate errors disable only that query)."
   :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
   :group 'code-review-hunkhighlight)
 

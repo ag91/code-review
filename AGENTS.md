@@ -145,6 +145,19 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   not a valid query: always exercise the capture, and isolate
   per-query captures in a condition-case so one bad query only
   disables itself (see `code-review-hunkhighlight--ranges`).
+  Same story for NODE names: e.g. the scala grammar has NO
+  `(number)` node (it is `integer_literal` /
+  `floating_point_literal`) and compile is happy to accept it;
+  the node-type error only surfaces at capture time.  PROBE node
+  names with a real capture against a sample before shipping a
+  query.
+- When rebinding a `defcustom` in the live daemon after changing
+  its default, `setq` it to `(eval (car (get 'VAR
+  'standard-value)))` — the standard-value cell holds the
+  UNevaluated default form, so a plain `(car ...)` installs the
+  form instead of the value (the queries list then "works" as an
+  alist keyed by `quote` and every language silently loses its
+  highlights).
 - Face display precedence (phase 10 post-mortem): a text property
   holding a LIST of faces merges with EARLIER faces winning
   attribute conflicts — appending a semantic face after

@@ -223,3 +223,58 @@ Return its directory (with trailing slash)."
                   ("a-autoloads.el" . "(add-to-list 'load-path \"/x\")\n") ))))
     ;; a reference only in an excluded generated file does not count
     (should-not (code-review-analysis--references repo "my-fun"))))
+
+(ert-deftest code-review-analysis/imports-are-not-similarity-signal ()
+  ;; scalafmt-shaped noise: PRs adding test files "match" existing
+  ;; ones through import boilerplate alone.  Import/package lines
+  ;; are structural, not duplication signal.
+  (let* ((contents
+          (list (cons "cli/CliOptionsTest.scala"
+                      "import org.scalafmt._\nimport org.scalafmt.config._\nimport org.scalafmt.util._\nimport munit.FunSuite\nimport java.io.File\nimport scala.collection.mutable\n")))
+         (index (code-review-analysis--index-contents contents 4))
+         (refs (make-hash-table :test #'equal))
+         (block "diff --git a/FileHeaderTest.scala b/FileHeaderTest.scala\n--- a/FileHeaderTest.scala\n+++ b/FileHeaderTest.scala\n@@ -0,0 +1,6 @@\n+import org.scalafmt._\n+import org.scalafmt.config._\n+import org.scalafmt.util._\n+import munit.FunSuite\n+import java.io.File\n+import scala.collection.mutable\n")
+         (res (code-review-analysis--analyze-one-file
+               index refs "FileHeaderTest.scala" block)))
+    ;; without the boilerplate filter these 6 import lines would
+    ;; be a 6/6 "similarity" finding
+    (should (null (nth 0 res)))))
+
+(ert-deftest code-review-analysis/similar-requires-coverage-ratio ()
+  ;; an absolute covered-line count alone is noise: 12 covered
+  ;; lines in a 574-line test file addition is 2%.  Findings must
+  ;; also cover a minimum FRACTION of the file's added lines.
+  (let* ((contents
+          (list (cons "lib.py"
+                      "def helper(x):\n    y = x + 1\n    return y\n\ndef other(x):\n    return helper(x) - 1\n")))
+         (index (code-review-analysis--index-contents contents 4))
+         (refs (make-hash-table :test #'equal))
+         (block "diff --git a/dup.py b/dup.py\n--- a/dup.py\n+++ b/dup.py\n@@ -0,0 +1,6 @@\n+def helper(x):\n+    y = x + 1\n+    return y\n+\n+def other(x):\n+    return helper(x) - 1\n")
+         (analyze
+          (lambda ()
+            (nth 0 (code-review-analysis--analyze-one-file
+                    index refs "dup.py" block)))))
+    ;; 6/6 covered: passes the default 0.1 ratio floor
+    (should (funcall analyze))
+    ;; the same finding under an impossible ratio floor: suppressed
+    (let ((code-review-analysis-min-covered-ratio 2.0))
+      (should (null (funcall analyze))))))
+
+(ert-deftest code-review-analysis/dead-skips-test-entry-points ()
+  ;; *Test classes and test_* functions are invoked BY CONVENTION
+  ;; (sbt, pytest, scalatest): zero references is normal for them.
+  (let* ((refs (make-hash-table :test #'equal))
+         (analyze
+          (lambda (path block)
+            (nth 1 (code-review-analysis--analyze-one-file
+                    nil refs path block)))))
+    ;; scalafmt shape: new *Test class with no references
+    (should (null (funcall analyze "FileHeaderTest.scala"
+                           "diff --git a/FileHeaderTest.scala b/FileHeaderTest.scala\n--- a/FileHeaderTest.scala\n+++ b/FileHeaderTest.scala\n@@ -0,0 +1,1 @@\n+class FileHeaderTest {\n")))
+    ;; pytest shape: test_* function with no references
+    (should (null (funcall analyze "test_foo.py"
+                           "diff --git a/test_foo.py b/test_foo.py\n--- a/test_foo.py\n+++ b/test_foo.py\n@@ -0,0 +1,1 @@\n+def test_foo():\n")))
+    ;; but an unreferenced NON-test definition is still reported
+    (should (equal (funcall analyze "Foo.scala"
+                            "diff --git a/Foo.scala b/Foo.scala\n--- a/Foo.scala\n+++ b/Foo.scala\n@@ -0,0 +1,1 @@\n+class Foo {\n")
+                   '(("Foo" "Foo.scala" 1))))))

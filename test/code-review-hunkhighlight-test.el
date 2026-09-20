@@ -86,6 +86,7 @@ overlay face at that position."
         "+def foo(a):"
         "    kept = 1"
         "+    total = a"
+        "+    msg = \"hi\""
         "+    return a")
     (should (code-review-hunkhighlight-region beg end "src/foo.py"))
     ;; minimal set: def names, parameters, assignment targets,
@@ -103,6 +104,11 @@ overlay face at that position."
     ;; UPPER_CASE is a constant, not a plain variable
     (should-not (memq 'font-lock-variable-name-face
                       (code-review-hunkhighlight-test--face-at "MAX_RETRIES")))
+    ;; literal constant VALUES also stand out
+    (should (memq 'font-lock-constant-face
+                  (code-review-hunkhighlight-test--face-at "ES = 3")))
+    (should (memq 'font-lock-constant-face
+                  (code-review-hunkhighlight-test--face-at "msg = \"hi")))
     ;; return is the one keyword we keep
     (should (memq 'font-lock-keyword-face
                   (code-review-hunkhighlight-test--face-at "return")))
@@ -115,6 +121,32 @@ overlay face at that position."
     ;; the diff base face stays as the text property underneath
     (should (memq 'magit-diff-added
                   (code-review-hunkhighlight-test--face-at "foo")))))
+
+(ert-deftest code-review-hunkhighlight/scala-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'scala)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+import org.scalafmt._"
+        "+class Foo(a: Int) {"
+        "+  def bar(x: Int): Int ="
+        "+    val total = x"
+        "+    return total"
+        "+}"
+        "+test(\"some test name\") {")
+    (should (code-review-hunkhighlight-region beg end "src/Foo.scala"))
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "Foo")))
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "bar")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "bar(x")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "total")))
+    (should (memq 'font-lock-keyword-face
+                  (code-review-hunkhighlight-test--face-at "return")))
+    ;; the test case NAME string stands out as a constant value
+    (should (memq 'font-lock-constant-face
+                  (code-review-hunkhighlight-test--face-at "some test name")))))
 
 (ert-deftest code-review-hunkhighlight/test-file-faces ()
   (skip-unless (and (fboundp 'treesit-language-available-p)
