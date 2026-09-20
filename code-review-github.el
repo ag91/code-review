@@ -715,6 +715,12 @@ Optionally ask for the FALLBACK? query."
                                             (oref github owner)
                                             (oref github head-ref-name))
                       'commit_message (oref github title)))
+            ("rebase"
+             ;; GitHub documents commit_title/commit_message as
+             ;; ignored when merge_method is "rebase": rebase merges
+             ;; keep the original commit subjects.  Only sha and
+             ;; merge_method are sent below.
+             nil)
             ("squash"
              (let ((commits (a-get-in (oref github raw-infos) (list 'commits 'nodes))))
                (if (= (length commits) 1)
@@ -734,7 +740,15 @@ Optionally ask for the FALLBACK? query."
                                                                       "\n"))))
                                                        (format "* %s %s" oid msg)))
                                                    commits)
-                                           "\n"))))))))
+                                           "\n")))))
+            (_
+             ;; Unknown strategy: keep the historical payload (PR
+             ;; title + description) instead of silently dropping
+             ;; commit_title/commit_message.  ("rebase" is explicit
+             ;; above because GitHub ignores these fields for
+             ;; rebase merges.)
+             (a-alist 'commit_title (oref github title)
+                      'commit_message (oref github description))))))
     (ghub-put (format "/repos/%s/%s/pulls/%s/merge"
                       (oref github owner)
                       (oref github repo)
