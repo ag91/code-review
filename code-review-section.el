@@ -2292,7 +2292,9 @@ BUF-NAME defaults to the per-PR buffer name."
                            (code-review-utils--log
                             "code-review--build-buffer"
                             (prin1-to-string err))
-                           (if (and (sequencep err) (string-prefix-p "BUG: Unknown extended header:" (-second-item err)))
+                           (if (and (sequencep err)
+                                    (stringp (-second-item err))
+                                    (string-prefix-p "BUG: Unknown extended header:" (-second-item err)))
                                (message "Your PR might have diffs too large. Currently not supported.")
                              (message "Got an error from your VC provider. Check `code-review-log-file'.")))))))))
 

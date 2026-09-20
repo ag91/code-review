@@ -29,7 +29,6 @@
 ;;; Code:
 
 (require 'ghub)
-(require 'ghub-legacy nil t)
 (require 'deferred)
 (require 'code-review-interfaces)
 (require 'code-review-db)
@@ -1080,12 +1079,12 @@ Call CALLBACK when the API call completes."
                  "mutation($input: UnresolveReviewThreadInput!) {
   unresolveReviewThread(input: $input) { thread { isResolved } }
 }")))
-    (ghub-graphql query
-                  `((input . ((threadId . ,thread-id))))
-                  :auth code-review-auth-login-marker
-                  :host code-review-github-graphql-host
-                  :callback callback
-                  :errorback #'code-review-github-errback)))
+    (ghub-query query
+                `((input . ((threadId . ,thread-id))))
+                :auth code-review-auth-login-marker
+                :host code-review-github-graphql-host
+                :callback callback
+                :errorback #'code-review-github-errback)))
 
 (defun code-review-github-fix-infos (github-infos)
   "Make GitHub GITHUB-INFOS backward compatible.
