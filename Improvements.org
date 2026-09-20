@@ -444,7 +444,7 @@ Gotchas discovered (they will bite again):
   in addition to per-section TAB.
 - Fringe markers linking diff lines to their threads.
 
-* Phase 10 — Tree-sitter semantic hunk highlighting               :STATUS:design
+* Phase 10 — Tree-sitter semantic hunk highlighting                :STATUS:done
 
 NOTE (phase 12): highlighting must work in LOCAL diff reviews
 too (=M-x code-review-review-local-diff= buffers); the wash/paint
@@ -487,6 +487,97 @@ Design:
 
 BONUS POINT: keep this as a separate library and make sure it works
 also with magit diffs, so the user can reuse this work for reading better diffs.
+
+DONE (implementation notes, 2026-09-20):
+
+- New library =code-review-hunkhighlight.el= (the bonus: it works
+  on ANY magit-style diff buffer via
+  =code-review-hunkhighlight-magit-buffer=, which walks the magit
+  section tree from the ROOT — walking from the section at point
+  only finds the hunk you are standing in).  In code-review
+  buffers the wash calls the core directly per hunk.
+- Pipeline per hunk: strip +/-/space prefixes, reconstruct the
+  NEW side (added + context lines; deleted lines are not part of
+  it), parse with treesit, run per-language queries, map each
+  captured node back to review-buffer positions, and lay the
+  semantic face as an OVERLAY over the line's diff face (see the
+  post-mortem below: a merged face LIST does not display as
+  hoped).
+- Python first (validated against the installed grammar), with a
+  face set the user tuned after seeing the first render: THE LESS
+  THE BETTER — def/class names, parameters, assignment targets
+  (lowercase), UPPER_CASE constants, and the =return= keyword only.
+  =import= and every other keyword stay diff-colored.  Test files
+  (path matches =code-review-hunkhighlight-test-path-regexp=) also
+  get =code-review-test-face= on =test*= def names, the =assert=
+  keyword and =assert*= call names.  Other languages = extend the
+  =language-map= + =queries= defcustoms — but ONLY with queries
+  validated against the installed grammar (compilation failures
+  silently disable an entry; see the treesit gotchas in AGENTS.md).
+- Graceful degradation everywhere: no treesit / no grammar /
+  unknown language / =code-review-semantic-highlight= nil =>
+  exactly the old faces, no error (the region core is
+  condition-cased and never signals into the wash).
+- Performance: parse per hunk (bounded by hunk size), compiled
+  queries cached globally, face ranges cached per buffer keyed by
+  LANG|test-p|md5(hunk body) so re-renders replay without
+  reparsing.
+- Verified: 7 new ERT tests (pure mapping + treesit integration,
+  which skip themselves without the python grammar) green in
+  batch AND in the live daemon; live local review of the demo
+  repo shows =import= / =helper= / =never_used= merged on top of
+  =magit-diff-added= in the real rendered buffer.
+
+POST-MORTEM (same day): the "merged on top of" above was a lie
+the buffer properties told us — the user saw ONLY the default
+green/red faces.  Two display rules were at play:
+
+1. A =font-lock-face= property whose value is a LIST merges with
+   EARLIER faces WINNING attribute conflicts.  Our list was
+   =(magit-diff-added font-lock-keyword-face)= and
+   =magit-diff-added= sets its own foreground (#22aa22), so the
+   diff foreground beat the semantic one.  The semantic face was
+   present in the properties but invisible on screen — checking
+   text properties said "works", looking at the buffer said "no".
+2. Overlay faces OVERRIDE text-property faces (higher display
+   priority), which is exactly what we want: semantic foreground
+   on top, diff background still showing (the semantic faces set
+   no background).
+
+FIX: =code-review-hunkhighlight--put-face= now lays per-line
+overlays (marker property =cr-hh-face= per face => idempotent,
+different semantic faces stack, =evaporate= so re-renders clean
+up).  Overlays also survive magit 4.x lazily REPLACING hunk face
+text properties when you move through hunks, which a text-property
+merge would not.  Tests assert overlay faces
+(=overlays-at=) plus the base diff face; 54/54 green, demo buffer
+re-rendered in the daemon and verified: =import= -> keyword
+overlay, =helper= -> function-name overlay, 18 semantic overlays
+in the buffer.  LESSON: verify faces by what the DISPLAY
+resolves to (overlay > text property; earlier list face wins
+conflicts), never by =get-text-property= alone.
+
+TUNING (first user review, same day):
+
+- Faces on UNCHANGED context lines were noise: the reviewer
+  cares about what the patch TOUCHES.  `--apply` now paints
+  ADDED lines only (it reads the diff prefix char before the
+  content start; context lines still feed the parser, they just
+  stay diff-colored, and deleted lines never reach the new side).
+- The keyword face was everywhere (every =if= / =for= / =and=);
+  trimmed to the user's minimal set: def/class names, parameters,
+  variables, UPPER_CASE constants, =return=.  18 overlays in the
+  demo buffer became 10 and the buffer reads far calmer.
+- Gotcha found while trimming: =treesit-query-compile= ACCEPTS
+  =#not-match=, but =treesit-query-capture= errors at runtime
+  ("Emacs only supports equal/match/pred") — and since compile
+  succeeds, a broken predicate used to kill the WHOLE language's
+  highlights (the error aborted =--ranges=).  Two fixes: use a
+  =#match= lowercase pattern instead of =#not-match=, and
+  =--ranges= now captures per-entry inside a condition-case so a
+  bad query disables only itself.  Note the =#match= anchors:
+  ="\\`[a-z_]"= for plain variables vs
+  ="\\`[A-Z_][A-Z0-9_]*\\'"= for constants.
 * Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit

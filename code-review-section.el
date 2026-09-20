@@ -40,6 +40,7 @@
 (require 'code-review-repo)
 (require 'code-review-diff)
 (require 'code-review-analysis)
+(require 'code-review-hunkhighlight)
 (require 'code-review-reactions)
 
 (declare-function code-review--diff--classify-diff "code-review-diff")
@@ -1911,8 +1912,8 @@ Please Report this Bug" path-name))
         ;; Paint the hunk (diff colors) as soon as it is washed:
         ;; `magit-insert-section' returns the section object, and by
         ;; then its `end' marker is set, which the painter needs.
-        (code-review-wash--paint-hunk
-         (magit-insert-section
+        (let ((hunk-section
+               (magit-insert-section
             ( hunk
               `((value . ,value) ;; TODO not sure if this has to diverge as well
                 (path . ,path-name)
@@ -1992,7 +1993,9 @@ Please Report this Bug" path-name))
           ;; in code-review-wash-insert-file-section.
 
         ;;; --- end -- code-review specific code.
-          ))))
+          )))
+          (code-review-wash--paint-hunk hunk-section)
+          (code-review-hunkhighlight-hunk hunk-section path-name))))
     t))
 
 ;;; * build buffer

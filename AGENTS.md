@@ -24,6 +24,8 @@ phase moves forward or a new gotcha is discovered.
 | `code-review-section.el` | section rendering, the owned diff wash, comment/reaction section classes (~2.4k lines) |
 | `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
+| `code-review-analysis.el` | phase 5 heuristics: duplicate/dead-code/dangling findings (worktree greps, byte-capped, cached per PR+diff) |
+| `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
@@ -130,6 +132,36 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
 - When an edit loops (paren surgery, region transplants): stop and
   ask the user instead of iterating — they will fix it faster than
   the loop will.
+- treesit gotchas (Emacs 30, phase 10): `treesit-query-capture`
+  returns `(CAPTURE-NAME . NODE)` pairs (name first!); the query
+  predicate is `#match` (no `?`) and takes the REGEXP FIRST:
+  `(#match "\\`test" @capture)`; predicates may NOT be attached
+  to one alternative inside a `[...]` alternation — write such
+  patterns as separate top-level query patterns.
+- treesit predicates: `treesit-query-compile` ACCEPTS predicates
+  that are unsupported at RUNTIME (e.g. `#not-match` — Emacs 30.2
+  only supports equal/match/pred at capture time, and the error
+  fires from `treesit-query-capture`).  So a compiling query is
+  not a valid query: always exercise the capture, and isolate
+  per-query captures in a condition-case so one bad query only
+  disables itself (see `code-review-hunkhighlight--ranges`).
+- Face display precedence (phase 10 post-mortem): a text property
+  holding a LIST of faces merges with EARLIER faces winning
+  attribute conflicts — appending a semantic face after
+  `magit-diff-added` is INVISIBLE on screen because that face sets
+  its own foreground (#22aa22), yet `get-text-property` happily
+  reports the semantic face as present.  Apply semantic faces as
+  OVERLAYS (overlay faces override text-property faces; mark them
+  with a per-face property for idempotency, `evaporate t`; they
+  also survive magit 4.x replacing hunk face properties).  See
+  `code-review-hunkhighlight--put-face`.
+- `search-forward` does NOT set match data: never read
+  `match-beginning`/`match-end` after it, use `point` (this cost
+  an hour of phantom test failures once).
+- After a daemon restart, package code is only autoloaded:
+  `code-review.el` (which defines `code-review-sections-hook`)
+  is NOT loaded until an entry command runs, so probing/verifying
+  in a restarted daemon requires loading it explicitly.
 - Never trim the trailing newline of stored diff text
   (`string-trim` on a diff does this): the reorder joins file
   blocks, and a block missing its final newline glues onto the
