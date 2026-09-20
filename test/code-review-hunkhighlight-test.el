@@ -82,21 +82,39 @@ overlay face at that position."
                     (treesit-language-available-p 'python)))
   (code-review-hunkhighlight-test--with-hunk
       '("+import os"
-        "+"
+        "+MAX_RETRIES = 3"
         "+def foo(a):"
+        "    kept = 1"
+        "+    total = a"
         "+    return a")
     (should (code-review-hunkhighlight-region beg end "src/foo.py"))
-    (should (memq 'font-lock-keyword-face
-                  (code-review-hunkhighlight-test--face-at "import")))
+    ;; minimal set: def names, parameters, assignment targets,
+    ;; constants, and `return' only — NOT every keyword
     (should (memq 'font-lock-function-name-face
                   (code-review-hunkhighlight-test--face-at "foo")))
     ;; helper reads the last char of the match: "(a" ends on the
     ;; parameter identifier itself
     (should (memq 'font-lock-variable-name-face
                   (code-review-hunkhighlight-test--face-at "(a")))
-    ;; merged on top of the diff base face
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "total")))
+    (should (memq 'font-lock-constant-face
+                  (code-review-hunkhighlight-test--face-at "MAX_RETRIES")))
+    ;; UPPER_CASE is a constant, not a plain variable
+    (should-not (memq 'font-lock-variable-name-face
+                      (code-review-hunkhighlight-test--face-at "MAX_RETRIES")))
+    ;; return is the one keyword we keep
+    (should (memq 'font-lock-keyword-face
+                  (code-review-hunkhighlight-test--face-at "return")))
+    ;; ...but import is not: less is better
+    (should-not (memq 'font-lock-keyword-face
+                      (code-review-hunkhighlight-test--face-at "import")))
+    ;; ADDED lines only: the context line gets no semantic face
+    (should-not (memq 'font-lock-variable-name-face
+                      (code-review-hunkhighlight-test--face-at "kept")))
+    ;; the diff base face stays as the text property underneath
     (should (memq 'magit-diff-added
-                  (code-review-hunkhighlight-test--face-at "import")))))
+                  (code-review-hunkhighlight-test--face-at "foo")))))
 
 (ert-deftest code-review-hunkhighlight/test-file-faces ()
   (skip-unless (and (fboundp 'treesit-language-available-p)
@@ -124,9 +142,10 @@ overlay face at that position."
       '("+def helper():"
         "+    assert helper()")
     (should (code-review-hunkhighlight-region beg end "src/helper.py"))
-    ;; assertion captures only run in test files: keyword face only
-    (should (memq 'font-lock-keyword-face
-                  (code-review-hunkhighlight-test--face-at "assert")))
+    ;; assertions stand out only in TEST files: in regular source
+    ;; `assert' is not in the minimal set, so no face at all here
+    (should-not (memq 'font-lock-keyword-face
+                      (code-review-hunkhighlight-test--face-at "assert")))
     (should-not (memq 'code-review-test-face
                       (code-review-hunkhighlight-test--face-at "assert")))))
 

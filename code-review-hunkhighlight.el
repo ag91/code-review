@@ -21,9 +21,13 @@
 
 ;;  Phase 10: semantic highlighting of diff hunks.  After the diff
 ;;  wash paints the base faces (+/-/context), this library makes
-;;  hunks read as CODE: keywords, definition names, parameters,
-;;  dataclass-ish fields, and (in test files) test definition names
-;;  and assertion lines stand out on top of the diff colors.
+;;  hunks read as CODE.  The face set is deliberately MINIMAL so
+;;  the reviewer's eyes focus on the important identifiers:
+;;  definition names, parameters, assignment targets, UPPER_CASE
+;;  constants, the `return' keyword — and in test files, test
+;;  definition names and assertion lines.  Only ADDED lines get
+;;  semantic faces (context is parse input, not signal; deleted
+;;  lines are not part of the new side).
 ;;
 ;;  How it works, per hunk:
 ;;   1. strip the +/-/space prefixes and reconstruct the NEW side
@@ -94,11 +98,12 @@ Used by the tree-sitter hunk highlighting in test files."
 
 (defcustom code-review-hunkhighlight-queries
   '((python
-     ("[\"import\" \"from\" \"def\" \"class\" \"return\" \"assert\"
-        \"async\" \"await\" \"with\" \"for\" \"while\" \"if\" \"elif\"
-        \"else\" \"try\" \"except\" \"finally\" \"raise\" \"yield\"
-        \"lambda\" \"not\" \"and\" \"or\" \"in\" \"is\" \"as\" \"del\"
-        \"pass\" \"global\" \"nonlocal\"] @kw"
+     ;; Deliberately MINIMAL (user request): definition names,
+     ;; parameters, assignment targets, UPPER_CASE constants and
+     ;; the `return' keyword — the reviewer's eyes should go to
+     ;; the important identifiers, not to every keyword.  Also
+     ;; note `--apply' only paints ADDED (+) lines.
+     ("\"return\" @kw"
       . ((kw . font-lock-keyword-face)))
      ("(function_definition name: (identifier) @fn)"
       . ((fn . font-lock-function-name-face)))
@@ -106,7 +111,11 @@ Used by the tree-sitter hunk highlighting in test files."
       . ((cls . font-lock-type-face)))
      ("(parameters (identifier) @param)"
       . ((param . font-lock-variable-name-face)))
-     ("(assignment left: (identifier) @var)"
+     ("((assignment left: (identifier) @const)
+       (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"
+      . ((const . font-lock-constant-face)))
+     ("((assignment left: (identifier) @var)
+       (#match \"\\\\`[a-z_]\" @var))"
       . ((var . font-lock-variable-name-face)))))
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
@@ -258,9 +267,18 @@ or nothing was captured."
                        (code-review-hunkhighlight--compiled
                         lang (car entry))))
                   (when compiled
+                    ;; NB: capture-time predicate errors (e.g. a
+                    ;; predicate COMPILES fine but is unsupported at
+                    ;; runtime) disable only THIS entry, not the
+                    ;; whole language.
                     (pcase-dolist
                         (`(,name . ,node)
-                         (treesit-query-capture parser compiled))
+                         (condition-case err
+                             (treesit-query-capture parser compiled)
+                           (error
+                            (message "code-review-hunkhighlight: \
+query %S disabled: %S" (car entry) err)
+                            nil)))
                       (let ((face (cdr (assq name (cdr entry)))))
                         (when face
                           (dolist
@@ -275,17 +293,18 @@ or nothing was captured."
 (defun code-review-hunkhighlight--apply (ranges lines)
   "Apply cached RANGES onto the review buffer.
 LINES is the per-line (CONTENT-BEG . CONTENT-END) mapping from
-`code-review-hunkhighlight--reconstruct'."
+`code-review-hunkhighlight--reconstruct'.  Only ADDED lines are
+painted: the diff prefix char just before the content start must
+be a `+'.  Context lines are parse input (they help treesit see
+the structure) but they carry no changes, so they stay
+diff-colored only; deleted lines never reach the new side at all."
   (dolist (r ranges)
-    (let ((line (nth 0 r))
-          (col-b (nth 1 r))
-          (col-e (nth 2 r))
-          (face (nth 3 r))
-          (pair (nth (1- (nth 0 r)) lines)))
-      (when pair
+    (let ((pair (nth (1- (nth 0 r)) lines)))
+      (when (and pair (eq (char-after (1- (car pair))) ?+))
         (let* ((line-len (- (cdr pair) (car pair)))
-               (beg (+ (car pair) (min col-b line-len)))
-               (end (+ (car pair) (min col-e line-len))))
+               (beg (+ (car pair) (min (nth 1 r) line-len)))
+               (end (+ (car pair) (min (nth 2 r) line-len)))
+               (face (nth 3 r)))
           (when (< beg end)
             (code-review-hunkhighlight--put-face beg end face)))))))
 
