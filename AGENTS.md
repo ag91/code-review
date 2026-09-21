@@ -157,7 +157,12 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   UNevaluated default form, so a plain `(car ...)` installs the
   form instead of the value (the queries list then "works" as an
   alist keyed by `quote` and every language silently loses its
-  highlights).
+  highlights). A bare `(eval (car ...))` without the `setq` is
+  equally broken in the opposite direction: it evaluates the new
+  default and DISCARDS it, leaving the stale value bound while
+  looking like a fix (this slip cost an hour of phantom
+  debugging; the rebind test must print the bound value, not
+  just run).
 - Face display precedence (phase 10 post-mortem): a text property
   holding a LIST of faces merges with EARLIER faces winning
   attribute conflicts — appending a semantic face after

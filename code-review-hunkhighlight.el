@@ -23,11 +23,13 @@
 ;;  wash paints the base faces (+/-/context), this library makes
 ;;  hunks read as CODE.  The face set is deliberately MINIMAL so
 ;;  the reviewer's eyes focus on the important identifiers:
-;;  definition names, parameters, assignment targets, UPPER_CASE
-;;  constants, literal CONSTANT VALUES (strings/numbers — in test
-;;  code those are the test case names and expected values), the
-;;  `return' keyword — and in test files, test definition names
-;;  and assertion lines.  Only ADDED lines get
+;;  definition names, parameters, assignment targets, val/var
+;;  definition names, for-comprehension bindings, match-case
+;;  patterns, UPPER_CASE constants, literal CONSTANT VALUES
+;;  (strings/numbers — in test code those are the test case names
+;;  and expected values), the `return' keyword — and in test
+;;  files, test definition names and assertion lines.  Only
+;;  ADDED lines get
 ;;  semantic faces (context is parse input, not signal; deleted
 ;;  lines are not part of the new side).
 ;;
@@ -133,10 +135,10 @@ purple and the function-name blue."
      ("(parameters (identifier) @param)"
       . ((param . font-lock-variable-name-face)))
      ("((assignment left: (identifier) @const)
-       (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"
+       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
       . ((const . code-review-constant-face)))
      ("((assignment left: (identifier) @var)
-       (#match \"\\\\`[a-z_]\" @var))"
+       (#match? @var \"\\\\`[a-z_]\"))"
       . ((var . font-lock-variable-name-face)))
      ;; literal CONSTANT VALUES (strings, numbers) stand out in
      ;; every language: in test code they are the test case names
@@ -157,11 +159,27 @@ purple and the function-name blue."
      ("(parameters (parameter name: (identifier) @param))"
       . ((param . font-lock-variable-name-face)))
      ("((val_definition pattern: (identifier) @const)
-       (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"
+       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
       . ((const . code-review-constant-face)))
      ("((val_definition pattern: (identifier) @var)
-       (#match \"\\\\`[a-z_]\" @var))"
+       (#match? @var \"\\\\`[a-z_]\"))"
       . ((var . font-lock-variable-name-face)))
+     ("((var_definition pattern: (identifier) @const)
+       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
+      . ((const . code-review-constant-face)))
+     ("((var_definition pattern: (identifier) @var)
+       (#match? @var \"\\\\`[a-z_]\"))"
+      . ((var . font-lock-variable-name-face)))
+     ;; for-comprehension: both `<-' generators and `=' bindings;
+     ;; the leading `.' anchors to the first child (the bound
+     ;; pattern), not the iterable/value expression
+     ("(enumerators (enumerator . (identifier) @for))"
+      . ((for . font-lock-variable-name-face)))
+     ;; match arms: the `case' keyword plus the whole pattern
+     ("(case_clause pattern: (_) @case)
+       (case_clause \"case\" @kw)"
+      . ((case . font-lock-type-face)
+         (kw . font-lock-keyword-face)))
      ("(string) @cval"
       . ((cval . code-review-constant-face)))
      ("[(integer_literal) (floating_point_literal)] @cval"
@@ -185,42 +203,45 @@ purple and the function-name blue."
       . ((cval . code-review-constant-face))))
     (clojure
      ;; grammar nodes (probed): everything is list_lit of sym_lits,
-     ;; so definitions are matched by the head symbol with #match
+     ;; so definitions are matched by the head symbol with #match?
      ;; (#eq is NOT supported at capture time in Emacs 30.2).
      ;; defn-family name-only pattern first (defprotocol etc lack a
      ;; name-adjacent vector), then name+params for defn shapes.
      ("((list_lit . (sym_lit) @_h . (sym_lit) @name)
-       (#match \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\|defmulti\\\\|defprotocol\\\\|defrecord\\\\|deftype\\\\)\\\\'\" @_h))"
+       (#match? @_h \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\|defmulti\\\\|defprotocol\\\\|defrecord\\\\|deftype\\\\)\\\\'\"))"
       . ((name . font-lock-function-name-face)))
      ("((list_lit . (sym_lit) @_h . (sym_lit) @name . (vec_lit (sym_lit) @param))
-       (#match \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\)\\\\'\" @_h))"
+       (#match? @_h \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\)\\\\'\"))"
       . ((name . font-lock-function-name-face)
          (param . font-lock-variable-name-face)))
      ("((list_lit . (sym_lit) @_h . (sym_lit) @name)
-       (#match \"\\\\`def\\\\'\" @_h))"
+       (#match? @_h \"\\\\`def\\\\'\"))"
       . ((name . font-lock-variable-name-face)))
      ("((list_lit . (sym_lit) @_h . (vec_lit (sym_lit) @param))
-       (#match \"\\\\`\\\\(fn\\\\|let\\\\|loop\\\\)\\\\'\" @_h))"
+       (#match? @_h \"\\\\`\\\\(fn\\\\|let\\\\|loop\\\\)\\\\'\"))"
       . ((param . font-lock-variable-name-face)))
      ("[(str_lit) (num_lit)] @cval"
       . ((cval . code-review-constant-face)))))
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
 CAPTURE names must match the @captures in QUERY-STRING; a capture
-can map to any face.  A query that fails to compile against the
-installed grammar disables that entry silently (and capture-time
-predicate errors disable only that query)."
+can map to any face.  In string queries predicates must use the
+`#match? @capture \"REGEXP\"' form: the non-`?' `#match' spelling
+does not compile and silently disables the entry.  A query that
+fails to compile against the installed grammar disables that
+entry silently (and capture-time predicate errors disable only
+that query)."
   :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
   :group 'code-review-hunkhighlight)
 
 (defcustom code-review-hunkhighlight-test-queries
   '((python
-     ("((function_definition name: (identifier) @tn) (#match \"\\\\`test\" @tn))"
+     ("((function_definition name: (identifier) @tn) (#match? @tn \"\\\\`test\"))"
       . ((tn . code-review-test-face)))
      ("(assert_statement \"assert\" @as)
-       ((call function: (identifier) @af) (#match \"\\\\`assert\" @af))
+       ((call function: (identifier) @af) (#match? @af \"\\\\`assert\"))
        ((call function: (attribute attribute: (identifier) @am))
-        (#match \"\\\\`assert\" @am))"
+        (#match? @am \"\\\\`assert\"))"
       . ((as . code-review-test-face)
          (af . code-review-test-face)
          (am . code-review-test-face)))))
@@ -465,15 +486,28 @@ Thin wrapper over `code-review-hunkhighlight-region'."
      path)))
 
 (defun code-review-hunkhighlight--section-path (section)
-  "Best-effort file path for hunk SECTION (code-review or magit)."
+  "Best-effort file path for hunk SECTION (code-review or magit).
+Never signals: unknown value shapes (plain magit hunk values are
+not alists, and an improper cons would break `assq') just make it
+fall back to the parent file section, and finally to the parent's
+heading text.  Uses the `parent' slot directly because Magit 4.x
+removed `magit-section-parent' and `magit-section-heading'."
   (let ((value (oref section value)))
-    (or (cdr (assq 'path (if (listp value) value nil)))
-        (let ((parent (magit-section-parent section)))
-          (when parent
-            (let ((pv (oref parent value)))
-              (cond ((stringp pv) pv)
-                    ((and (listp pv) (stringp (car pv))) (car pv))
-                    (t (magit-section-heading parent)))))))))
+    (or (and (listp value)
+             (ignore-errors (cdr (assq 'path value))))
+        (when-let* ((parent (oref section parent)))
+          (let ((pv (oref parent value)))
+            (or (and (stringp pv) pv)
+                (and (listp pv) (stringp (car pv)) (car pv))
+                ;; last resort: the parent's heading text (magit
+                ;; diff file headings contain the file name)
+                (when-let* ((beg (oref parent start))
+                            (end (oref parent content))
+                            (buf (and (markerp beg)
+                                      (marker-buffer beg))))
+                  (with-current-buffer buf
+                    (string-trim
+                     (buffer-substring-no-properties beg end))))))))))
 
 ;;;###autoload
 (defun code-review-hunkhighlight-magit-buffer ()
