@@ -110,4 +110,72 @@ object would accumulate ids and a stale database pointer."
          ((type . code-review-comment-section)
           (value . ,obj)))))))
 
+(defconst code-review-section-test--wash-diff-text
+  (concat
+   "diff --git a/dbt/macros/mrt.sql b/dbt/macros/mrt.sql\n"
+   "index 111..222 100644\n"
+   "--- a/dbt/macros/mrt.sql\n"
+   "+++ b/dbt/macros/mrt.sql\n"
+   "@@ -1,3 +1,4 @@\n"
+   " context line\n"
+   "-removed line\n"
+   "+added line\n"
+   "diff --git a/dbt/models/old.sql b/dbt/models/new_v1.sql\n"
+   "similarity index 91%\n"
+   "rename from dbt/models/old.sql\n"
+   "rename to dbt/models/new_v1.sql\n"
+   "index c7aeae11f..ee8409930 100644\n"
+   "--- a/dbt/models/old.sql\n"
+   "+++ b/dbt/models/new_v1.sql\n"
+   "@@ -1,5 +1,16 @@\n"
+   " {#\n"
+   "-   old name\n"
+   "+   new name (v1) -- reference oracle\n")
+  "Raw diff text with a same-path block and a rename block.")
+
+(ert-deftest code-review-section-test/wash-diff-rename-block ()
+  "The wash entry regex must accept rename blocks (two different
+paths on the `diff --git' line).  A transcription of magit's
+washer once dropped the optional backreference group, so the
+pattern matched no `diff --git' line at all: the wash stopped at
+the first block and the whole diff landed as raw, uncolored
+text."
+  (code-review-section-test--with-section-env
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (insert code-review-section-test--wash-diff-text)
+        (goto-char (point-min))
+        (magit-insert-section (code-review--root-section)
+          (magit-insert-section (code-review-files-chnged)
+            (save-restriction
+              (narrow-to-region (point) (point-max))
+              (magit-wash-sequence #'code-review-wash-diff)))))
+      ;; every block consumed: no raw diff text left behind
+      (should (zerop (count-matches "^diff --git "
+                                    (point-min) (point-max))))
+      ;; both blocks became file sections, rename included
+      (let (files (walk nil))
+        (setq walk (lambda (sec)
+                     (dolist (c (oref sec children))
+                       (when (eq (oref c type) 'file)
+                         (push (substring-no-properties (oref c value))
+                               files))
+                       (funcall walk c))))
+        (funcall walk magit-root-section)
+        (should (equal (sort files #'string-lessp)
+                       '("b/dbt/macros/mrt.sql"
+                         "b/dbt/models/new_v1.sql"))))
+        ;; the rename heading shows the old -> new pair
+        (should (save-excursion
+                  (goto-char (point-min))
+                  (search-forward "old.sql -> " nil t)))
+        ;; faces are painted on the rename block's added line
+        (should (eq (save-excursion
+                      (goto-char (point-min))
+                      (search-forward "+   new name" nil t)
+                      (get-text-property (line-beginning-position)
+                                         'font-lock-face))
+                    'magit-diff-added)))))
+
 ;;; code-review-section-test.el ends here

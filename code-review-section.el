@@ -1703,8 +1703,15 @@ nothing matches (which ends the loop)."
   (when (looking-at
          ;; The file names on this line may be ambiguous due to
          ;; whitespace; that is fine, the subsequent `---'/`+++'
-         ;; headers are authoritative.
-         "^diff --\\(?:\\(?1:git\\) \\(?2:.+?\\) \\2\\|\\(?3:cc\\|combined\\) \\(?4:.+\\)\\)")
+         ;; headers are authoritative.  The backreference group
+         ;; is optional (as in magit's own washer): renames put
+         ;; two different paths on this line, so the group never
+         ;; matches there and the file name comes from
+         ;; `rename to'/`+++' instead.  Without the optional
+         ;; wrapper the whole pattern never matches any standard
+         ;; `a/X b/X' line, the wash stops at the first block and
+         ;; the rest of the diff lands as raw, uncolored text.
+         "^diff --\\(?:\\(?1:git\\) \\(?:\\(?2:.+?\\) \\2\\)?\\|\\(?3:cc\\|combined\\) \\(?4:.+\\)\\)")
     (let ((status (cond ((equal (match-string 1) "git") "modified")
                         ((match-string 3)              "resolved")
                         (t                            "unmerged")))

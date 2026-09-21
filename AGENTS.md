@@ -194,3 +194,10 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   magit is magit-SECTION (stable): `magit-insert-section`, section
   classes, `magit-wash-sequence`, `magit-section-hide/show`, the
   visibility cache, and optional `magit-section-paint`.
+- When transcribing magit internals, copy patterns EXACTLY and
+  prove the copy against real input in a fresh batch emacs: the
+  11b entry regex dropped magit's optional backref group
+  `\\(?:\\(?2:.+?\\) \\2\\)?`, silently matched NO `diff --git`
+  line, and every fresh render landed as raw uncolored text for
+  three days before anyone noticed.  The regression test
+  `code-review-section-test/wash-diff-rename-block` guards it.

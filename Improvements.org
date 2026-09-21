@@ -824,6 +824,25 @@ render runs entirely through owned washers over plain diff text:
 - Verified: 11 files / 28 hunks / 1422 painted / 0 unpainted /
   0 raw headers, bots 40/30 hidden, 12 folded; re-render
   identical; user's live litellm buffer healthy; ERT 35/35.
+- POST-MORTEM (2026-09-21, three days after "done"): the owned
+  entry regex was a mis-transcription of magit's -- the optional
+  backreference group =\\(?:\\(?2:.+?\\) \\2\\)?= was dropped, so
+  the pattern required both paths on the =diff --git= line to be
+  IDENTICAL.  No standard =a/X b/X= line matches that: the
+  washer returned nil on the very first block,
+  =magit-wash-sequence= stopped, and the entire diff landed as
+  raw, uncolored text.  Renames made it obvious (the first raw
+  block in the user's writer-data-platform#762 review), but
+  EVERY file was affected on any fresh render.  The "verified 0
+  raw headers" claim above was fooled by stale in-memory/native
+  code in the daemon (the pre-11b adviced washers were still
+  serving renders).  Fix: restore magit's optional group;
+  regression test =code-review-section-test/wash-diff-rename-block=
+  (zero raw lines, rename file section present, painted faces)
+  now guards it.  Lesson: when transcribing magit internals,
+  copy patterns EXACTLY and prove the copy against a real
+  =diff --git= line in a fresh batch emacs -- a compiling regex
+  is not a matching regex.
 
 
 
