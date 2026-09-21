@@ -1880,11 +1880,19 @@ keyed by path and diff position or by side/line) into the hunk
 body as it is washed.  Returns t when a hunk was washed, nil
 otherwise, per the `magit-wash-sequence' contract."
   (when (looking-at "^@\\{2,\\} \\(.+?\\) @\\{2,\\}\\(?: \\(.*\\)\\)?")
-
+    ;; Bind the match data BEFORE any database access below: the db
+    ;; writes clobber the global match data (emacsql compiles
+    ;; statements with string-matches on a cold cache, leaving
+    ;; string-relative positions), which made the `match-string'
+    ;; reads below return garbage or even signal args-out-of-range
+    ;; on the first hunk of a fresh Emacs.  Bind first, use after.
+    (let* ((heading    (match-string 0))
+           (raw-ranges (match-string 1))
+           (about      (match-string 2))
     ;;; --- beg -- code-review specific code.
     ;;; I need to set a reference point for the first hunk header
     ;;; so the positioning of comments is done correctly.
-    (let* ((path (code-review-db--curr-path))
+           (path (code-review-db--curr-path))
            (path-name (oref path name))
            (head-pos (oref path head-pos)))
       (when (not head-pos)
@@ -1902,8 +1910,7 @@ otherwise, per the `magit-wash-sequence' contract."
 Please Report this Bug" path-name))
     ;;; --- end -- code-review specific code.
 
-      (let* ((heading  (match-string 0))
-             (ranges   (mapcar (lambda (str)
+      (let* ((ranges   (mapcar (lambda (str)
                                  (let ((range
                                         (mapcar #'string-to-number
                                                 (split-string (substring str 1) ","))))
@@ -1911,8 +1918,7 @@ Please Report this Bug" path-name))
                                    (if (length= range 1)
                                        (nconc range (list 1))
                                      range)))
-                               (split-string (match-string 1))))
-             (about    (match-string 2))
+                               (split-string raw-ranges)))
              (combined (= (length ranges) 3))
              (value    (cons about ranges)))
         (magit-delete-line)

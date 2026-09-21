@@ -27,6 +27,7 @@ phase moves forward or a new gotcha is discovered.
 | `code-review-analysis.el` | phase 5 heuristics: duplicate/dead-code/dangling findings (worktree greps, byte-capped, cached per PR+diff) |
 | `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
+| `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
 | `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support (`actions.el` also holds the interactive/navigation commands) |
@@ -201,3 +202,32 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   line, and every fresh render landed as raw uncolored text for
   three days before anyone noticed.  The regression test
   `code-review-section-test/wash-diff-rename-block` guards it.
+- `code-review-wash-hunk` must bind its `match-string` results
+  immediately after `looking-at`: the db writes it performs in
+  between clobber the global match data (emacsql compiles
+  statements with string-matches on a COLD cache, leaving
+  string-relative positions), so reading groups afterwards returns
+  garbage or signals args-out-of-range.  This sat latent because
+  the db ERT tests run early in the suite and warm the statement
+  cache — any test whose name sorts before `code-review-db-test`
+  hits the wash cold, which is exactly how the browse tests
+  exposed it.  `code-review-browse-test/jump-to-file-anchor`
+  guards it.
+- The dual-role comment classes (`code-review-base-comment-section` /
+  `code-review-comment-section` are used both as sections and as data
+  objects) need the `magit-section-ident-value` methods to delegate
+  through `value` — magit's visibility cache keys on them.  Their
+  DATA (author/id/msg) also lives on the VALUE object, not on the
+  rendered section: read a comment's databaseId from
+  `(oref section value)`, never from the section itself.
+- Daemon eval output: `(load FILE)` returns `t`, NOT the file's
+  last form's value, and a script that wraps itself in
+  `with-output-to-string` swallows its own report when loaded
+  inside another one.  Have daemon scripts save their report into
+  a defvar and read that variable back from emacsclient.
+- Run `check-parens` on every /tmp elisp script BEFORE loading it
+  into the daemon (batch emacs + `insert-file-contents` +
+  `check-parens`): a surplus closer can silently end a `let` so
+  half the script runs at outer scope with void variables, and a
+  `cl-labels` whose definitions list closes early leaves its body
+  calling a void `walk`.

@@ -339,6 +339,65 @@ Cuts the GitHub-website round trips.
   anchors) open inside Emacs; also find a PR URL in the current
   buffer (email/notmuch workflow).
 
+DONE (2026-09-21) — the browse-url bullet only; the two bullets
+above remain open.
+
+- New =code-review-browse.el=.  =code-review-browse-url= is
+  registered in =browse-url-default-handlers= for github.com PR
+  links, so PR links clicked anywhere (notmuch, eww, org) open
+  inside Emacs instead of the browser.  Registration happens at
+  load time (idempotent; =code-review-browse-url-install= /
+  =-uninstall= for manual control) AND at startup through an
+  autoload cookie (=(with-eval-after-load 'browse-url ...)= form
+  in the regenerated =code-review-autoloads.el=), so it works
+  before any code-review command has ever run.
+- Anchors understood: =#diff-<sha256-of-path>= — the same digest
+  =code-review-jump-to-gh= builds outbound, used in reverse: file
+  sections are hashed until one matches (prefix match, so
+  truncated GitHub hashes work); =L<n>= / =R<n>= old/new-side line
+  anchors (a line exists on a side only when it is context or
+  +/- respectively — the naive "counter equal" check happily
+  lands on a deleted line when jumping to the new side);
+  =#discussion_r= / =#issuecomment-= / =#pullrequestreview-= ids
+  matched against section ids (the dual-role comment sections
+  carry theirs on the VALUE object, not the rendered section).
+  Unknown anchors open the review at the top with a message.
+- Reuse before fetch: when =*Code Review: owner/repo#N*= is
+  already open, the handler pops that buffer and jumps
+  immediately (no refetch; the pending list stays empty).
+  Fresh opens go through =code-review-start= with the
+  canonicalized URL (fragment/query//files/... stripped so the
+  URL stored on the PR object stays clean for outbound links);
+  the anchor jump runs from =code-review-post-hook= once the
+  buffer is rendered (=code-review-browse--after-render= was
+  added to that defcustom's DEFAULT — live daemons need the
+  standard-value rebind).
+- =code-review-open-pr-at-point=: URL at point via
+  =thing-at-point=, else scan the whole buffer for PR links of
+  all three forges (deduped, =completing-read= when several) —
+  the email/notmuch workflow; fragments are kept intact so
+  notification-email anchors still jump.
+- LATENT WASH BUG FIXED on the way: =code-review-wash-hunk= read
+  =(match-string 0/1/2)= AFTER db writes.  On a cold emacsql
+  statement cache those writes clobber the global match data and
+  the reads returned garbage or signaled =args-out-of-range=.  It
+  had gone unnoticed because the db ERT tests run early in the
+  suite and warm the statement cache; the browse tests are
+  alphabetically FIRST and hit the wash cold.  The hunk header
+  groups are now bound immediately after =looking-at= (gotcha
+  recorded in AGENTS.md).
+- Tests: =test/code-review-browse-test.el=, 13 ERT tests
+  (fragment parsing, canonicalization, buffer names, handler
+  regexp, idempotent registration, file/line/comment jumps incl.
+  truncated hashes and out-of-body lines, email scan).  Full
+  suite 77/77.  Verified live in the daemon on
+  writer-data-platform#762: file anchor lands on the exact file
+  section, =R366= on the real diff line, =discussion_r= on the
+  matching id, =browse-url= dispatch end-to-end, and
+  =code-review-open-pr-at-point= from a scratch email buffer; no
+  refetch happened (pending stayed nil) and the window
+  configuration was restored.
+
 * Phase 8 — Diff drill-down: ediff and base views                :STATUS:todo
 
 Nearly free now that phase 1 gives us the worktree and the base
