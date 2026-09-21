@@ -1049,6 +1049,11 @@ nothing (or is disabled, or there is no worktree)."
            :type string)
    (msg    :initarg :msg
            :type string)
+   (body   :initarg :body
+           :initform nil
+           :type (or null string)
+           :documentation "Raw (markdown) body as written by the author.
+Used when editing a submitted comment.")
    (id     :initarg :id)
    (reactions :initarg :reactions)
    (typename :initarg :typename)
@@ -1056,6 +1061,7 @@ nothing (or is disabled, or there is no worktree)."
 
 (defvar code-review-comment-section-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "e") 'code-review-edit-remote-comment-at-point)
     (define-key map (kbd "C-c C-r") 'code-review-conversation-reaction-at-point)
     (define-key map (kbd "C-c C-i") 'code-review-promote-comment-at-point-to-new-issue)
     map)
@@ -1088,6 +1094,7 @@ nothing (or is disabled, or there is no worktree)."
                (obj (code-review-comment-section
                      :author (a-get-in c (list 'author 'login))
                      :msg (a-get c 'bodyHTML)
+                     :body (a-get c 'body)
                      :id (a-get c 'databaseId)
                      :typename (a-get c 'typename)
                      :reactions reaction-objs)))
@@ -1181,6 +1188,13 @@ nothing (or is disabled, or there is no worktree)."
                :type string)
    (msg        :initarg :msg
                :type string)
+   (body       :initarg :body
+               :initform nil
+               :type (or null string)
+               :documentation "Raw (markdown) body as written by the author.
+nil for local comments rendered before the data was available; the
+raw body is what `e' (edit submitted comment) pre-fills the
+comment buffer with.")
    (position   :initarg :position
                :initform nil
                :type (or null number))
@@ -1310,6 +1324,7 @@ object), delegate to that data object."
 (defvar code-review-code-comment-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
+    (define-key map (kbd "e") 'code-review-edit-remote-comment-at-point)
     (define-key map (kbd "C-c C-r") 'code-review-code-comment-reaction-at-point)
     (define-key map (kbd "C-c C-n") 'code-review-promote-comment-at-point-to-new-issue)
     (define-key map (kbd "K") 'code-review-section-delete-comment-remote)
@@ -1335,6 +1350,7 @@ object), delegate to that data object."
 (defvar code-review-outdated-comment-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
+    (define-key map (kbd "e") 'code-review-edit-remote-comment-at-point)
     (define-key map (kbd "K") 'code-review-section-delete-comment-remote)
     map)
   "Keymaps for outdated-comment sections.")

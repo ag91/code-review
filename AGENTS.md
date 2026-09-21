@@ -230,4 +230,24 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   `check-parens`): a surplus closer can silently end a `let` so
   half the script runs at outer scope with void variables, and a
   `cl-labels` whose definitions list closes early leaves its body
-  calling a void `walk`.
+  calling a void `walk`.  Note check-parens also catches
+  unmatched STRING quotes (a missing closing quote silently
+  swallows half the file into one string, which shows up as a
+  paren error a screen away from the real typo).
+- EIEIO `-p` predicates (e.g. `code-review-base-comment-section-p`)
+  are EXACT-CLASS checks, not subclass-aware (`cl-typep` is the
+  subclass-aware one): a parent-class predicate returns nil for a
+  child instance.  Never dispatch on a parent-class predicate;
+  enumerate the concrete classes.  Related trap: the `local?` SLOT
+  lies — `code-review-outdated-comment-section` sets `local?` t
+  even for comments FETCHED from the forge, so classify by class,
+  never by that slot (phase 6).
+- In ERT tests, `(cl-letf (((fn) val)) ...)` requires a
+  `(setf fn)` expander and signals `void-function ((setf fn))`;
+  rebind with `fset` + `unwind-protect` instead (phase 6).
+- Never walk ALL sections of ALL live review buffers from a
+  verify script: a `magit-map-sections` probe over every open
+  buffer hung the daemon for minutes after a class redefining
+  reload (user had to C-g).  The minimal reload script (loads +
+  keymap patches + report into a defvar) is instant; keep daemon
+  probes bounded and targeted (phase 6 incident).

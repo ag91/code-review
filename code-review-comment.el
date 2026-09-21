@@ -57,6 +57,12 @@
   :group 'code-review
   :type 'string)
 
+(defcustom code-review-comment-edit-remote-msg ";;; Editing a submitted comment\n;;; C-c C-c to send the edit, C-c C-k to abort"
+  "Helper text on top of the comment buffer when editing a
+comment that was already submitted to the forge."
+  :group 'code-review
+  :type 'string)
+
 ;;; internal vars
 
 (defvar code-review-comment-cursor-pos nil
@@ -231,6 +237,111 @@ Optionally define a MSG."
            (oref obj title)
            (oref obj body))))
 
+;;; Editing comments that were already submitted to the forge
+
+(defclass code-review-editable-remote-comment ()
+  ((kind :initarg :kind
+         :documentation "Which endpoint the edit goes to:
+\"issue-comment\", \"review-summary\" or \"review-comment\"
+\(see `code-review-update-comment').")
+   (id   :initarg :id
+         :documentation "Forge databaseId of the comment/review.")
+   (body :initarg :body
+         :documentation "Original raw (markdown) body, for reference.")
+   (msg  :initform nil
+         :documentation "Holds the NEW body once the comment
+buffer is committed (the commit machinery osets this slot).")))
+
+(defun code-review-comment--raw-body (obj)
+  "Return the raw (markdown) body stored on comment OBJ, or nil.
+Guards both the slot not existing (objects rendered before a
+reload by the long-lived daemon) and it being unbound."
+  (and (slot-exists-p obj 'body)
+       (slot-boundp obj 'body)
+       (oref obj body)))
+
+(defun code-review-comment--edit-target (value)
+  "Return the edit KIND for the comment data object VALUE, or nil.
+`local' for local (pending) comments, one of \"issue-comment\",
+\"review-summary\" or \"review-comment\" for submitted ones, nil
+when VALUE is not an editable comment.  Exact-class predicates
+decide (eieio `-p' predicates are NOT subclass-aware on every
+Emacs this package supports), and the `local?' SLOT is never
+consulted: `code-review-outdated-comment-section' sets it to t
+even for comments fetched from the forge."
+  (cond
+   ((code-review-comment-section-p value)
+    (pcase (and (slot-boundp value 'typename) (oref value typename))
+      ("IssueComment" "issue-comment")
+      ("PullRequestReview" "review-summary")
+      (_ nil)))
+   ;; local (pending) comments and replies keep their RET flow
+   ((or (code-review-local-comment-section-p value)
+        (code-review-reply-comment-section-p value))
+    'local)
+   ;; diff-anchored comments fetched from the forge
+   ((or (code-review-code-comment-section-p value)
+        (code-review-outdated-comment-section-p value))
+    "review-comment")
+   (t
+    nil)))
+
+(defun code-review-comment--start-remote-edit (value kind)
+  "Open the comment buffer to edit the submitted comment VALUE.
+KIND selects the provider endpoint (see
+`code-review-update-comment')."
+  (let* ((pr (code-review-db-get-pullreq))
+         (id (and (slot-exists-p value 'id)
+                  (slot-boundp value 'id)
+                  (oref value id)))
+         (body (code-review-comment--raw-body value))
+         (author (and (slot-boundp value 'author) (oref value author)))
+         (user (code-review-utils--git-get-user)))
+    (unless (code-review-github-repo-p pr)
+      (user-error "Editing submitted comments is not supported in %s yet"
+                  (cond
+                   ((code-review-gitlab-repo-p pr) "Gitlab")
+                   ((code-review-bitbucket-repo-p pr) "Bitbucket")
+                   (t "this provider"))))
+    (unless id
+      (user-error "Comment has no forge id; nothing to edit"))
+    (unless body
+      (user-error "Raw comment body unavailable: press G to fully reload the review, then try again"))
+    (when (and author user
+               (not (string-equal (downcase author) (downcase user)))
+               (not (y-or-n-p (format "This comment was authored by @%s.  Edit it anyway? "
+                                      author))))
+      (user-error "Edit aborted"))
+    (setq code-review-comment-cursor-pos (point)
+          code-review-comment-uncommitted
+          (code-review-editable-remote-comment
+           :kind kind :id id :body body))
+    (code-review-comment-add
+     (format "%s\n\n%s" code-review-comment-edit-remote-msg body))))
+
+;;;###autoload
+(defun code-review-edit-remote-comment-at-point ()
+  "Edit a comment that was already submitted to the forge.
+Works on diff comments (including outdated ones) and on
+Conversation comments; a \"PullRequestReview\" conversation
+entry edits the submitted review summary.  The edit is sent when
+you press \\<code-review-comment-mode-map>\\[code-review-comment-commit] in the comment buffer, and the
+review re-fetches its data afterward.  The forge rejects edits to
+other people's comments."
+  (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
+  (let* ((section (magit-current-section))
+         (value (and section
+                     (slot-boundp section 'value)
+                     (oref section value))))
+    (if-let ((kind (and value (code-review-comment--edit-target value))))
+        (if (eq kind 'local)
+            ;; pending local comments/replies keep their RET flow
+            (code-review-comment-add-or-edit)
+          (code-review-comment--start-remote-edit value kind))
+      (user-error "No editable comment at point"))))
+
 (cl-defmethod code-review-comment-handler-add-or-edit (obj)
   "Add a comment in the OBJ."
   ;;; only hunks allowed here
@@ -400,6 +511,28 @@ Inform if a SUGGESTION-CODE? is being proposed."
         (code-review-new-issue
          pr body title
          (lambda (&rest _) (message "New issue created.")))))))
+
+(cl-defmethod code-review-comment-handler-commit ((obj code-review-editable-remote-comment) _default-buff-msg)
+  "Send the edit of an already-submitted comment OBJ to the forge.
+The new body is the `msg' slot the commit machinery sets from the
+comment buffer; the helper header is stripped first."
+  (let* ((pr (code-review-db-get-pullreq))
+         (pr-id (oref pr id))
+         (buff-name (code-review-pr-buffer-name pr))
+         (kind (oref obj kind))
+         (comment-id (oref obj id))
+         (new-body (code-review-utils--comment-clean-msg
+                    (oref obj msg)
+                    code-review-comment-edit-remote-msg)))
+    (if (string-empty-p new-body)
+        (message "Empty comment: edit not sent.")
+      (code-review-update-comment
+       pr kind comment-id new-body
+       (lambda (&rest _)
+         (let ((code-review-section-full-refresh? t))
+           ;; async callback: point the DB back at this PR
+           (setq code-review-db--pullreq-id pr-id)
+           (code-review--build-buffer buff-name nil "Comment edited")))))))
 
 ;;;###autoload
 (defun code-review-comment-commit ()

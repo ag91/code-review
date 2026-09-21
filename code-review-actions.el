@@ -436,6 +436,66 @@ Optionally set a FEEDBACK message."
                  "Bitbucket"))))))
 
 ;;;###autoload
+(defun code-review-reopen-pr ()
+  "Reopen current PR when it is closed.  Sent immediately."
+  (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
+  (let ((pr (code-review-db-get-pullreq)))
+    (cond
+     ((not (code-review-github-repo-p pr))
+      (message "Not supported in %s yet."
+               (cond
+                ((code-review-gitlab-repo-p pr)
+                 "Gitlab")
+                ((code-review-bitbucket-repo-p pr)
+                 "Bitbucket"))))
+     ((not (member (oref pr state) '("CLOSED" "closed")))
+      (message "PR is not closed."))
+     (t
+      (let ((pr-id (oref pr id))
+            (buff-name (code-review-pr-buffer-name pr)))
+        (code-review-reopen
+         pr
+         (lambda ()
+           (oset pr state "OPEN")
+           (code-review-db-update pr)
+           ;; async callback: point the DB back at this PR
+           (setq code-review-db--pullreq-id pr-id)
+           (code-review--build-buffer buff-name))))))))
+
+;;;###autoload
+(defun code-review-toggle-pr-draft ()
+  "Toggle draft status of current PR (draft <-> ready for review).
+Sent immediately."
+  (interactive)
+  (when (code-review-db-local-pr-p)
+    (user-error "Local diff reviews are read-only (no forge connection)"))
+  (let* ((pr (code-review-db-get-pullreq))
+         (pr-id (oref pr id))
+         (buff-name (code-review-pr-buffer-name pr))
+         (is-draft (and (oref pr raw-infos)
+                        (a-get (oref pr raw-infos) 'isDraft))))
+    (if (not (code-review-github-repo-p pr))
+        (message "Not supported in %s yet."
+                 (cond
+                  ((code-review-gitlab-repo-p pr)
+                   "Gitlab")
+                  ((code-review-bitbucket-repo-p pr)
+                   "Bitbucket")))
+      (code-review-toggle-draft
+       pr (not is-draft)
+       (lambda ()
+         (oset pr raw-infos (a-assoc (oref pr raw-infos)
+                                     'isDraft (not is-draft)))
+         (code-review-db-update pr)
+         (setq code-review-db--pullreq-id pr-id)
+         (message (if is-draft
+                      "PR marked ready for review."
+                    "PR converted to draft."))
+         (code-review--build-buffer buff-name))))))
+
+;;;###autoload
 (defun code-review-set-title ()
   "Change the title of current PR.  Sent immediately."
   (interactive)

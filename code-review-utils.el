@@ -188,6 +188,7 @@ using COMMENTS."
                                :state state
                                :author author
                                :msg .bodyText
+                               :body .bodyText
                                :position handled-pos
                                :reactions nil
                                :path .path
@@ -201,6 +202,7 @@ using COMMENTS."
                                :state state
                                :author author
                                :msg .bodyHTML
+                               :body .body
                                :position handled-pos
                                :reactions reactions
                                :internalId .internal-id
@@ -216,6 +218,7 @@ using COMMENTS."
                                :state state
                                :author author
                                :msg .bodyText
+                               :body .bodyText
                                :position handled-pos
                                :reactions nil
                                :internalId .internal-id
@@ -233,6 +236,7 @@ using COMMENTS."
                                :state state
                                :author author
                                :msg .bodyHTML
+                               :body .body
                                :position handled-pos
                                :reactions reactions
                                :internalId .internal-id

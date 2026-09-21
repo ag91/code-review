@@ -267,6 +267,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
           }
           databaseId
           bodyHTML
+          body
           createdAt
           updatedAt
         }
@@ -276,6 +277,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
           typename:__typename
           author { login }
           bodyHTML
+          body
           state
           createdAt
           databaseId
@@ -285,6 +287,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
               createdAt
               updatedAt
               bodyHTML
+              body
               originalPosition
               diffHunk
               position
@@ -471,6 +474,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
           }
           databaseId
           bodyHTML
+          body
           createdAt
           updatedAt
         }
@@ -480,6 +484,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
           typename:__typename
           author { login }
           bodyHTML
+          body
           state
           createdAt
           databaseId
@@ -489,6 +494,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
               createdAt
               updatedAt
               bodyHTML
+              body
               originalPosition
               diffHunk
               position
@@ -1084,6 +1090,83 @@ Call CALLBACK when the API call completes."
                 :auth code-review-auth-login-marker
                 :host code-review-github-graphql-host
                 :callback callback
+                :errorback #'code-review-github-errback)))
+
+(defun code-review-github--update-comment-endpoint (kind owner repo number comment-id)
+  "Return (URL . REQUEST-FN) to update a submitted comment on GitHub.
+KIND is one of \"issue-comment\", \"review-summary\" or
+\"review-comment\" (see `code-review-update-comment').  These are
+the REST equivalents of the GraphQL mutations
+`updatePullRequestReviewComment' / `updatePullRequestReview': the
+REST endpoints key on the plain databaseId the comment sections
+already carry, so no extra GraphQL node id has to be fetched."
+  (pcase kind
+    ("issue-comment"
+     (cons (format "/repos/%s/%s/issues/comments/%s" owner repo comment-id)
+           #'ghub-patch))
+    ("review-summary"
+     (cons (format "/repos/%s/%s/pulls/%s/reviews/%s" owner repo number comment-id)
+           #'ghub-put))
+    (_
+     (cons (format "/repos/%s/%s/pulls/comments/%s" owner repo comment-id)
+           #'ghub-patch))))
+
+(cl-defmethod code-review-update-comment ((github code-review-github-repo) kind comment-id body callback)
+  "Update the BODY of a submitted comment on GITHUB and call CALLBACK.
+KIND selects the endpoint (see
+`code-review-github--update-comment-endpoint')."
+  (let* ((endpoint (code-review-github--update-comment-endpoint
+                    kind
+                    (oref github owner)
+                    (oref github repo)
+                    (oref github number)
+                    comment-id))
+         (url (car endpoint))
+         (req-fn (cdr endpoint)))
+    (message "Updating comment...")
+    (funcall req-fn url
+             nil
+             :auth code-review-auth-login-marker
+             :host code-review-github-host
+             :payload (a-alist 'body body)
+             :errorback #'code-review-github-errback
+             :callback (lambda (&rest _) (funcall callback)))))
+
+(cl-defmethod code-review-reopen ((github code-review-github-repo) callback)
+  "Reopen a closed pull request in GITHUB and call CALLBACK afterward."
+  (message "Reopening PR...")
+  (ghub-patch (format "/repos/%s/%s/pulls/%s"
+                      (oref github owner)
+                      (oref github repo)
+                      (oref github number))
+              nil
+              :auth code-review-auth-login-marker
+              :host code-review-github-host
+              :payload (a-alist 'state "open")
+              :errorback #'code-review-github-errback
+              :callback (lambda (&rest _) (funcall callback))))
+
+(cl-defmethod code-review-toggle-draft ((github code-review-github-repo) make-draft? callback)
+  "Convert the PR in GITHUB to a draft (MAKE-DRAFT? non-nil) or mark
+it ready for review, then call CALLBACK."
+  (let ((query (if make-draft?
+                   "mutation($input: ConvertPullRequestToDraftInput!) {
+  convertPullRequestToDraft(input: $input) { pullRequest { isDraft } }
+}"
+                 "mutation($input: MarkPullRequestReadyForReviewInput!) {
+  markPullRequestReadyForReview(input: $input) { pullRequest { isDraft } }
+}"))
+        (pr-id (a-get (oref github raw-infos) 'id)))
+    (unless pr-id
+      (user-error "Missing PR id; press G to fully reload this review first"))
+    (message (if make-draft?
+                 "Converting PR to draft..."
+               "Marking PR ready for review..."))
+    (ghub-query query
+                `((input . ((pullRequestId . ,pr-id))))
+                :auth code-review-auth-login-marker
+                :host code-review-github-graphql-host
+                :callback (lambda (&rest _) (funcall callback))
                 :errorback #'code-review-github-errback)))
 
 (defun code-review-github-fix-infos (github-infos)

@@ -303,34 +303,103 @@ the raw heuristics produced noise, and three rules fixed it:
   0 dead.  The remaining 3 are munit-scaffolding-shaped; raise
   the ratio defcustom to 0.2 to silence them if still noisy.
 
-* Phase 6 — Edit submitted comments and PR lifecycle          :STATUS:todo
+* Phase 6 — Edit submitted comments and PR lifecycle          :STATUS:done
 
 The biggest write-path gap vs pr-review: everything it can edit
 after submission.
 
-- Edit an already-submitted remote comment
-  (=updatePullRequestReviewComment=), a submitted review summary
-  (=updatePullRequestReview=), and a thread item.  We can only
-  edit local (pending) comments today.
-- Reopen a closed PR (we only close).
-- Toggle draft / mark ready for review (=convertPullRequestToDraft=,
-  =markPullRequestReadyForReview=).
-- Subscribe / unsubscribe / ignore PR notifications
-  (=updateSubscription=).
-- Consider moving the local-comments submit to a single
-  =addPullRequestReview= mutation with a =threads= input (pending
-  comments + replies + summary in one call), as pr-review does.
+DONE (implementation notes, 2026-09-21) — everything except the
+"consider" bullet:
 
-* Phase 7 — Notifications dashboard and PR search                :STATUS:todo
+- EDIT SUBMITTED COMMENTS: =e= on any comment section that was
+  already submitted to the forge (diff-anchored =code-comment= /
+  =outdated= sections and Conversation =comment= sections)
+  opens the comment buffer prefilled with the RAW MARKDOWN body;
+  =C-c C-c= sends the edit and fully refreshes the review
+  (=code-review-section-full-refresh?= => refetch, so the buffer
+  re-renders with the server's new bodyHTML).  A conversation
+  entry with typename =PullRequestReview= edits the submitted
+  REVIEW SUMMARY.  Guards: local diff reviews user-error;
+  comments authored by someone else ask =y-or-n-p= (the forge
+  rejects them anyway); missing raw body (buffer rendered from
+  pre-phase-6 DB data) tells you to press =G= first.
+- Data plumbing: the =body= (raw markdown) field was added to
+  BOTH GraphQL queries in three places each (review nodes, review
+  comment nodes, top-level comment nodes); new =body= slot on
+  =code-review-base-comment-section= and
+  =code-review-comment-section=; =make-group= and the GitHub
+  conversation inserter pass it through.
+- ENDPOINTS: REST equivalents of the roadmap's GraphQL
+  mutations, chosen deliberately — =updatePullRequestReviewComment=
+  == =PATCH pulls/comments/{id}=, review summary ==
+  =PUT pulls/N/reviews/{id}=, IssueComment ==
+  =PATCH issues/comments/{id}=.  REST keys on the plain
+  =databaseId= the comment sections already carry (exactly like
+  the existing delete-code-comment path); the GraphQL mutations
+  would need extra global node ids fetched for every comment.
+  Selection lives in a pure, tested helper
+  (=code-review-github--update-comment-endpoint=); the generic
+  =code-review-update-comment (obj kind comment-id body callback)=
+  has a provider fallback user-error.
+- REOPEN: =o= in the transient; =code-review-reopen-pr= guards
+  non-GitHub and non-CLOSED PRs, then PATCHes the pull request
+  with =state: open= (new generic =code-review-reopen=).  The
+  existing close path sends uppercase =CLOSED= and works, but
+  the documented REST value is lowercase, so reopen sends
+  ="open"= explicitly.
+- DRAFT TOGGLE: =d= in the transient; =code-review-toggle-pr-draft=
+  flips via GraphQL =convertPullRequestToDraft= /
+  =markPullRequestReadyForReview= (input: =pullRequestId=, taken
+  from =raw-infos= id — no REST equivalent exists), then
+  optimistically flips =isDraft= in raw-infos, persists and
+  rebuilds (the "Draft" header re-renders from it).  New generic
+  =code-review-toggle-draft= with provider fallback.
+- TESTS: 11 new ERT tests (make-group carries raw body;
+  =code-review-comment--edit-target= kinds incl. the local/reply
+  and outdated cases; helper-header stripping; user-errors for
+  no-comment-at-point and local reviews; endpoint selection x3;
+  both GraphQL queries fetch =body=).  Full suite 81/88: the 7
+  failures are the hunkhighlight face tests, which ALSO FAIL ON
+  UNMODIFIED HEAD on this Emacs 30.2 machine — they were
+  developed and verified on Emacs 31 (other machine), where the
+  treesit runtime differs (Emacs 30.2 supports only
+  equal/match/pred at capture time).  Pre-existing, not touched
+  by phase 6.
+- GOTCHAS found (recorded in AGENTS.md where general):
+  - EIEIO =-p= predicates are EXACT-CLASS checks (at least on
+    this Emacs 30.2 daemon):
+    =code-review-base-comment-section-p= returns NIL for a
+    =code-review-code-comment-section= instance, while =cl-typep=
+    is subclass-aware.  Never dispatch on parent-class
+    predicates; enumerate the concrete classes.  Also the
+    =local?= SLOT lies: =code-review-outdated-comment-section=
+    sets =local?= t even for comments FETCHED from the forge —
+    classify by class, never by that slot.
+  - =(cl-letf (((fn) val)) ...)= needs a =(setf fn)= expander and
+    signals =void-function ((setf fn))= in batch tests: rebind
+    with =fset= + =unwind-protect= instead.
+  - The verification incident: a probe script that walked ALL
+    sections of ALL live review buffers via =magit-map-sections=
+    hung the daemon for minutes (user had to C-g; the tree walk
+    itself is linear, so the suspect is stale section objects
+    whose classes had just been redefined).  This is the
+    "NEVER run heavy/unbounded compute in the live daemon" rule
+    in AGENTS.md biting again: the minimal reload script (loads
+    + keymap patches + report into a defvar) is instant.  Verify
+    with bounded, targeted probes only.
+  - Daemon =defvar= keymaps again needed explicit =define-key=
+    patches after reload (the =e= binding); the new defcustom
+    needs no rebind since it did not exist before.
+- NOT done: converting the local-comments submit to a single
+  =addPullRequestReview= mutation with a =threads= input (the
+  "consider" bullet).  Same conclusion as phase 4: needs the
+  write path redesigned around pending threads; the current
+  line/side review submit stays.
+
+* Phase 7 —  PR search                :STATUS:todo
 
 Cuts the GitHub-website round trips.
 
-- =code-review-notification=: list GitHub notifications in a
-  buffer, dired-style mark/act (mark read, unsubscribe), toggle
-  filters, paginate.  Opening a PR from it marks read and passes
-  the last-read time so newer items get a NEW highlight (pr-review
-  does this by binding =pr-review--last-read-time= around the
-  render).
 - =code-review-search= / =code-review-search-open=: search PRs
   by GraphQL query, pick from results (completing-read or a
   listview buffer).
@@ -520,8 +589,6 @@ Gotchas discovered (they will bite again):
 
 * Phase 9 — Review ergonomics (pr-review polish)                 :STATUS:todo
 
-- =imenu= index over review sections (files, comments, commits)
-  via =magit--imenu-create-index=.
 - eldoc showing the current context (file, line, section) at
   point.
 - Global section folding by show-levels (like magit's =C-c +/-=),

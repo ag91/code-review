@@ -132,5 +132,39 @@ Call CALLBACK when the provider API call completes.")
   (ignore obj thread-id resolve? callback)
   (user-error "Toggling resolved threads is not implemented for this provider"))
 
+;; Editing submitted comments/reviews
+(cl-defgeneric code-review-update-comment (obj kind comment-id body callback)
+  "Update the BODY of an already-submitted comment in OBJ.
+KIND is a provider-agnostic token selecting what COMMENT-ID
+refers to: \"issue-comment\" (a conversation comment),
+\"review-summary\" (a submitted review body) or
+\"review-comment\" (a diff-anchored review comment, including
+thread replies and outdated ones).  Call CALLBACK when the
+provider API call completes.")
+
+(cl-defmethod code-review-update-comment (obj kind comment-id body callback)
+  "Fallback when provider comment editing is not implemented."
+  (ignore obj kind comment-id body callback)
+  (user-error "Editing submitted comments is not implemented for this provider"))
+
+;; PR lifecycle
+(cl-defgeneric code-review-reopen (obj callback)
+  "Reopen a closed pull request in OBJ and call CALLBACK afterward.")
+
+(cl-defmethod code-review-reopen (obj callback)
+  "Fallback when provider PR reopening is not implemented."
+  (ignore obj callback)
+  (user-error "Reopening PRs is not implemented for this provider"))
+
+(cl-defgeneric code-review-toggle-draft (obj make-draft? callback)
+  "Convert OBJ's pull request to a draft when MAKE-DRAFT? is non-nil,
+mark it ready for review otherwise.  Call CALLBACK when the
+provider API call completes.")
+
+(cl-defmethod code-review-toggle-draft (obj make-draft? callback)
+  "Fallback when provider draft toggling is not implemented."
+  (ignore obj make-draft? callback)
+  (user-error "Toggling draft status is not implemented for this provider"))
+
 (provide 'code-review-interfaces)
 ;;; code-review-interfaces.el ends here
