@@ -204,6 +204,109 @@ overlay face at that position."
     (should-not (memq 'font-lock-function-name-face
                       (code-review-hunkhighlight-test--face-at "+ a")))))
 
+(ert-deftest code-review-hunkhighlight/typescript-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'typescript)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+import { expect } from 'vitest';"
+        "+const MAX_ROWS = 5000;"
+        "+let comparedColumns = 0;"
+        "+interface BillingEvent { id: number; }"
+        "+class Oracle {"
+        "+  amend(input: string): string {"
+        "+    for (const row of rows) {"
+        "+      return row;"
+        "+    }"
+        "+    switch (input) {"
+        "+      case 'add':"
+        "+        return 'added';"
+        "+    }"
+        "+  }"
+        "+}"
+        "+function computeTotal(base: number) {"
+        "+  return base;"
+        "+}")
+    (should (code-review-hunkhighlight-region beg end "src/oracle.ts"))
+    ;; type-shaped definitions: interface, class
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "BillingEvent")))
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "Oracle")))
+    ;; function and method names
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "computeTotal")))
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "amend")))
+    ;; parameters (method and function)
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "amend(input")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "computeTotal(base")))
+    ;; UPPER_CASE declaration = constant, not a variable
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "MAX_ROWS")))
+    (should-not (memq 'font-lock-variable-name-face
+                      (code-review-hunkhighlight-test--face-at "MAX_ROWS")))
+    ;; lowercase declarations and for-of bindings are variables
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "comparedColumns")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "const row")))
+    ;; switch arms: matched value (type face) + `case' keyword
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "case '")))
+    (should (memq 'font-lock-keyword-face
+                  (code-review-hunkhighlight-test--face-at "case")))
+    ;; return is the one keyword we keep; import is not
+    (should (memq 'font-lock-keyword-face
+                  (code-review-hunkhighlight-test--face-at "return")))
+    (should-not (memq 'font-lock-keyword-face
+                      (code-review-hunkhighlight-test--face-at "import")))
+    ;; literal constant values: strings and numbers
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "'vitest'")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "MAX_ROWS = 5000")))
+    ;; the diff base face stays underneath
+    (should (memq 'magit-diff-added
+                  (code-review-hunkhighlight-test--face-at "computeTotal")))))
+
+(ert-deftest code-review-hunkhighlight/typescript-test-file-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'typescript)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+describe('billing exclusions', () => {"
+        "+  it('applies v1 amendments', () => {"
+        "+    expect(total).toBe(42);"
+        "+  });"
+        "+});")
+    (should (code-review-hunkhighlight-region beg end "e2e/oracle.test.ts"))
+    ;; jest/vitest test definitions and assertions
+    (should (memq 'code-review-test-face
+                  (code-review-hunkhighlight-test--face-at "describe")))
+    (should (memq 'code-review-test-face
+                  (code-review-hunkhighlight-test--face-at "it")))
+    (should (memq 'code-review-test-face
+                  (code-review-hunkhighlight-test--face-at "expect")))
+    ;; the test-case NAME string is a constant value on top
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "applies v1 amendments")))))
+
+(ert-deftest code-review-hunkhighlight/tsx-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'tsx)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+const cmp = (a: number) => {"
+        "+  return a;"
+        "+};")
+    (should (code-review-hunkhighlight-region beg end "src/widget.tsx"))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "cmp")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "(a")))
+    (should (memq 'font-lock-keyword-face
+                  (code-review-hunkhighlight-test--face-at "return")))))
+
 (ert-deftest code-review-hunkhighlight/test-file-faces ()
   (skip-unless (and (fboundp 'treesit-language-available-p)
                     (treesit-language-available-p 'python)))

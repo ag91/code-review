@@ -37,7 +37,7 @@
 ;;   1. strip the +/-/space prefixes and reconstruct the NEW side
 ;;      of the hunk (added + context lines);
 ;;   2. parse it with treesit and run `treesit-query-capture' with
-;;      per-language queries (python first; see the defcustoms);
+;;      per-language queries (see the defcustoms);
 ;;   3. map every captured node's range back onto the diff buffer
 ;;      positions and lay the semantic face as an OVERLAY over the
 ;;      line's diff face: overlay faces override text-property
@@ -82,7 +82,9 @@ diff faces and no error is signaled."
     ("\\.sc\\'" . scala)
     ("\\.sbt\\'" . scala)
     ("\\.el\\'" . elisp)
-    ("\\.clj[scx]?\\'" . clojure))
+    ("\\.clj[scx]?\\'" . clojure)
+    ("\\.ts\\'" . typescript)
+    ("\\.tsx\\'" . tsx))
   "Map file-name regexp to tree-sitter language symbol.
 Extend this (and `code-review-hunkhighlight-queries') when adding
 languages: only ship queries you have validated against the
@@ -221,6 +223,87 @@ purple and the function-name blue."
        (#match? @_h \"\\\\`\\\\(fn\\\\|let\\\\|loop\\\\)\\\\'\"))"
       . ((param . font-lock-variable-name-face)))
      ("[(str_lit) (num_lit)] @cval"
+      . ((cval . code-review-constant-face))))
+    (typescript
+     ;; grammar nodes (probed against
+     ;; libtree-sitter-typescript): enum names are plain
+     ;; `identifier' (NOT type_identifier); `for (const x of ys)'
+     ;; is FLATTENED — the binding is the `left:' identifier,
+     ;; not a variable_declaration child.
+     ("\"return\" @kw"
+      . ((kw . font-lock-keyword-face)))
+     ("(function_declaration name: (identifier) @fn)"
+      . ((fn . font-lock-function-name-face)))
+     ("(method_definition name: (property_identifier) @m)"
+      . ((m . font-lock-function-name-face)))
+     ("(class_declaration name: (type_identifier) @cls)"
+      . ((cls . font-lock-type-face)))
+     ("(interface_declaration name: (type_identifier) @iface)"
+      . ((iface . font-lock-type-face)))
+     ("(type_alias_declaration name: (type_identifier) @alias)"
+      . ((alias . font-lock-type-face)))
+     ("(enum_declaration name: (identifier) @en)"
+      . ((en . font-lock-type-face)))
+     ("(formal_parameters (required_parameter pattern: (identifier) @param))"
+      . ((param . font-lock-variable-name-face)))
+     ("(formal_parameters (optional_parameter pattern: (identifier) @param))"
+      . ((param . font-lock-variable-name-face)))
+     ("((lexical_declaration (variable_declarator name: (identifier) @const))
+       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
+      . ((const . code-review-constant-face)))
+     ("((lexical_declaration (variable_declarator name: (identifier) @var))
+       (#match? @var \"\\\\`[a-z_]\"))"
+      . ((var . font-lock-variable-name-face)))
+     ("(variable_declaration (variable_declarator name: (identifier) @var))"
+      . ((var . font-lock-variable-name-face)))
+     ;; for-of/for-in bindings (const/let/bare all take the
+     ;; `left:' identifier slot)
+     ("(for_in_statement left: (identifier) @for)"
+      . ((for . font-lock-variable-name-face)))
+     ;; switch arms: the `case' keyword plus the matched value
+     ("(switch_case value: (_) @case)
+       (switch_case \"case\" @kw)"
+      . ((case . font-lock-type-face)
+         (kw . font-lock-keyword-face)))
+     ("[(string) (template_string) (number)] @cval"
+      . ((cval . code-review-constant-face))))
+    (tsx
+     ;; the tsx grammar shares the typescript node names for
+     ;; every query above (validated: identical captures), so
+     ;; this block repeats them verbatim
+     ("\"return\" @kw"
+      . ((kw . font-lock-keyword-face)))
+     ("(function_declaration name: (identifier) @fn)"
+      . ((fn . font-lock-function-name-face)))
+     ("(method_definition name: (property_identifier) @m)"
+      . ((m . font-lock-function-name-face)))
+     ("(class_declaration name: (type_identifier) @cls)"
+      . ((cls . font-lock-type-face)))
+     ("(interface_declaration name: (type_identifier) @iface)"
+      . ((iface . font-lock-type-face)))
+     ("(type_alias_declaration name: (type_identifier) @alias)"
+      . ((alias . font-lock-type-face)))
+     ("(enum_declaration name: (identifier) @en)"
+      . ((en . font-lock-type-face)))
+     ("(formal_parameters (required_parameter pattern: (identifier) @param))"
+      . ((param . font-lock-variable-name-face)))
+     ("(formal_parameters (optional_parameter pattern: (identifier) @param))"
+      . ((param . font-lock-variable-name-face)))
+     ("((lexical_declaration (variable_declarator name: (identifier) @const))
+       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
+      . ((const . code-review-constant-face)))
+     ("((lexical_declaration (variable_declarator name: (identifier) @var))
+       (#match? @var \"\\\\`[a-z_]\"))"
+      . ((var . font-lock-variable-name-face)))
+     ("(variable_declaration (variable_declarator name: (identifier) @var))"
+      . ((var . font-lock-variable-name-face)))
+     ("(for_in_statement left: (identifier) @for)"
+      . ((for . font-lock-variable-name-face)))
+     ("(switch_case value: (_) @case)
+       (switch_case \"case\" @kw)"
+      . ((case . font-lock-type-face)
+         (kw . font-lock-keyword-face)))
+     ("[(string) (template_string) (number)] @cval"
       . ((cval . code-review-constant-face)))))
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
@@ -244,7 +327,24 @@ that query)."
         (#match? @am \"\\\\`assert\"))"
       . ((as . code-review-test-face)
          (af . code-review-test-face)
-         (am . code-review-test-face)))))
+         (am . code-review-test-face))))
+    (typescript
+     ;; jest/vitest shapes: describe/it/test define the cases,
+     ;; expect/assert are the assertions (probed: plain call
+     ;; expressions, no dedicated grammar nodes)
+     ("((call_expression function: (identifier) @tf)
+       (#match? @tf \"\\\\`\\\\(describe\\\\|it\\\\|test\\\\)\\\\'\"))"
+      . ((tf . code-review-test-face)))
+     ("((call_expression function: (identifier) @af)
+       (#match? @af \"\\\\`\\\\(expect\\\\|assert\\\\)\\\\'\"))"
+      . ((af . code-review-test-face))))
+    (tsx
+     ("((call_expression function: (identifier) @tf)
+       (#match? @tf \"\\\\`\\\\(describe\\\\|it\\\\|test\\\\)\\\\'\"))"
+      . ((tf . code-review-test-face)))
+     ("((call_expression function: (identifier) @af)
+       (#match? @af \"\\\\`\\\\(expect\\\\|assert\\\\)\\\\'\"))"
+      . ((af . code-review-test-face)))))
   "Like `code-review-hunkhighlight-queries', but test files only."
   :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
   :group 'code-review-hunkhighlight)

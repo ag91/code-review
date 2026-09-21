@@ -675,6 +675,37 @@ buffer-local cache was cleared.  Fix: the cache key now hashes
 the language's query+face defcustom entries together with the
 hunk body, so any customization invalidates the cache
 automatically.
+TYPESCRIPT + TSX (writer-data-platform#762 review, 2026-09-21):
+
+- Queries symmetric to the scala set, all capture-exercised
+  against BOTH =libtree-sitter-typescript= and
+  =libtree-sitter-tsx= (the tsx grammar shares every node name,
+  so the =tsx= block repeats the strings verbatim).
+  =language-map= now maps =.ts= / =.tsx=.  Covers: function and
+  method names, class/interface/type-alias/enum names,
+  parameters (required + optional, arrow functions included),
+  lexical/variable declarations (UPPER_CASE = constant,
+  lowercase = variable), for-of/for-in bindings, switch-case
+  values + the =case= keyword, =return=, and
+  =[(string) (template_string) (number)]= literals.
+- Probing gotchas worth keeping: enum names are plain
+  =identifier= (NOT =type_identifier=; class/interface/type
+  alias names ARE =type_identifier=), and =for (const x of ys)=
+  is FLATTENED — there is no =left: variable_declaration= child,
+  the binding sits in the =left:= identifier slot of
+  =for_in_statement= (one node for for-of AND for-in).  Both
+  wrong guesses compiled fine and failed only at capture time
+  (structure error) — probe node shapes first, as always.
+- Test-file queries (jest/vitest): =describe=/=it=/=test= and
+  =expect=/=assert= callees get =code-review-test-face= (they
+  are plain call expressions, no dedicated grammar nodes).
+- Verified live on =*Code Review:
+  WriterInternal/writer-data-platform#762*= (the same PR that
+  exposed the 11b wash bug): its =.e2e.test.ts= hunk shows
+  =comparedColumns= as a variable, the SQL =template_string=s
+  as constants and =expect= with the test face — 13 overlays.
+  Batch: 3 new ERT tests (typescript, typescript test-file,
+  tsx), 64/64 green.
 * Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit
