@@ -308,12 +308,14 @@ purple and the function-name blue."
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
 CAPTURE names must match the @captures in QUERY-STRING; a capture
-can map to any face.  In string queries predicates must use the
-`#match? @capture \"REGEXP\"' form: the non-`?' `#match' spelling
-does not compile and silently disables the entry.  A query that
-fails to compile against the installed grammar disables that
-entry silently (and capture-time predicate errors disable only
-that query)."
+can map to any face.  Author predicates in the standard
+`#match? @capture \"REGEXP\"' spelling (Emacs 31+): on Emacs 30,
+which only supports `#match \"REGEXP\" @capture' at capture time,
+they are rewritten automatically at compile time (see
+`code-review-hunkhighlight--old-style-query') — the same queries
+work on both versions.  A query that fails to compile against the
+installed grammar disables that entry silently (and capture-time
+predicate errors disable only that query)."
   :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
   :group 'code-review-hunkhighlight)
 
@@ -361,6 +363,86 @@ the review buffer.")
   "Compiled-query cache: (LANG . QUERY-STRING) -> compiled query,
 or `broken' when compilation failed against the grammar.")
 
+(defvar code-review-hunkhighlight--predicate-contract nil
+  "Memoized query-predicate contract of this Emacs: new or old.
+new: the standard `(#match? @capture \"REGEXP\")' spelling
+  (Emacs 31+, and the spelling the defcustom queries are
+  authored in).
+old: Emacs 30 only supports `(#match \"REGEXP\" @capture)' at
+  capture time — the `#match?' spelling compiles but every
+  capture using it fails with \"Invalid predicate\".")
+
+(defun code-review-hunkhighlight--contract (&optional lang)
+  "Return the query-predicate contract of this Emacs: new or old.
+Probed once against LANG's grammar (python when nil) by actually
+CAPTURE-ing one query of each spelling — compile alone cannot
+discriminate: Emacs 30 happily compiles `#match?' and only fails
+when the predicate is evaluated during capture.  Memoized in
+`code-review-hunkhighlight--predicate-contract'; never signals
+(falls back to new, which passes queries through unchanged)."
+  (or code-review-hunkhighlight--predicate-contract
+      (setq code-review-hunkhighlight--predicate-contract
+            (condition-case nil
+                (with-temp-buffer
+                  (insert "x")
+                  (let ((parser (treesit-parser-create (or lang 'python))))
+                    (cond
+                     ((condition-case nil
+                          (progn (treesit-query-capture
+                                  parser
+                                  "((_) @p (#match? @p \"x\"))")
+                                 t)
+                          (error nil))
+                      'new)
+                     ((condition-case nil
+                          (progn (treesit-query-capture
+                                  parser
+                                  "((_) @p (#match \"x\" @p))")
+                                 t)
+                          (error nil))
+                      'old)
+                     ;; neither spelling works (no grammar?): leave
+                     ;; queries alone, entries degrade per-query
+                     (t 'new))))
+              (error 'new)))))
+
+(defun code-review-hunkhighlight--old-style-query (query)
+  "Rewrite QUERY's `#match?' predicates into the Emacs 30 form.
+`(#match? @cap \"REG\")' becomes `(#match \"REG\" @cap)' — same
+regexp, same captures, only the predicate spelling and argument
+order change.  Queries without predicates pass through unchanged.
+
+The scan never touches the global match data beyond
+`save-match-data', and every `match-string'/`match-beginning'
+call names QUERY explicitly: with an implicit string argument the
+positions of the last STRING match get read against the CURRENT
+BUFFER (here the hunk parse buffer), splicing hunk text into the
+query — a variant of the classic global-match-data trap."
+  (save-match-data
+    (let ((regexp "(#match\\?[ \t\n]*\\(@[-A-Za-z0-9_]+\\)[ \t\n]*\\(\"\\(?:[^\"\\]\\|\\\\.\\)*\"\\)[ \t\n]*)")
+          (start 0)
+          (out ""))
+      (while (string-match regexp query start)
+        (let ((mb (match-beginning 0))
+              (cap (match-string 1 query))
+              (reg (match-string 2 query)))
+          (setq out (concat out (substring query start mb)
+                            "(#match " reg " " cap ")")
+                ;; bound before any further matching, per the
+                ;; match-data gotcha
+                start (match-end 0))))
+      (concat out (substring query start)))))
+
+(defun code-review-hunkhighlight--compat-query (lang query)
+  "Return QUERY spelled the way this Emacs's treesit accepts it.
+The defcustom queries are authored in the standard `#match?'
+spelling (Emacs 31+).  On Emacs 30 the predicates are rewritten
+with `code-review-hunkhighlight--old-style-query' so the same
+defcustom works on both versions without user configuration."
+  (if (eq (code-review-hunkhighlight--contract lang) 'new)
+      query
+    (code-review-hunkhighlight--old-style-query query)))
+
 (defun code-review-hunkhighlight--language-for (path)
   "Return the tree-sitter language symbol for file PATH, or nil."
   (cl-loop for (ext . lang) in code-review-hunkhighlight-language-map
@@ -368,8 +450,14 @@ or `broken' when compilation failed against the grammar.")
            return lang))
 
 (defun code-review-hunkhighlight--compiled (lang query)
-  "Return compiled QUERY for LANG, nil when it cannot compile."
-  (let ((key (cons lang query)))
+  "Return compiled QUERY for LANG, nil when it cannot compile.
+QUERY is first normalized for this Emacs with
+`code-review-hunkhighlight--compat-query' (Emacs 30/31 predicate
+spelling), and the cache is keyed by the normalized query, so
+reloading the library with a changed contract picks up fresh
+compiles instead of replaying stale broken entries."
+  (let* ((query (code-review-hunkhighlight--compat-query lang query))
+         (key (cons lang query)))
     (or (gethash key code-review-hunkhighlight--query-cache)
         (let ((compiled
                (condition-case nil
@@ -550,11 +638,18 @@ Never signals; returns non-nil when faces were applied."
                                     body "\e"
                                     (prin1-to-string
                                      (cons
-                                      (assq lang
-                                            code-review-hunkhighlight-queries)
-                                      (when test-p
-                                        (assq lang
-                                              code-review-hunkhighlight-test-queries))))))))
+                                      ;; the predicate contract matters
+                                      ;; for the ranges: it changes which
+                                      ;; queries capture (Emacs 30/31),
+                                      ;; so it must invalidate the cache
+                                      (code-review-hunkhighlight--contract
+                                       lang)
+                                      (cons
+                                       (assq lang
+                                             code-review-hunkhighlight-queries)
+                                       (when test-p
+                                         (assq lang
+                                               code-review-hunkhighlight-test-queries)))))))))
                  (cache (or code-review-hunkhighlight--cache
                             (setq code-review-hunkhighlight--cache
                                   (make-hash-table :test #'equal))))

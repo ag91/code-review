@@ -75,6 +75,31 @@ overlay face at that position."
   (should (null (code-review-hunkhighlight--node-to-lines
                  8 9 '(1 4) '(2 2)))))
 
+(ert-deftest code-review-hunkhighlight/old-style-query-rewrite ()
+  ;; Emacs 30 contract: `#match? @cap "REG"' -> `#match "REG" @cap'.
+  ;; The REGEXP literal keeps its escaped characters intact.
+  (should (equal
+           (code-review-hunkhighlight--old-style-query
+            "((assignment left: (identifier) @const)
+       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))")
+           "((assignment left: (identifier) @const)
+       (#match \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\" @const))"))
+  ;; multiple predicates, underscore/hyphen captures, regexps with
+  ;; alternation escapes
+  (should (equal
+           (code-review-hunkhighlight--old-style-query
+            "((call function: (identifier) @_h)
+  (#match? @_h \"\\\\`\\\\(defn\\\\|defonce\\\\)\\\\'\")
+  (#match? @_h \"x\"))")
+           "((call function: (identifier) @_h)
+  (#match \"\\\\`\\\\(defn\\\\|defonce\\\\)\\\\'\" @_h)
+  (#match \"x\" @_h))"))
+  ;; queries without predicates pass through unchanged
+  (should (equal
+           (code-review-hunkhighlight--old-style-query
+            "(function_definition name: (identifier) @fn)")
+           "(function_definition name: (identifier) @fn)")))
+
 ;;; treesit integration (skipped without the python grammar)
 
 (ert-deftest code-review-hunkhighlight/python-hunk-faces ()

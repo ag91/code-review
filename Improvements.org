@@ -364,7 +364,8 @@ DONE (implementation notes, 2026-09-21) — everything except the
   developed and verified on Emacs 31 (other machine), where the
   treesit runtime differs (Emacs 30.2 supports only
   equal/match/pred at capture time).  Pre-existing, not touched
-  by phase 6.
+  by phase 6.  (FIXED 2026-09-22: see EMACS 30/31 COMPAT under
+  phase 10 — the suite is 89/89 on this machine now.)
 - GOTCHAS found (recorded in AGENTS.md where general):
   - EIEIO =-p= predicates are EXACT-CLASS checks (at least on
     this Emacs 30.2 daemon):
@@ -832,6 +833,57 @@ TYPESCRIPT + TSX (writer-data-platform#762 review, 2026-09-21):
   as constants and =expect= with the test face — 13 overlays.
   Batch: 3 new ERT tests (typescript, typescript test-file,
   tsx), 64/64 green.
+
+EMACS 30/31 COMPAT (2026-09-22): the 7 face tests failed on
+this 30.2 machine because the predicate spelling is
+VERSION-EXCLUSIVE:
+
+- Emacs 31 speaks the standard =(#match? @capture "REG")'=
+  (capture first, question mark) — and =#match= does not even
+  COMPILE there.  Emacs 30.2 only supports =(#match "REG"
+  @capture)'= at capture time — =#match?= COMPILES happily and
+  fails at capture ("Invalid predicate ... only supports equal,
+  match, and pred"), so the per-entry condition-case silently
+  disabled every predicate entry (const/var/test faces) while
+  the plain entries kept working.  A version-exclusive spelling
+  needs a RUNTIME rewrite, not a spelling swap.
+- An empirical matrix probe (wrapped/unwrapped patterns, sibling
+  captures, bare anonymous nodes, alternations, list form, both
+  spellings, both argument orders — all capture-exercised on
+  the real buffer) settled the 30.2 contract: every structural
+  form works, ONLY the predicate spelling differs.  Earlier
+  beliefs that unwrapped query strings fail ("Node type error")
+  were artifacts of a broken probe (parser created in a
+  different buffer than the text).
+- Fix (all inside =code-review-hunkhighlight.el=):
+  =--contract= probes ONCE by capture-exercising one tiny query
+  of each spelling (compile alone cannot discriminate — the
+  30.2 failure is at capture), memoized in a defvar;
+  =--old-style-query= rewrites =(#match? @cap "REG")= to
+  =(#match "REG" @cap)= string-surgically when the contract is
+  old; =--compiled= normalizes BEFORE compiling and keys the
+  compile cache by the NORMALIZED query (stale broken entries
+  can never be replayed); the buffer-local ranges cache key now
+  includes the contract, so already-rendered buffers recompute
+  their predicate-less ranges instead of replaying them.
+  Contract new (Emacs 31) passes the authored queries through
+  untouched.
+- Two traps while implementing (both now in AGENTS.md): =?= is
+  a regexp QUANTIFIER — the rewrite never matched =#match?=
+  until the literal =?= was escaped; and =match-string= without
+  an explicit string argument inside
+  =replace-regexp-in-string='s replacement lambda read the
+  positions against the CURRENT BUFFER (the hunk parse buffer),
+  splicing HUNK TEXT into the query strings ("Syntax error ...
+  afmt._ class Foo(a: Int) rg.sca").  The scan is now a manual
+  =string-match= loop with explicit string args everywhere.
+- Verified: 89/89 green in batch on 30.2 (the 7 face tests now
+  pass, plus a pure rewrite test asserting the string surgery
+  on tricky escaped regexps); daemon reloaded with a bounded
+  probe: contract = old, rewrite sample correct, and the ranges
+  pipeline produces const/var/fn/kw faces on a sample text.
+  On the Emacs 31 machine nothing changes (pass-through); run
+  =make test= there to confirm.
 * Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit

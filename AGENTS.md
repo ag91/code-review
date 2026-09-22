@@ -120,7 +120,17 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   when a git call needs glob pathspecs.
 - The match-data is GLOBAL and gets clobbered by any nested
   `string-match` (even inside a helper): bind `match-string` results
-  to variables BEFORE calling anything that might match.
+  to variables BEFORE calling anything that might match.  And
+  `match-string` WITHOUT an explicit string argument, when the last
+  match was on a STRING, reads the positions against the CURRENT
+  BUFFER — a `replace-regexp-in-string` replacement lambda doing
+  this spliced HUNK TEXT into a query string it was rewriting.
+  Always pass the string explicitly: `(match-string 1 STR)`.
+- `?` is a regexp QUANTIFIER: a literal question mark in a regexp
+  must be escaped (`#match\\?`, not `#match?` — the unescaped form
+  silently made the preceding char optional and never matched,
+  which is an easy trap when the literal you search for ENDS in
+  `?`).
 - cl-loop traps: an `unless` clause placed BEFORE a `for` clause
   does not filter (the body still runs for every iteration — use
   `cl-remove-if` on the list instead); referencing a `_`-prefixed
@@ -133,12 +143,22 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
 - When an edit loops (paren surgery, region transplants): stop and
   ask the user instead of iterating — they will fix it faster than
   the loop will.
-- treesit gotchas (Emacs 30, phase 10): `treesit-query-capture`
+- treesit gotchas (phase 10): `treesit-query-capture`
   returns `(CAPTURE-NAME . NODE)` pairs (name first!); the query
-  predicate is `#match` (no `?`) and takes the REGEXP FIRST:
-  `(#match "\\`test" @capture)`; predicates may NOT be attached
-  to one alternative inside a `[...]` alternation — write such
-  patterns as separate top-level query patterns.
+  predicate spelling is VERSION-EXCLUSIVE: Emacs 30 only supports
+  `#match` (no `?`) with the REGEXP FIRST
+  (`(#match "\\`test" @capture)`), Emacs 31 only accepts the
+  standard `(#match? @capture "\\`test")` (and `#match` does not
+  compile there).  The package therefore probes the contract at
+  runtime by capture-exercising both spellings
+  (`code-review-hunkhighlight--contract`) and rewrites the
+  predicates (`--old-style-query`) when running the old contract:
+  author queries in the `#match?` form and let the rewrite handle
+  30.  Predicates may NOT be attached to one alternative inside
+  a `[...]` alternation — write such patterns as separate
+  top-level query patterns.  (Structural forms — wrapped or
+  unwrapped patterns, sibling captures, list queries — work on
+  both; only the predicate spelling differs.)
 - treesit predicates: `treesit-query-compile` ACCEPTS predicates
   that are unsupported at RUNTIME (e.g. `#not-match` and `#eq` —
   Emacs 30.2 only supports equal/match/pred at capture time, and
