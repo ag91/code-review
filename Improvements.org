@@ -884,6 +884,67 @@ VERSION-EXCLUSIVE:
   pipeline produces const/var/fn/kw faces on a sample text.
   On the Emacs 31 machine nothing changes (pass-through); run
   =make test= there to confirm.
+- SQL and YAML support (writer-data-platform PR 795): SQL is
+  performance-shaped — table references and dbt =ref()/source()=
+  model names in type face, DDL/selected/WHERE/ON/GROUP/ORDER
+  columns in variable face, clause keywords in keyword face, and
+  cartesian joins in WARNING RED: =(cross_join ...)= keywords
+  AND the comma of =FROM a, b= (a cross join in ClickHouse).
+  YAML captures the VALUES of =name:= keys (dbt model/column
+  names) in function-name face.  Probed every query against the
+  DerekStride =tree-sitter-sql= grammar and the yaml grammar
+  with the real PR hunks before shipping.
+- Grammar gotchas found while probing (both bit in tests first):
+  the DerekStride SQL grammar does NOT split newline-separated
+  statements without =;= — everything after an unterminated
+  statement is swallowed into one ERROR tail (test hunks now use
+  realistic semicolon boundaries); and jinja ={{ }}= produces
+  ERROR soup but clean text around it still captures (dbt
+  =ref('mrt_one')= survives as an invocation literal) — graceful
+  degradation, no special-casing.
+- YAML fragments are structurally broken for the whole-fragment
+  pass: a hunk starting mid-column-block loses the indentation
+  context an indentation-relative grammar needs, and error
+  recovery keeps only the FIRST pair (probed live on the real
+  =_marts.yml= hunk: 1 capture out of ~10 name lines).  Dedent
+  preprocessing (min-indent, first-line) probed and REJECTED —
+  relative indentation survives text shifts.  Fix:
+  =code-review-hunkhighlight-fragment-line-languages= (default
+  =(yaml)=): every non-blank line is ALSO parsed as a one-line
+  document and those captures merge; the ranges cache key
+  includes the defcustom so toggling it recomputes.
+- THE BIG ONE — a stale =.elc= lied for a whole session: the
+  fragment pass was inserted with the wrong closer count (and the
+  cache-key =cons= was one closer short), so
+  =byte-compile-file= FAILED with "End of file during parsing" —
+  and because =make compile= output was piped through a filter
+  (=grep ... | head -n 5=), the error was invisible.  The stale
+  =.elc= kept working, batch tests ran the OLD code, daemon
+  probes loaded the OLD code, and the new test "failed" while
+  every instrumented replica of the new logic worked.  Lessons
+  (now also AGENTS.md): NEVER filter compile output when you
+  changed the file; when tests contradict a correct-looking
+  implementation, prove the ARTIFACT is fresh (=ls -la= the
+  =.el=/.elc= pair, grep the =.elc= for a symbol only the new
+  source defines); and find unbalance with a =syntax-ppss=
+  depth-walk (per-line end depth printed) instead of hand-counting
+  closers — hand-counting was wrong twice.
+- Daemon gotcha (Emacs 31.1): RE-loading a =.el= source whose
+  path was loaded before fails with "End of file during parsing:
+  #<killed buffer>" (the reader's buffer dies mid-read).  Fresh
+  paths load fine, and explicit =.elc= loads fine — verify with
+  =(load ".../file.elc")= and fresh probe paths, and check
+  =(documentation 'fn)= for a marker word instead of trusting
+  that the load happened.
+- Verified live on the Emacs 31 daemon, PR 795 buffer:
+  =_marts.yml= went from 0 to 24 overlays (26 function-name-face
+  =name:= values buffer-wide, up from 0), SQL files paint 21/20/
+  10/31 overlays as before, the jinja macro file degrades to 1,
+  and 0 warning-red overlays because this PR has no cross/comma
+  join (the red face is covered by the sql-dbt-jinja test).
+  Batch: 93/93 green, including the new
+  =yaml-mid-block-fragment-faces= regression replicating the real
+  fragment shape.
 * Phase 11 — Own the diff rendering (stop breaking on magit upgrades) :STATUS:done:
 
 Answer to "is it sustainable that we break anytime magit
@@ -1298,6 +1359,391 @@ Design:
   checks for the tag/folding; live litellm buffer health; and
   beware that daemon staleness lies (see phase 11c correction).
 
+* Phase 14 — Review heat: risk-ranked reading order           :STATUS:todo:
+
+NOTE (phases 14-18, research 2026-09-24): these phases turn the
+review of a large PR from scrolling in path order into working a
+ranked, contextualized queue of the delicate parts.  Evidence
+base: code churn x complexity is the best validated "where bugs
+live" signal we have (Nagappan & Ball, ICSE 2005: relative code
+churn predicts defect density; CodeScene's numbers: the
+prioritized hotspots of one codebase were 1.2% of the code,
+consumed 12.5% of dev effort, and held 45% of all bugs).
+Just-in-time defect prediction applies the same signal family
+to individual changes, down to hunks ("Just-in-time defect
+prediction for software hunks", 2021), and effort-aware JIT
+ranks changes by defect likelihood divided by inspection effort
+— literally a review reading order.  For agent PRs specifically:
+GitHub's agent-PR reviewer guide (2026-05) prescribes
+scan-and-classify first, then "trace ONE critical path"; names
+code-reuse blindness the highest-ROI check (phase 5 already
+automates it); and observes agents carry "zero context about
+your incident history" — history is exactly what we have.  An
+EASE 2026 study of 33k agent PRs found 61% receive no recorded
+review and 84% no observable human involvement, so
+attention-preserving tooling has headroom.  DESIGN STANCE:
+everything here is deterministic git / treesitter / grep; the
+only AI is an optional garnish under phase 16, OFF by default.
+Per the phase 12 constraint, all five phases must work in local
+diff reviews too.  The sources behind these claims are collected
+in the "References" section at the end of this file.
+
+PRIORITIZATION (long-term review effectiveness, /10; judgment
+weighted for durable issues-found-per-unit-attention):
+14 reading order 8.7 > 15 hunk delicacy 8.4 > 16 dossier 8.3 >
+17 test impact 7.9 > 18 coupling 7.6 > 19 cross-repo 7.5.
+Build order: 14 then 15 as ONE pipeline (shared harvest below,
+file level first), 16 next (nearly free once 14/15 exist), then
+17 and 18 in either order; 19 last, once the harvest layer
+exists (it reuses the harvest SHAPE, not its data).
+
+SHARED HARVEST LAYER (new =code-review-history.el=, used by 14,
+16 and 18): ONE async =git log --name-only --since=<window>= per
+repo (default 12 months) parsed in pure elisp into per-file
+facts — revision count, distinct authors, main dev, last-touch
+date — plus a co-change co-occurrence matrix for phase 18.
+Cached per repo with a TTL (default 7 days): shared across every
+PR of the same repo, render-time is a hash lookup, and the
+harvest NEVER runs during the wash (daemon rule, AGENTS.md).
+PARTIAL CLONE GOTCHA: phase 1 clones are =--filter=blob:none=;
+=git log --name-only= compares tree entries by blob OID and
+fetches NOTHING, while =git log --numstat= needs blob CONTENTS
+and lazy-fetches over the network per changed file per commit.
+So the harvest counts REVISIONS, not line churn — which is
+exactly CodeScene's hotspot formula (revisions x complexity)
+anyway.  Alternative backend: code-compass already runs
+code-maat =revisions= / =main-dev= / =fragmentation=
+asynchronously with a CSV cache (jar auto-downloaded); when
+present, read it (upstream a tiny =code-compass-get-file-metrics=
+accessor to ag91) instead of reimplementing.
+
+Problem: in a 40-file PR the reviewer meets the delicate file
+at position 37.  History knows better.
+
+Design:
+
+- HEAT SCORE per changed file: recency-windowed revision count
+  (per-repo normalized, so an active repo does not saturate the
+  scale) x complexity (cloc via code-compass, or the phase 10
+  treesitter branch/function counts) x knowledge factors
+  (distinct authors; the PR author's prior commits on the file;
+  distance from the file's main dev).  For bot-authored PRs the
+  author factor reads as "how much context does the file's main
+  dev have that neither the bot nor you do".
+- Render: a "Review order (heuristic)" section in the phase 5
+  Analysis slot — ranked files, jump buttons, one-line reasons
+  ("top 3% churn x high complexity; main dev: mrossi; PR author
+  never touched it").  File heading tags =[HOT]= / =[WARM]= /
+  =[COLD]= via the phase 3 plist =:tag= machinery; an "order by
+  heat" mode on top of the existing ordering (noise still sinks
+  to the bottom); a focus-mode refinement that hides COLD too.
+- Compute contract: harvest async (async.el or a compile
+  buffer), NEVER in the render; first review of a repo shows a
+  "harvesting history" message, afterwards hash lookups only.
+
+Use case — what this catches in review:
+
+- The agent edited the repo's #1 hotspot while you would have
+  started with the plumbing files: regressions in high-traffic,
+  defect-prone code get your attention FIRST, while you still
+  have it.
+- "Nobody really owns this": high author spread on a hot file is
+  where plausible-looking AI changes are most likely wrong; you
+  slow down exactly there.
+- Files whose main dev is neither you nor the PR author: you
+  know whom to loop in BEFORE approving, not after the incident.
+- Honest triage of the rest: COLD files get skimmed guilt-free
+  instead of dutifully read and forgotten.
+
+Tuning/caveats: heat punishes actively-developed healthy modules
+(keep scores normalized and windowed); bot commits in history
+(renovate, dependabot, ...) count as churn — optionally filter
+with =code-review-bot-author-regexp=; expect one tuning round
+(phase 5 scalafmt precedent).
+
+* Phase 15 — Hunk delicacy score and delicate-hunk navigation :STATUS:todo:
+
+Problem: file ranking finds the room; review happens at hunk
+granularity.  This phase is hunk-level just-in-time defect
+prediction, and it mechanizes GitHub's "trace one critical path"
+into one keypress.
+
+Design (extends =code-review-analysis.el=: it already extracts
+def names, batched-greps references, and caches per (PR id,
+diff md5)):
+
+- Signals per hunk, each bounded and cached:
+  - BLAST RADIUS: call-site count in the worktree for the defs
+    the hunk touches (ONE batched =git grep= for all defs, the
+    phase 5 pattern; never one grep per def).
+  - LINE AGE / OWNERSHIP: one cached =git blame --porcelain= per
+    changed file; median age and distinct authors of the context
+    lines being modified.  Old stable lines being edited is the
+    classic delicacy signal.
+  - COMPLEXITY DELTA: phase 10 treesitter branch nodes added vs
+    removed in the enclosing function.
+  - DEAD-ON-ARRIVAL: zero-reference additions (phase 5 already
+    computes them) feed the score.
+  - TEST COVERAGE of the touched defs (feeds phase 17).
+- Render: a compact reason badge on the hunk heading ("risk: 40
+  callers; lines 3y old; +18 branches"); =C-c C-d= and a
+  transient entry cycle the top-K delicate hunks (sibling of
+  =C-c C-n= / =C-c C-p=); the Analysis section gains a ranked
+  "Delicate hunks" jump list.
+- PARTIAL CLONE GOTCHA: =git blame= lazy-fetches blobs for the
+  file's history — cache per file, message on first use, never a
+  silent render-time fetch.
+- PHASE 13 SYNERGY: read tracking should report WEIGHTED
+  coverage ("5 of 7 high-risk hunks read"), not raw file counts;
+  design the hunk key now so phase 13 can reuse the score.
+
+Use case — what this catches in review:
+
+- The "trivial" one-line change to a helper with 40 call sites —
+  the classic AI regression vector; the badge makes the blast
+  radius impossible to skim past.
+- Modifications of lines stable for 3 years: stable code is
+  stable for a reason the agent does not know; blame age puts a
+  number on it.
+- Complexity bombs: a def going from 4 to 25 branches stays
+  visible even inside a 2,000-line hunk.
+- New code that nothing references or nothing tests: surfaced as
+  score ingredients instead of separate findings.
+
+Caveats: blame signals are noisy on generated/reformatted code;
+expect one tuning round.
+
+* Phase 16 — Hunk dossier: on-demand change context           :STATUS:todo:
+
+Problem: ranking says WHERE the delicate spots are; it does not
+say WHY they are delicate, so you cannot judge whether the
+implementation choice makes sense.  The agent never had the
+incident history; the dossier puts it one keypress away.
+
+Design:
+
+- =C-c C-h= on a hunk inserts a collapsible "Context" section
+  (or a dedicated buffer):
+  - HISTORY OF EXACTLY THOSE LINES: =git log -L
+    <start>,<end>:<file>= capped to N commits, with messages and
+    dates ("these lines last touched 6 months ago by mrossi,
+    'fix race in session teardown'").
+  - Blame authors of the context lines.
+  - ALL CALL SITES of the touched defs, as jump buttons into
+    the worktree (composes with phase 2 xref and the phase 8
+    ediff plans).
+  - REFERENCING TESTS for the touched defs.
+  - The file's heat and coupling facts (phases 14/18 data).
+- On-demand only: zero render cost; cached per (PR id, diff md5,
+  hunk).  =git log -L= lazy-fetches blobs of that ONE file on
+  partial clones — message the first time.
+- OPTIONAL AI GARNISH (user is AI-skeptical; OFF by default):
+  =C-u C-c C-h= may pipe the DOSSIER — not the PR — to an LLM
+  for a three-sentence "story of these lines", rendered in a
+  distinct face marked "machine summary", cached per (PR, diff
+  md5, hunk), NEVER a verdict, and the buffer stays fully useful
+  with the feature off.  Non-deterministic in phrasing only:
+  every claim must be traceable to a dossier entry.  Evidence
+  for the restraint: Alami & Ernst 2025 (validating AI
+  suggestions adds cognitive load); Tufano et al. 2024
+  (automated review fails exactly where broad context is needed
+  — i.e. at the delicate parts).  The direction matters: an AI
+  that summarizes OUR deterministic facts is the opposite of an
+  AI reviewer; the facts are ours, only the prose is borrowed.
+
+Use case — what this catches in review:
+
+- Rewrites that silently drop an edge case a past commit added
+  ("fix empty payload crash"): the dossier shows the line's
+  REASON FOR EXISTING before you judge the rewrite.
+- Changes that fight the code's direction: the last five commits
+  on those lines were simplifications, and the PR adds a special
+  case back.
+- Contract mismatches: the call-site list shows how callers
+  actually use the def the hunk rewrites (defaults,
+  preconditions the agent guessed wrong).
+- "Why is this here at all": old lines with lore stop being
+  rubber-stampable; plausible rewrites get challenged.
+
+* Phase 17 — Test-impact verification and CI-gaming detector  :STATUS:todo:
+
+Problem: when agents fail CI they have an obvious path to green
+(remove tests, add skip markers, lower thresholds, gate steps).
+GitHub's agent-PR guide lists CI weakening as red flag #1 and
+asks for tests that FAIL on pre-change behavior; both are
+mechanically checkable in the worktree phase 1 gives us.
+
+Design:
+
+- TEST MAPPING: changed defs (phase 5/15 name extraction) ->
+  test files referencing them (grep, reusing
+  =code-review-analysis-dead-test-name-regexp= and the phase 10
+  =code-review-hunkhighlight-test-path-regexp= machinery).
+  Per-hunk =[NO-TEST]= tag when a touched def has zero
+  referencing tests.
+- =T= on a file/hunk runs EXACTLY the mapped subset in the
+  worktree via compile / project.el; a per-project test command
+  defcustom (=code-review-test-command-alist=) is the one real
+  setup cost.  For forge PRs, optionally run the same subset at
+  =refs/remotes/code-review/N/base= as well: a test that passes
+  at BASE and at HEAD does not cover the change — GitHub's
+  "require a test that fails on the pre-change behavior", made
+  mechanical.
+- CI-GAMING DETECTOR (pure regexps, cheap enough for the
+  render): skip markers added (=test.skip=, =xit(=,
+  =@pytest.mark.skip=, =|| true= in test commands), coverage
+  thresholds lowered, workflow steps newly gated or removed.
+  Hard tag on the offending file plus a hoisted entry in the
+  Analysis section.
+- LOCAL REVIEWS: phase 12 buffers have no CI at all — this is
+  their only automated verification; =T= works unchanged there.
+
+Use case — what this catches in review:
+
+- CI gaming: tests removed, skipped or thresholds weakened to
+  get the pipeline green — the top agent-PR failure mode,
+  surfaced as a hard tag instead of a lucky catch.
+- Untested delicate changes: the hunk that matters has no
+  covering test; you demand one BEFORE approving instead of
+  discovering it post-merge.
+- Fake-fix tests: the new test passes on the pre-change code too
+  (run at base), so it asserts nothing about the fix.
+- Your own pre-commit work (local reviews): which of your
+  changes lost coverage, without a CI round trip.
+
+Caveat: the mapping is a heuristic (dynamic dispatch,
+reflection, build-convention entry points are missed) — label
+it as such, phase 5 style.
+
+* Phase 18 — Change-coupling completeness cross-check          :STATUS:todo:
+
+Problem: the repo's own history knows which files change
+TOGETHER; an agent's patch is often narrower than the
+historical change set — an incomplete refactor.  Evidence:
+change coupling correlates with defects (D'Ambros & Lanza
+2009; Wiese et al. 2015; Software Maintenance and Evolution
+2017), and CodeScene treats source+test co-change as POSITIVE
+coupling (tests kept in sync), which gives the star check
+below.
+
+Design:
+
+- For each changed file, its co-change peers from the phase 14
+  harvest co-occurrence matrix (degree >= threshold, default
+  30% as in code-maat; cap changeset size like code-maat's
+  =--max-changeset-size=).  code-maat =coupling= via
+  code-compass (already async + cached) is the alternative
+  backend.
+- Checks, rendered in the Analysis section plus per-file
+  context with jump buttons:
+  - Coupled peer NOT in the PR: "changes together with X (58%)
+    — X untouched: is the refactor complete?"
+  - POSITIVE COUPLING broken: source file changed while its
+    coupled TEST file did not ("tests historically evolve with
+    this file; this PR left them behind").
+- Cache per repo with the same harvest TTL; render-time is a
+  lookup.
+
+Use case — what this catches in review:
+
+- Incomplete refactors: the agent patched the source but not
+  the sibling that historically always changes with it (config,
+  migration, proto, serializer).
+- Stale coupled tests: source and test co-changed 40 times
+  historically; this PR changes only the source.
+- Convention pairs no doc records (route + controller, schema +
+  mapper): the repo's own history is the specification.
+
+Caveats: monorepos and renames are noisy (code-maat's git2 log
+format and =--no-renames= guidance applies); threshold tuning
+expected (phase 5 scalafmt precedent).
+
+
+* Phase 19 — Cross-repository choreography impact             :STATUS:todo:
+
+Problem: in a choreography of services the blast radius crosses
+repository boundaries, but review — phases 14-18 included —
+stops at the repo border, and only the reviewer carries the
+system knowledge.  Practitioner interviews on microservice API
+evolution found the leading cause of breaking changes is the
+weakness of MANUAL error detection: reviewers only know the
+codebase in front of them (Lercher et al. 2024, via Cerny et
+al. 2025).  Phase 1 already solved the hard part:
+=code-review-projects-root= locates and clones repos by remote
+URL, so the sibling clones under it are the locally available
+choreography scope — for free.
+
+Design:
+
+- Scope: all sibling git repos under
+  =code-review-projects-root= (one and two levels deep, like
+  the phase 1 clone matching); a defcustom can declare an
+  explicit scope.  The graph covers only repos PRESENT LOCALLY,
+  and the UI must say so ("6 of ~40 org repos") instead of
+  implying completeness.
+- Coupling hint graph, cheapest signal first (deterministic,
+  async, TTL-cached: the phase 14 harvest-layer shape):
+  1. Declared edges: sibling dependency manifests (package.json,
+     go.mod, pyproject.toml, pom.xml, Cargo.toml, Gemfile) whose
+     dep names match sibling repos; spec files (OpenAPI,
+     AsyncAPI, .proto, GraphQL schema) are the published
+     contracts.  Pure file reads.
+  2. Contract diff at review time: a PR that touches a spec
+     file is diffed base vs head against a deterministic rule
+     set (path or operation removed, response status removed,
+     field required-ified, event payload field removed, topic
+     renamed).  The oasdiff/buf breaking insight, in-process,
+     phase-5-style pure diff functions.
+  3. Consumer search: bounded =git grep -l= across sibling
+     worktrees for changed endpoints, route paths, event names
+     and renamed public symbols; jump buttons on hits.  Phase 1
+     clones are =--filter=blob:none= (the harvest gotcha):
+     fetch refs first, cap the probe, run ON demand like the
+     phase 5 bounded greps.
+  4. Ticket-key co-mining (HINT-GRADE): =git log --grep= per
+     sibling for this PR's issue-tracker keys.  Co-change
+     evidence is project-dependent (Price et al. 2026), so it is
+     displayed as "historically coupled via TICKET-123", never
+     as a warning.
+- Surface: a "Choreography impact" Analysis section, one entry
+  per coupled sibling (edge type, hit count, jump buttons), plus
+  optional =[XREPO]= hunk tags.  Off by default, one toggle,
+  cached per PR+diff like phase 5.  Local diff reviews (phase 12
+  constraint) work as far as siblings exist locally.
+
+Use case — what this catches in review:
+
+- A PR renames a topic or an event payload field in an AsyncAPI
+  spec: the contract diff flags the BREAKING change and consumer
+  search names the sibling subscribers, before anyone stands up
+  an integration environment.
+- A PR deletes an endpoint: the reviewer sees which sibling
+  repos call that route (jump buttons), so the right team gets
+  pinged BEFORE merge, not after an incident.
+- A PR "adds a feature": ticket-key mining notes the same feature
+  historically touched repos B and C, so the reviewer checks
+  them for the same half-done change.
+- An agent PR silently narrows a shared schema: caught
+  deterministically, with no AI and no network in the loop.
+
+Caveats: freshness is bounded by the sibling clones (fetch refs
+on first use; full-text grep lazy-fetches blobs in partial
+clones, so it stays capped and on-demand).  Evidence is thinner
+than single-repo heat — score 7.5/10, value depends on org
+topology and local repo availability — but the contract-diff
+sub-piece is as evidence-backed as anything in this file.
+Prior art: Cerny et al. (arXiv 2501.11778) prove static
+cross-repo impact analysis works (endpoint-signature matching
+plus data overlaps, validated on a 47-service benchmark) but
+need framework-tailored AST parsing — research-grade; we borrow
+the idea, not the machinery.  The shipped simple-and-effective
+versions are contract breaking-change gates (oasdiff, buf
+breaking, asyncapi/diff) and cross-repo code search; AI
+multi-repo review (CodeRabbit, Qodo 2026) exists but is the
+non-deterministic flavor we avoid.  Sources in the References
+section.
+
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N
@@ -1305,6 +1751,11 @@ Design:
 - =code-compass= integrate information from code-compass analyses to prioritize review
 
   things like addding to an hotspot file, or the author not having experience with the module should contribute to inform the reviewer of how much attention to put in the review or what bits are most critical
+
+  (Designed 2026-09-24 as phases 14-18: the heat reading order
+  and the coupling cross-check consume code-compass's code-maat
+  analyses when present, or a pure-elisp harvest otherwise; see
+  the shared harvest layer under phase 14.)
 - Commit buffer should reuse the same worktree context.
 
 DONE since: per-PR review buffers
@@ -1316,3 +1767,190 @@ buffers record the review buffer they were opened for.  The
 review/worktree locals are =permanent-local= so the
 =(code-review-mode)= activation that follows rendering does not
 wipe them.
+
+* References — phases 14-19 research (2026-09-24)
+
+Sources consulted in the 2026-09-24 research sessions that
+shaped phases 14-19; each entry notes the claim it grounds.
+
+** Behavioral code analysis (phases 14, 16, 18)
+
+- Nagappan & Ball, "Use of Relative Code Churn Measures to
+  Predict System Defect Density", ICSE 2005.
+  https://ieeexplore.ieee.org/document/1553571/
+  Phase 14's core evidence: churn predicts defect density.
+
+- CodeScene hotspots documentation ("What is a Hotspot?",
+  "hotspots point to code review candidates", "Use Defects to
+  put Costs on Hotspots" with the 1.2% of code / 12.5% of
+  effort / 45% of bugs dashboard numbers).
+  https://codescene.io/docs/guides/technical/hotspots.html
+
+- CodeScene change-coupling documentation (coupling degree as a
+  percentage; POSITIVE coupling between a source file and its
+  tests — phase 18's star check).
+  https://codescene.io/docs/guides/technical/change-coupling.html
+
+- Adam Tornhill, "Your Code as a Crime Scene" and "Software
+  Design X-Rays", Pragmatic Bookshelf — the method code-maat and
+  CodeScene automate (churn x complexity hotspots, temporal
+  coupling, knowledge maps; history as the missing context).
+  https://pragprog.com/titles/atcrime/your-code-as-a-crime-scene/
+  https://pragprog.com/titles/atevol/software-design-x-rays/
+
+- code-maat — the analysis engine code-compass wraps (analyses:
+  revisions, authors, main-dev, fragmentation, coupling; -i
+  min-coupling default 30; --max-changeset-size; the git2 log
+  format guidance).
+  https://github.com/adamtornhill/code-maat
+
+- code-compass — the installed Emacs frontend (async code-maat
+  runs, CSV cache, coupling alist hook; the integration surface
+  phases 14/18 plan to read).
+  https://github.com/ag91/code-compass
+
+** Just-in-time (change-level) defect prediction (phases 14, 15)
+
+- "Just-in-time defect prediction for software hunks", Software:
+  Practice and Experience, 2021.
+  https://onlinelibrary.wiley.com/doi/10.1002/spe.3001
+  Phase 15's premise: the JIT signal family works at HUNK
+  granularity, not just file or commit.
+
+- "Effort-aware and just-in-time defect prediction with neural
+  network", PLOS ONE, 2019.
+  https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0211359
+  Ranks changes by defect likelihood DIVIDED BY inspection
+  effort — the formal version of a review reading order.
+
+** Change coupling and defects (phase 18)
+
+- D'Ambros & Lanza, "On the Relationship Between Change Coupling
+  and Software Defects", 2009.
+  https://www.inf.usi.ch/lanza/PUBS/DAmb2009e.pdf
+
+- Wiese et al., "An Empirical Study of the Relation Between
+  Strong Change Couplings and the Number of Defects", 2015.
+  https://link.springer.com/chapter/10.1007/978-3-319-17837-0_1
+
+- "The relationship between evolutionary coupling and defects in
+  large industrial systems", Software Maintenance and Evolution:
+  Research and Practice, 2017.
+  https://onlinelibrary.wiley.com/doi/full/10.1002/smr.1842
+
+** Reviewing agent-generated PRs (phases 14, 16, 17)
+
+- GitHub Blog, "Agent pull requests are everywhere. Here's how
+  to review them." (2026-05-07) — CI gaming as red flag #1,
+  code-reuse blindness as "the highest-ROI thing you can do as a
+  reviewer", "trace one critical path", "require a test that
+  fails on the pre-change behavior", agents carry "zero context
+  about your incident history, your team's edge case lore".
+  https://github.blog/ai-and-ml/generative-ai/agent-pull-requests-are-everywhere-heres-how-to-review-them/
+
+- "More Code, Less Reuse" (arXiv, Jan 2026) — agent-generated
+  code introduces more redundancy and quiet technical debt per
+  change, and reviewers feel BETTER about approving it.
+  https://arxiv.org/abs/2601.21276
+
+- Duma, Wróblewski, Bobińska, Winiarska & Przymus, "These
+  Aren't the Reviews You're Looking For: How Humans Review
+  AI-Generated Pull Requests", EASE 2026 — 33,596 agent PRs:
+  61% no recorded review, 84% no observable human involvement.
+  https://arxiv.org/abs/2605.02273
+
+- "Early-Stage Prediction of Review Effort in AI-Generated Pull
+  Requests" (arXiv, Jan 2026) — even static creation-time
+  features (patch size, file types) carry review-effort signal:
+  deterministic pre-ranking is not guesswork.
+  https://arxiv.org/abs/2601.00753
+
+- PR Lens, "Reviewing AI-generated pull requests: the complete
+  guide" (2026) — the practitioner review order (read the
+  shape, check CI, hunt duplicated code, trace one path, test
+  the boundaries, then read lines) that phases 14-17 mechanize.
+  https://prlens.dev/guides/reviewing-ai-generated-pull-requests
+
+** On AI assistance in review (phase 16's restraint)
+
+- Alami & Ernst, "Human and machine: how software engineers
+  perceive and engage with AI-assisted code reviews compared to
+  their peers" (2025) — AI feedback reduces social friction but
+  adds the cognitive load of VALIDATING it.
+  https://arxiv.org/abs/2501.02092
+
+- Tufano, Dabić, Mastropaolo, Ciniselli & Bavota, "Code review
+  automation: strengths and weaknesses of the state of the art"
+  (2024) — automated review handles simple changes, fails where
+  broad repository context is needed — i.e. the delicate parts.
+  https://arxiv.org/abs/2401.05136
+
+** Test impact analysis practice (phase 17)
+
+- Symflower, "Test impact analysis: Automatically run affected
+  tests only" (2024) — ~29% average test-time savings from
+  running only the affected tests.
+  https://symflower.com/en/company/blog/2024/test-impact-analysis/
+
+- Microsoft Learn, "Use Test Impact Analysis - Azure Pipelines"
+  — change-based test selection as shipped industrial practice.
+  https://learn.microsoft.com/en-us/azure/devops/pipelines/test/test-impact-analysis
+
+** Cross-repository review scope (phase 19)
+
+- Cerny, Goulis & Abdelfattah, "Towards Change Impact Analysis
+  in Microservices-based System Evolution" (2025) — static
+  per-repo component parsing, cross-connected by endpoint
+  signatures and data overlaps; flags cross-service breakage at
+  review time; the reviewer-blindness motivation ("all they
+  know is the microservice codebase").
+  https://arxiv.org/abs/2501.11778
+
+- Lercher, Glock, Macho & Pinzger, "Microservice API evolution
+  in practice: A study on strategies and challenges", Journal
+  of Systems and Software, 2024 — practitioner interviews: the
+  leading cause of breaking changes is weak MANUAL error
+  detection (no open URL; cited via Cerny et al.).
+
+- CodeRabbit, Multi-Repo Analysis documentation (2026) and
+  Qodo, "The Anatomy of a Breaking Change" (2026) — commercial
+  AI review tools that detect cross-repo downstream impact at
+  review time: proof the blind spot is real, not the model for
+  this phase (non-deterministic flavor).
+  https://docs.coderabbit.ai/knowledge-base/multi-repo-analysis
+  https://www.qodo.ai/blog/the-anatomy-of-a-breaking-change/
+
+- oasdiff — OpenAPI breaking-change gates at PR time (755
+  rules; GitHub Action posting a review on every PR).
+  https://www.oasdiff.com/
+
+- Buf, "Detecting breaking changes" — the same gate for
+  Protobuf schemas.
+  https://buf.build/docs/breaking/
+
+- asyncapi/diff — the same gate for AsyncAPI event documents:
+  the choreography-native case (topics, event payloads).
+  https://github.com/asyncapi/diff
+
+- "Ensuring Syntactic Interoperability Using Consumer-Driven
+  Contract Testing", Software Testing, Verification and
+  Reliability, 2025 — systematic literature review:
+  consumer-driven contracts (Pact-style) ensure syntactic
+  compatibility between services.
+  https://onlinelibrary.wiley.com/doi/10.1002/stvr.70006
+
+- Backstage, "System Model" — DECLARED service-to-service
+  relationships (dependsOn) as shipped org-level coupling maps.
+  https://backstage.io/docs/features/software-catalog/system-model/
+
+- Sourcegraph, "Monorepo vs Polyrepo" — cross-repo code search
+  as the polyrepo org's review-side tool.
+  https://sourcegraph.com/blog/monorepo-vs-polyrepo
+
+- Price, Cutting & Garousi, "Is Code Co-Committal an Indicator
+  of Evolutionary Coupling in Software Repositories?", Software
+  (MDPI), 2026 — co-change links vary widely with project and
+  developer style; coupling evidence only "in certain
+  scenarios".  Grounds phase 19's hint-grade treatment of
+  history mining (and cautions phase 18's thresholds).
+  https://doi.org/10.3390/software5010011

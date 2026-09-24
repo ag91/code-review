@@ -332,6 +332,126 @@ overlay face at that position."
     (should (memq 'font-lock-keyword-face
                   (code-review-hunkhighlight-test--face-at "return")))))
 
+(ert-deftest code-review-hunkhighlight/sql-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'sql)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+CREATE TABLE IF NOT EXISTS analytics.estimate_ledger_prices ("
+        "+  organization_id UInt64, is_deleted UInt8 DEFAULT 0);"
+        "+SELECT a.organization_id, b.event_type"
+        "+FROM analytics.t1 AS a INNER JOIN t2 AS b ON a.id = b.id CROSS JOIN t3"
+        "+WHERE a.x > 10 AND b.y = 'z'"
+        "+GROUP BY a.organization_id")
+    (should (code-review-hunkhighlight-region beg end "models/ledger.sql"))
+    ;; CREATE TABLE: table reference as a type, columns as variables
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "estimate_ledger_prices")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "organization_id")))
+    ;; selected fields
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "a.organization_id")))
+    ;; FROM/JOIN table references
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "analytics.t1")))
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "JOIN t2")))
+    ;; CROSS JOIN is terrible red
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "CROSS")))
+    ;; WHERE: keyword plus the filter columns
+    (should (memq 'font-lock-keyword-face
+                  (code-review-hunkhighlight-test--face-at "WHERE")))
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "a.x")))
+    ;; GROUP BY columns too
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "GROUP BY a.organization_id")))))
+
+(ert-deftest code-review-hunkhighlight/sql-dbt-jinja-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'sql)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+CREATE TABLE IF NOT EXISTS {{ env_var('DB') }}.estimate_ledger_prices ("
+        "+  organization_id UInt64, event_type String);"
+        "+SELECT a.id, b.type"
+        "+FROM {{ ref('mrt_one') }} AS a"
+        "+CROSS JOIN {{ source('db', 'tbl') }}"
+        "+WHERE a.x > 0;"
+        "+SELECT id FROM t1 AS a, t2 AS b WHERE a.id = b.id")
+    (should (code-review-hunkhighlight-region beg end "models/ledger.sql"))
+    ;; jinja DDL degrades gracefully: the parse is ERROR soup
+    ;; around {{ }} but the clean columns still highlight
+    (should (memq 'font-lock-variable-name-face
+                  (code-review-hunkhighlight-test--face-at "organization_id")))
+    ;; dbt ref()/source() model names survive the jinja errors and
+    ;; highlight as table sources
+    (should (memq 'font-lock-type-face
+                  (code-review-hunkhighlight-test--face-at "mrt_one")))
+    ;; jinja CROSS JOIN is still terrible red
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "CROSS")))
+    ;; implicit comma join: the comma itself is red (a cartesian
+    ;; product in ClickHouse)
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "AS a,")))))
+
+(ert-deftest code-review-hunkhighlight/yaml-hunk-faces ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'yaml)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+version: 2"
+        "+models:"
+        "+  - name: mrt_estimate_ledger"
+        "+    description: estimates"
+        "+    columns:"
+        "+      - name: organization_id"
+        "+        data_type: UInt64")
+    (should (code-review-hunkhighlight-region beg end "models/schema.yml"))
+    ;; `name:' values stand out: dbt model and column names
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "mrt_estimate_ledger")))
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "organization_id")))
+    ;; other values and the keys themselves stay quiet
+    (should-not (memq 'font-lock-function-name-face
+                      (code-review-hunkhighlight-test--face-at "estimates")))
+    (should-not (memq 'font-lock-function-name-face
+                      (code-review-hunkhighlight-test--face-at "UInt64")))))
+
+(ert-deftest code-review-hunkhighlight/yaml-mid-block-fragment-faces ()
+  ;; the shape that breaks whole-fragment parsing: a hunk starting
+  ;; mid-column-block (deep indent), then a blank line, then a
+  ;; model at shallower depth — the yaml grammar's error recovery
+  ;; keeps only the first pair (probed live on a real _marts.yml
+  ;; hunk).  The per-line strategy
+  ;; (`code-review-hunkhighlight-fragment-line-languages') must
+  ;; recover the name values the reviewer actually scans for.
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'yaml)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("       - name: output_tokens"
+        "+        description: \"sum(output_tokens)\""
+        "+"
+        "+  - name: mrt_estimate_ledger"
+        "+    description: >"
+        "+      Billable usage."
+        "+    columns:"
+        "+      - name: organization_id")
+    (should (code-review-hunkhighlight-region beg end "models/marts/_marts.yml"))
+    ;; the ADDED mid-block model name paints despite the fragment
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "mrt_estimate_ledger")))
+    ;; nested column names paint too
+    (should (memq 'font-lock-function-name-face
+                  (code-review-hunkhighlight-test--face-at "organization_id")))
+    ;; the CONTEXT first pair never paints (only added lines do)
+    (should-not (memq 'font-lock-function-name-face
+                      (code-review-hunkhighlight-test--face-at "output_tokens")))
+    ;; keys and other values stay quiet
+    (should-not (memq 'font-lock-function-name-face
+                      (code-review-hunkhighlight-test--face-at "Billable")))))
+
 (ert-deftest code-review-hunkhighlight/test-file-faces ()
   (skip-unless (and (fboundp 'treesit-language-available-p)
                     (treesit-language-available-p 'python)))

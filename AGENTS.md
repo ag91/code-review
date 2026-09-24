@@ -271,3 +271,33 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   reload (user had to C-g).  The minimal reload script (loads +
   keymap patches + report into a defvar) is instant; keep daemon
   probes bounded and targeted (phase 6 incident).
+- NEVER filter `make compile` output when you changed a source
+  file (phase 10 incident): a `grep ... | head -n 5` hid
+  "Error: End of file during parsing" for an unbalanced insert,
+  so the STALE `.elc` kept serving old bytecode — batch tests,
+  daemon reloads and probes all ran the old code while the
+  source looked right, and an hour went into "debugging" a
+  feature that was never loaded.  When a test contradicts a
+  correct-looking implementation, prove the ARTIFACT is fresh
+  first: `ls -la foo.el foo.elc` (mtimes) and grep the `.elc`
+  for a symbol only the new source defines.
+- Find paren unbalance with a `syntax-ppss` DEPTH-WALK instead of
+  hand-counting closers (in the daemon or batch: insert the file,
+  `emacs-lisp-mode`, report `(nth 0 (syntax-ppss (line-end-position)))`
+  per line): the depth that fails to return to 0 at the defun
+  boundary points straight at the missing/extra paren.  Hand
+  counting was wrong twice in a row on the same 15-closer line.
+- Emacs 31.1 daemon: RE-loading a `.el` source whose path was
+  loaded before fails with "End of file during parsing:
+  #<killed buffer>" (the reader's buffer dies mid-read); FRESH
+  paths and explicit `.elc` loads are fine.  To verify a reload
+  took effect, check `(documentation 'fn)` for a marker word
+  from the new docstring, not just that the `load` returned `t`.
+- magit 4.x section accessors are oref-based:
+  `magit-section-value` / `magit-section-start` /
+  `magit-section-end` are VOID functions; use
+  `(oref section value)` etc.  `magit-map-sections` takes
+  (FUNCTION &optional SECTION), NOT a buffer — call it inside
+  `with-current-buffer` with no second arg.  The semantic
+  highlight overlays carry the marker property `cr-hh-face`
+  (see `--put-face`), not a package-named property.

@@ -28,8 +28,18 @@
 ;;  patterns, UPPER_CASE constants, literal CONSTANT VALUES
 ;;  (strings/numbers — in test code those are the test case names
 ;;  and expected values), the `return' keyword — and in test
-;;  files, test definition names and assertion lines.  Only
-;;  ADDED lines get
+;;  files, test definition names and assertion lines.  For SQL
+;;  the set is performance-shaped: table references, selected/
+;;  filter/join columns, the WHERE/JOIN/GROUP/ORDER/LIMIT
+;;  keywords, and cartesian joins (CROSS JOIN, and the comma in
+;;  FROM a, b — a cross join in ClickHouse) in warning red; YAML
+;;  captures the values of `name:' keys (dbt model/column names).
+;;  Mid-file yaml fragments lose their indentation context (the
+;;  grammar recovers only the first block), so for languages in
+;;  `code-review-hunkhighlight-fragment-line-languages' every
+;;  non-blank line is ALSO parsed as a one-line document and
+;;  those captures merge.
+;;  Only ADDED lines get
 ;;  semantic faces (context is parse input, not signal; deleted
 ;;  lines are not part of the new side).
 ;;
@@ -84,7 +94,9 @@ diff faces and no error is signaled."
     ("\\.el\\'" . elisp)
     ("\\.clj[scx]?\\'" . clojure)
     ("\\.ts\\'" . typescript)
-    ("\\.tsx\\'" . tsx))
+    ("\\.tsx\\'" . tsx)
+    ("\\.sql\\'" . sql)
+    ("\\.ya?ml\\'" . yaml))
   "Map file-name regexp to tree-sitter language symbol.
 Extend this (and `code-review-hunkhighlight-queries') when adding
 languages: only ship queries you have validated against the
@@ -304,7 +316,71 @@ purple and the function-name blue."
       . ((case . font-lock-type-face)
          (kw . font-lock-keyword-face)))
      ("[(string) (template_string) (number)] @cval"
-      . ((cval . code-review-constant-face)))))
+      . ((cval . code-review-constant-face))))
+    (sql
+     ;; grammar: DerekStride/tree-sitter-sql (installed in
+     ;; ~/.emacs.d/tree-sitter).  Probed against real ClickHouse
+     ;; and dbt shapes: node names are create_table,
+     ;; column_definitions/column_definition, object_reference,
+     ;; select_expression/term/field, relation, invocation,
+     ;; binary_expression, where/join/cross_join/group_by/
+     ;; order_by.  KNOWN LIMIT: jinja {{ ... }} breaks the parse
+     ;; into ERROR nodes, but everything OUTSIDE the soup still
+     ;; captures — and ref()/source() arguments survive as
+     ;; invocation literals, so dbt model names still highlight.
+     ("(create_table (object_reference) @tbl)"
+      . ((tbl . font-lock-type-face)))
+     ("(create_table (column_definitions
+       (column_definition (identifier) @col)))"
+      . ((col . font-lock-variable-name-face)))
+     ("(select_expression (term (field) @sel))"
+      . ((sel . font-lock-variable-name-face)))
+     ("(from (relation (object_reference) @from))"
+      . ((from . font-lock-type-face)))
+     ("(join (relation (object_reference) @jt))"
+      . ((jt . font-lock-type-face)))
+     ("(from (relation (invocation (term (literal) @ref))))"
+      . ((ref . font-lock-type-face)))
+     ("(join (relation (invocation (term (literal) @jref))))"
+      . ((jref . font-lock-type-face)))
+     ;; WHERE / ON columns: two patterns each, because AND/OR
+     ;; compound predicates nest binary_expression one level
+     ;; deeper than simple ones
+     ("(where (binary_expression (field) @wcol))
+       (where (binary_expression
+               (binary_expression (field) @wcol)))"
+      . ((wcol . font-lock-variable-name-face)))
+     ("(join (binary_expression (field) @oncol))
+       (join (binary_expression
+              (binary_expression (field) @oncol)))"
+      . ((oncol . font-lock-variable-name-face)))
+     ("(group_by (field) @gcol)"
+      . ((gcol . font-lock-variable-name-face)))
+     ("(order_by (order_target (field) @ocol))"
+      . ((ocol . font-lock-variable-name-face)))
+     ;; performance markers: the clause keywords
+     ("[(keyword_where) (keyword_group) (keyword_by)
+       (keyword_order) (keyword_limit) (keyword_on)
+       (keyword_from) (keyword_join)] @kw"
+      . ((kw . font-lock-keyword-face)))
+     ;; cartesian products go terrible red: explicit CROSS JOIN,
+     ;; and implicit comma joins (FROM a, b IS a cross join in
+     ;; ClickHouse)
+     ("(cross_join [(keyword_cross) (keyword_join)] @danger)"
+      . ((danger . font-lock-warning-face)))
+     ("(from \",\" @danger)"
+      . ((danger . font-lock-warning-face))))
+    (yaml
+     ;; tree-sitter-yaml: scalars live in flow_node; capture the
+     ;; VALUES of `name:' keys — dbt model/column/test names, the
+     ;; identifiers a reviewer scans for.  #match? not #eq (#eq is
+     ;; not supported at capture time on Emacs 30); @_k is a
+     ;; helper capture with no face mapping.
+     ("((block_mapping_pair
+        key: (flow_node (plain_scalar) @_k)
+        value: (flow_node) @name)
+       (#match? @_k \"\\\\`name\\\\'\"))"
+      . ((name . font-lock-function-name-face)))))
   "Per-language treesit queries.
 Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
 CAPTURE names must match the @captures in QUERY-STRING; a capture
@@ -349,6 +425,22 @@ predicate errors disable only that query)."
       . ((af . code-review-test-face)))))
   "Like `code-review-hunkhighlight-queries', but test files only."
   :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
+  :group 'code-review-hunkhighlight)
+
+(defcustom code-review-hunkhighlight-fragment-line-languages '(yaml)
+  "Languages that additionally parse hunk lines INDIVIDUALLY.
+A hunk reconstructs a mid-file FRAGMENT (added + context lines).
+Indentation-relative grammars lose the enclosing context on
+such fragments, and error recovery keeps only the fragment's
+first block: a real dbt _marts.yml hunk (mixed column depths,
+blank lines) yields ONE name pair out of dozens, and dedenting
+the text does not help (probed live).  For these languages every
+non-blank line is ALSO parsed as a one-line document and the
+same queries run per line; captures merge with the
+whole-fragment ones.  One tiny parse per line, cached like
+everything else.  Whitespace-insensitive grammars (sql, the
+programming languages) do not need this."
+  :type '(repeat symbol)
   :group 'code-review-hunkhighlight)
 
 (defvar-local code-review-hunkhighlight--cache nil
@@ -538,7 +630,11 @@ the line layout of the parse buffer."
   "Return ((LINE BEG END FACE)...) for new-side TEXT of LANG.
 LINE is 1-based, BEG/END are 0-based columns within that line.
 TEST-P adds the test-file queries.  Nil when treesit is unusable
-or nothing was captured."
+or nothing was captured.  For languages in
+`code-review-hunkhighlight-fragment-line-languages' every
+non-blank line is ALSO parsed as a one-line document and those
+captures merge (mid-file fragments lose the indentation context
+an indentation-relative grammar needs)."
   (when (fboundp 'treesit-parser-create)
     (let ((entries
            (append (cdr (assq lang code-review-hunkhighlight-queries))
@@ -585,6 +681,43 @@ query %S disabled: %S" (car entry) err)
                                 (treesit-node-end node)
                                 line-starts line-lens))
                             (push (append pos (list face)) res))))))))))
+          ;; FRAGMENT STRATEGY (see
+          ;; `code-review-hunkhighlight-fragment-line-languages'):
+          ;; parse every non-blank line as a ONE-LINE document and
+          ;; run the same queries; captures merge with the
+          ;; whole-fragment ones.  A one-line document is always
+          ;; well-formed for these grammars, so this recovers the
+          ;; pairs the fragment's error recovery dropped.
+          (when (memq lang code-review-hunkhighlight-fragment-line-languages)
+            (let ((line-no 0))
+              (dolist (line (split-string text "\n"))
+                (setq line-no (1+ line-no))
+                (unless (string-blank-p line)
+                  (with-temp-buffer
+                    (insert line)
+                    (let ((parser (treesit-parser-create lang)))
+                      (dolist (entry entries)
+                        (let ((compiled
+                               (code-review-hunkhighlight--compiled
+                                lang (car entry))))
+                          (when compiled
+                            (pcase-dolist
+                                (`(,name . ,node)
+                                 ;; per-line failures stay quiet: the
+                                 ;; whole-fragment pass already
+                                 ;; messaged a truly broken query
+                                 (ignore-errors
+                                   (treesit-query-capture parser compiled)))
+                              (let ((face (cdr (assq name (cdr entry)))))
+                                (when face
+                                  ;; one-line doc: buffer columns map
+                                  ;; directly (bol is 1)
+                                  (let ((b (treesit-node-start node))
+                                        (e (treesit-node-end node)))
+                                    (when (< b e)
+                                      (push (list line-no (1- b) (1- e)
+                                                  face)
+                                            res)))))))))))))))
           (nreverse res))))))
 
 (defun code-review-hunkhighlight--apply (ranges lines)
@@ -638,18 +771,23 @@ Never signals; returns non-nil when faces were applied."
                                     body "\e"
                                     (prin1-to-string
                                      (cons
-                                      ;; the predicate contract matters
-                                      ;; for the ranges: it changes which
-                                      ;; queries capture (Emacs 30/31),
-                                      ;; so it must invalidate the cache
-                                      (code-review-hunkhighlight--contract
-                                       lang)
+                                      ;; the fragment strategy changes
+                                      ;; which ranges exist, so it must
+                                      ;; invalidate the cache too
+                                      code-review-hunkhighlight-fragment-line-languages
                                       (cons
-                                       (assq lang
-                                             code-review-hunkhighlight-queries)
-                                       (when test-p
-                                         (assq lang
-                                               code-review-hunkhighlight-test-queries)))))))))
+                                       ;; the predicate contract matters
+                                       ;; for the ranges: it changes which
+                                       ;; queries capture (Emacs 30/31),
+                                       ;; so it must invalidate the cache
+                                       (code-review-hunkhighlight--contract
+                                        lang)
+                                       (cons
+                                        (assq lang
+                                              code-review-hunkhighlight-queries)
+                                        (when test-p
+                                          (assq lang
+                                                code-review-hunkhighlight-test-queries))))))))))
                  (cache (or code-review-hunkhighlight--cache
                             (setq code-review-hunkhighlight--cache
                                   (make-hash-table :test #'equal))))
