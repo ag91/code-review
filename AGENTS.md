@@ -293,6 +293,25 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   paths and explicit `.elc` loads are fine.  To verify a reload
   took effect, check `(documentation 'fn)` for a marker word
   from the new docstring, not just that the `load` returned `t`.
+- "Stack overflow in regexp matcher" on a review render is almost
+  always a per-line analysis regexp meeting a MEGABYTE single
+  line (Jupyter notebook JSON, minified bundles: 500KB in one
+  line; litellm incident, see Improvements.org phase 5).  The
+  matcher recurses per character.  Any regexp consuming raw
+  lines/diff text must cap the line first
+  (`code-review-analysis--cap-line`); use plain `string-search`
+  (not a regexp) when the FULL line must be searched.  And
+  `code-review-analysis-run` must stay condition-cased: an
+  analysis failure logged as "no findings" is fine, one that
+  kills the render reads as a forge error ("Got an error from
+  your VC provider") and leaves the user bufferless.
+- Never drive interactive commands that prompt (`y-or-n-p`,
+  completing-read) via `emacsclient --eval` in the user's live
+  daemon: the prompt pops in THEIR frame mid-work.  Call the
+  underlying machinery with explicit state instead (e.g. set
+  `code-review-db--pullreq-id` (a GLOBAL defvar — the last build
+  wins it) and let-bind `code-review-section-full-refresh?`
+  around `code-review--build-buffer`).
 - magit 4.x section accessors are oref-based:
   `magit-section-value` / `magit-section-start` /
   `magit-section-end` are VOID functions; use

@@ -7,6 +7,9 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'code-review-analysis)
+(require 'code-review-db)
+(require 'code-review-github)
+(require 'code-review-test-helpers)
 
 ;; `code-review-db-pullreq' is abstract; a concrete subclass is
 ;; enough for slot access in the base-rev test (no live db needed).
@@ -278,3 +281,103 @@ Return its directory (with trailing slash)."
     (should (equal (funcall analyze "Foo.scala"
                             "diff --git a/Foo.scala b/Foo.scala\n--- a/Foo.scala\n+++ b/Foo.scala\n@@ -0,0 +1,1 @@\n+class Foo {\n")
                    '(("Foo" "Foo.scala" 1))))))
+
+;;; Megabyte single lines must not kill the analysis (litellm bug)
+
+;; Real case: BerriAI/litellm PR 43042.  The cookbook notebooks pack
+;; half a megabyte into ONE line; `--normalize-line' string-mask
+;; regexp recurses per character and the regexp matcher died with
+;; "Stack overflow in regexp matcher", which surfaced as "Got an
+;; error from your VC provider" and left no review buffer.
+
+(ert-deftest code-review-analysis/normalize-megabyte-line ()
+  "Notebook/minified single lines must not overflow the matcher stack."
+  (let ((line (concat "{\"x\": \"" (make-string 300000 ?x)
+                      "\", \"y\": \"a\\\"b\"}")))
+    (should (stringp (code-review-analysis--normalize-line line)))
+    (should (<= (length (code-review-analysis--normalize-line line))
+                code-review-analysis-line-max-length))
+    (should (null (code-review-analysis--boilerplate-p line)))))
+
+(ert-deftest code-review-analysis/max-line-length-bounded ()
+  "`--max-line-length' exits early at the cap and scans fully when disabled."
+  (let ((text (concat "short\n" (make-string 500000 ?x) "\ntail")))
+    (should (= 5 (code-review-analysis--max-line-length "abc\ndefgh\nx")))
+    ;; early exit: any monster line reports over the cap without
+    ;; scanning the rest of the text
+    (should (> (code-review-analysis--max-line-length text)
+               code-review-analysis-line-max-length))
+    ;; cap disabled: full scan
+    (let ((code-review-analysis-line-max-length 0))
+      (should (= 500000 (code-review-analysis--max-line-length text))))))
+
+(ert-deftest code-review-analysis/read-files-skips-monster-line-files ()
+  "Files with megabyte lines (notebook JSON, bundles) are data,
+not reviewable code: skipped, and their bytes stay available to
+real source files."
+  (let ((dir (make-temp-file "cr-analysis-read-" t)))
+    (with-temp-file (expand-file-name "normal.py" dir)
+      (insert "def helper(x):\n    return x\n"))
+    (with-temp-file (expand-file-name "data.ipynb" dir)
+      (insert "{\"x\": \"" (make-string 300000 ?x) "\"}\n"))
+    (let ((res (code-review-analysis--read-files
+                dir '("normal.py" "data.ipynb"))))
+      (should (equal (mapcar #'car res) '("normal.py")))
+      (should (equal (cdr (assoc "normal.py" res))
+                     "def helper(x):\n    return x\n")))))
+
+(ert-deftest code-review-analysis/compute-survives-notebook-repo ()
+  "End-to-end: a repo with a notebook whose single line is 300KB
+(and contains a definition name, so git grep hits it) must
+analyze without the regexp stack overflow."
+  (let* ((notebook (concat "{\"cell_type\": \"code\", \"outputs\": \""
+                           (make-string 150000 ?x)
+                           " helper "
+                           (make-string 150000 ?x)
+                           "\", \"s\": \"a\\\"b\"}"))
+         (repo (code-review-analysis-test--make-repo
+                `(("notebook.ipynb" . ,notebook)
+                  ("lib.py" . "def helper(x):\n    y = x + 1\n    return y\n    z = x - 1\n"))))
+         (diff (concat "diff --git a/new.py b/new.py\n"
+                       "--- a/new.py\n"
+                       "+++ b/new.py\n"
+                       "@@ -0,0 +1,4 @@\n"
+                       "+def helper(x):\n"
+                       "+    y = x + 1\n"
+                       "+    return y\n"
+                       "+    z = x - 1\n"))
+         (code-review-analysis-min-covered 2)
+         (res (code-review-analysis--compute
+               repo diff (code-review-analysis-test-pr))))
+    ;; completed: a plist, not a stack overflow
+    (should (listp res))
+    ;; the lib.py duplication is still found
+    (should (cl-some (lambda (s) (string= (nth 2 s) "lib.py"))
+                     (plist-get res :similar)))
+    ;; helper has non-definition references (the notebook grep hit),
+    ;; so it is not dead
+    (should (null (plist-get res :dead)))))
+
+(ert-deftest code-review-analysis/run-contains-compute-failure ()
+  "A failing compute is logged and reported as no findings.
+It must NEVER bubble into the render chain: the litellm incident
+surfaced an analysis bug as \"error from your VC provider\" with
+no review buffer at all."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create
+     (code-review-github-repo :owner "o" :repo "r" :number "1"))
+    (code-review-db--pullreq-raw-diff-update "diff --git a/x.py b/x.py\n")
+    (let ((code-review-repo-worktree "/tmp")
+          (code-review-log-file (make-temp-file "cr-analysis-log"))
+          (orig (symbol-function 'code-review-analysis--compute)))
+      (unwind-protect
+          (progn
+            (fset 'code-review-analysis--compute
+                  (lambda (&rest _) (error "injected boom")))
+            (should (null (code-review-analysis-run)))
+            (should (with-temp-buffer
+                      (insert-file-contents code-review-log-file)
+                      (goto-char (point-min))
+                      (search-forward "injected boom" nil t))))
+        (fset 'code-review-analysis--compute orig)
+        (ignore-errors (delete-file code-review-log-file))))))

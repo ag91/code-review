@@ -50,6 +50,7 @@
 (require 'code-review-db)
 (require 'code-review-diff)
 (require 'code-review-repo)
+(require 'code-review-utils)
 
 ;;; Configuration
 
@@ -132,6 +133,19 @@ over it are dropped, biggest files last."
   :group 'code-review-analysis
   :type 'integer)
 
+(defcustom code-review-analysis-line-max-length 2000
+  "Maximum line length the analysis regexps will ever see.
+Lines longer than this are truncated before normalization, and
+candidate files whose longest line exceeds it are not indexed at
+all.  Data files masquerading as text (Jupyter notebook JSON,
+minified bundles) pack megabytes into single lines; the
+normalization regexps recurse per character and the regexp
+matcher dies with \"Stack overflow in regexp matcher\" on them,
+which killed whole review renders with a misleading
+\"error from your VC provider\".  0 disables the cap."
+  :group 'code-review-analysis
+  :type 'integer)
+
 (defcustom code-review-analysis-ref-exclude-globs
   '("*-autoloads.el" "*-pkg.el" "*.elc")
   "Glob patterns excluded from the reference search (git pathspec)."
@@ -168,11 +182,25 @@ dead-code and dangling-reference heuristics."
 
 ;;; Normalization (pure)
 
+(defun code-review-analysis--cap-line (line)
+  "Return LINE truncated to `code-review-analysis-line-max-length'.
+EVERY analysis regexp that consumes a raw line must go through
+this: data files masquerading as text (Jupyter notebook JSON,
+minified bundles) pack megabytes into single lines, and the
+matcher recurses per character on them until the stack overflows.
+0 disables the cap."
+  (if (and (> code-review-analysis-line-max-length 0)
+           (> (length line) code-review-analysis-line-max-length))
+      (substring line 0 code-review-analysis-line-max-length)
+    line))
+
 (defun code-review-analysis--normalize-line (line)
   "Normalize LINE for similarity comparison.
 Masks string literals, numbers and comments; collapses whitespace.
-This is heuristic: it trades precision for language-agnosticism."
-  (let ((s (substring-no-properties line)))
+This is heuristic: it trades precision for language-agnosticism.
+Input is capped first (see `code-review-analysis--cap-line')."
+  (let ((s (substring-no-properties
+            (code-review-analysis--cap-line line))))
     ;; mask string literals first: quoted comment markers etc hide
     (setq s (replace-regexp-in-string
              "\"\\(?:[^\"\\]\\|\\\\.\\)*\"" "\"\"" s))
@@ -193,9 +221,12 @@ This is heuristic: it trades precision for language-agnosticism."
   "Non-nil when raw LINE is structural boilerplate (imports etc).
 Such lines match everywhere in a codebase and carry no
 duplication signal; `code-review-analysis-boilerplate-line-regexp'
-is the tunable."
+is the tunable.  Input is capped first (see
+`code-review-analysis--cap-line')."
   (and code-review-analysis-boilerplate-line-regexp
-       (string-match-p code-review-analysis-boilerplate-line-regexp line)))
+       (string-match-p
+        code-review-analysis-boilerplate-line-regexp
+        (code-review-analysis--cap-line line))))
 
 ;;; Diff line extraction (pure)
 
@@ -324,11 +355,12 @@ Return ((NAME . LINE) ...)."
   (let ((regexps (code-review-analysis--def-regexps-for path))
         (res nil))
     (pcase-dolist (`(,ln . ,text) items)
-      (cl-loop for re in regexps
-               thereis (when (string-match re text)
-                         (let ((name (match-string-no-properties 1 text)))
-                           (when (and name (not (string-empty-p name)))
-                             (push (cons name ln) res))))))
+      (let ((capped (code-review-analysis--cap-line text)))
+        (cl-loop for re in regexps
+                 thereis (when (string-match re capped)
+                           (let ((name (match-string-no-properties 1 capped)))
+                             (when (and name (not (string-empty-p name)))
+                               (push (cons name ln) res)))))))
     (nreverse res)))
 
 ;;; Reference search (git)
@@ -343,16 +375,21 @@ Return a list of (PATH LINE TEXT), or nil when there is no match."
                        code-review-analysis-ref-exclude-globs))))
     (when (and out (not (string-empty-p out)))
       (cl-loop for line in (split-string out "\n" t)
-               when (string-match "^\\(.+?\\):\\([0-9]+\\):\\(.*\\)$" line)
-               collect (list (match-string 1 line)
-                             (string-to-number (match-string 2 line))
-                             (match-string 3 line))))))
+               for capped = (code-review-analysis--cap-line line)
+               when (string-match "^\\(.+?\\):\\([0-9]+\\):\\(.*\\)$" capped)
+               collect (list (match-string 1 capped)
+                             (string-to-number (match-string 2 capped))
+                             (match-string 3 capped))))))
 
 (defun code-review-analysis--hit-is-definition-p (path name text)
-  "Non-nil when TEXT at PATH is a definition of NAME (not a reference)."
-  (cl-loop for re in (code-review-analysis--def-regexps-for path)
-            thereis (and (string-match re text)
-                         (equal (match-string-no-properties 1 text) name))))
+  "Non-nil when TEXT at PATH is a definition of NAME (not a reference).
+TEXT is capped first: git grep hits can be megabyte-long
+notebook/bundle lines."
+  (let ((capped (code-review-analysis--cap-line text)))
+    (cl-loop for re in (code-review-analysis--def-regexps-for path)
+             thereis (and (string-match re capped)
+                          (equal (match-string-no-properties 1 capped)
+                                 name)))))
 
 (defun code-review-analysis--references (worktree name)
   "Return NAME's non-definition occurrences in WORKTREE."
@@ -393,23 +430,31 @@ definitions, froze the render for minutes."
                                      (buffer-substring-no-properties
                                       (point-min) (point-max))
                                      "\n" t))
+                        (let ((capped (code-review-analysis--cap-line line)))
                         (when (string-match
-                               "^\\(.+?\\):\\([0-9]+\\):\\(.*\\)$" line)
+                               "^\\(.+?\\):\\([0-9]+\\):\\(.*\\)$" capped)
                           ;; bind BEFORE any call that could run its
                           ;; own string-match: the match data is
                           ;; GLOBAL and gets clobbered
-                          (let ((path (match-string 1 line))
+                          (let ((path (match-string 1 capped))
                                 (line-no
-                                 (string-to-number (match-string 2 line)))
-                                (text (match-string 3 line)))
+                                 (string-to-number (match-string 2 capped)))
+                                (text (match-string 3 capped)))
                             (dolist (n names)
-                              (when (and (string-search n text)
+                              ;; presence check on the FULL raw line
+                              ;; (string-search is not a regexp: no
+                              ;; stack overflow on megabyte lines).
+                              ;; A reference buried deep inside a
+                              ;; notebook line is still a reference;
+                              ;; capping here caused false "dead"
+                              ;; findings.
+                              (when (and (string-search n line)
                                          (not (code-review-analysis--hit-is-definition-p
                                                path n text)))
                                 (puthash n
                                          (cons (list path line-no text)
                                                (gethash n h))
-                                         h))))))))
+                                         h)))))))))
                 (kill-buffer outbuf))))
         (delete-file nf)))
     h))
@@ -476,11 +521,33 @@ Return ((PATH . 1) ...)."
 
 
 
+(defun code-review-analysis--max-line-length (text)
+  "Length of the longest line in TEXT, cheap and bounded.
+Stops scanning as soon as a line exceeds
+`code-review-analysis-line-max-length' (the only threshold
+callers use), so a megabyte-long line costs one scan up to it.
+With the cap disabled (0) the whole TEXT is scanned."
+  (let ((cap (if (> code-review-analysis-line-max-length 0)
+                 code-review-analysis-line-max-length
+               most-positive-fixnum))
+        (pos 0)
+        (max 0)
+        nl)
+    (while (and pos (< max cap))
+      (setq nl (string-search "\n" text pos))
+      (setq max (max max (- (or nl (length text)) pos)))
+      (setq pos (and nl (1+ nl))))
+    max))
+
 (defun code-review-analysis--read-files (worktree paths)
   "Return ((PATH . CONTENT) ...) for WORKTREE PATHS.
 Applies the hard byte cap while selecting: biggest files last,
 dropped over budget.  Plain `insert-file-contents', no git
-subprocess, so this is cheap and bounded."
+subprocess, so this is cheap and bounded.  Files with any line
+longer than `code-review-analysis-line-max-length' (notebook
+JSON, minified bundles: data, not reviewable code) are skipped
+entirely: their lines are noise for the shingle matcher and
+indexing them would burn the byte budget real code needs."
   (let ((budget code-review-analysis-max-index-bytes)
         (res nil))
     (dolist (path paths)
@@ -491,11 +558,14 @@ subprocess, so this is cheap and bounded."
                        0)))
         (when (and (<= size (max 0 (/ budget 2)))
                    (<= size budget))
-          (setq budget (- budget size))
           (let ((text (with-temp-buffer
                         (insert-file-contents full)
                         (buffer-string))))
-            (push (cons path text) res)))))
+            (unless (and (> code-review-analysis-line-max-length 0)
+                         (> (code-review-analysis--max-line-length text)
+                            code-review-analysis-line-max-length))
+              (setq budget (- budget size))
+              (push (cons path text) res))))))
     (nreverse res)))
 
 (defvar code-review-analysis--cache (make-hash-table :test #'equal)
@@ -619,7 +689,12 @@ Return (:similar SIMS :dead DEAD :dangling DANGLINGS), or nil."
   "Run the heuristic analysis for the review in the current buffer.
 Return the findings plist (see `code-review-analysis--compute'),
 nil when analysis is disabled, there is no local worktree, or
-there is nothing to report.  Results are cached per (PR, diff)."
+there is nothing to report.  Results are cached per (PR, diff).
+A failing compute is LOGGED and reported as no findings: the
+analysis is a heuristic overlay and must never take the review
+buffer down with it (a regexp stack overflow on a megabyte-long
+notebook line once surfaced as \"error from your VC provider\"
+and left the user without a PR buffer)."
   (when code-review-analysis-enabled
     (let* ((worktree code-review-repo-worktree)
            (diff (and worktree (code-review-db--pullreq-raw-diff)))
@@ -627,7 +702,14 @@ there is nothing to report.  Results are cached per (PR, diff)."
       (when (and worktree diff pr)
         (let ((key (concat (oref pr id) "|" (md5 diff))))
           (or (gethash key code-review-analysis--cache)
-              (let ((res (code-review-analysis--compute worktree diff pr)))
+              (let ((res (condition-case err
+                             (code-review-analysis--compute worktree diff pr)
+                           (error
+                            (code-review-utils--log
+                             "code-review-analysis"
+                             (format "analysis failed, skipping section (%s): %S"
+                                     key err))
+                            nil))))
                 (puthash key res code-review-analysis--cache)
                 res)))))))
 

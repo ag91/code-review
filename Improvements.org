@@ -303,6 +303,39 @@ the raw heuristics produced noise, and three rules fixed it:
   0 dead.  The remaining 3 are munit-scaffolding-shaped; raise
   the ratio defcustom to 0.2 to silence them if still noisy.
 
+** Bugfix: megabyte single lines killed the render (litellm incident)
+
+BerriAI/litellm PR 43042: opening the PR died with "Got an error
+from your VC provider" and no buffer.  The log said
+=(error "Stack overflow in regexp matcher")=.  Triage (batch
+emacs against a copy of the db + the real worktree) pinpointed
+=code-review-analysis--normalize-line='s string-literal mask on a
+497,412-character single line in
+=cookbook/Benchmarking_LLMs_by_use_case.ipynb=: the matcher
+recurses per character and overflows.  The error escaped through
+=insert-analysis= into the deferred chain, which reported it as a
+VC error — a local heuristic bug masquerading as a forge failure.
+
+Fixes (both regression-tested):
+- =code-review-analysis-line-max-length= (2000): every analysis
+  regexp goes through =--cap-line= first, and =--read-files=
+  skips monster-line files entirely (notebooks/minified bundles
+  are data, not reviewable code — indexing them only burned the
+  byte budget: 100 candidates dropped from 1.78MB to 1.0MB of
+  real source).  The reference PRESENCE check still searches the
+  full raw line via plain =string-search= (not a regexp, no stack
+  risk): a reference buried at offset 150K inside a notebook line
+  is still a reference, and capping that check produced false
+  "dead" findings.
+- =code-review-analysis-run= now condition-cases the compute: a
+  failing analysis is LOGGED and reported as no findings.  It
+  must never take the review buffer down with it.
+
+Verified live: litellm#43042 renders fully (237 sections, 5
+files, 14 hunks, analysis section present, 3 fringe thread
+markers), batch acceptance on all three stored db rows of the PR
+green, 103/103 ERT.
+
 * Phase 6 — Edit submitted comments and PR lifecycle          :STATUS:done
 
 The biggest write-path gap vs pr-review: everything it can edit
