@@ -298,6 +298,26 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   `magit-section-end` are VOID functions; use
   `(oref section value)` etc.  `magit-map-sections` takes
   (FUNCTION &optional SECTION), NOT a buffer — call it inside
-  `with-current-buffer` with no second arg.  The semantic
+  `with-current-buffer` with no second arg.  It RETURNS the
+  section it walked from (NOT a list of results) — collect
+  results via side effects in the callback.  The semantic
   highlight overlays carry the marker property `cr-hh-face`
   (see `--put-face`), not a package-named property.
+- `magit-section-show-level` (magit's own global folding) keys on
+  raw NESTING DEPTH, which differs between the real render (root >
+  files-report > files-chnged > file > hunk) and the wash-test
+  harness (root > files-chnged > file > hunk): depth-based levels
+  shift by two between the two.  Fold by section TYPE instead
+  (see `code-review-fold-show-level`, phase 9).
+- Re-defining a derived mode does NOT update pre-existing buffers:
+  after reloading `code-review.el` in the daemon, live review
+  buffers keep the OLD keymap OBJECT (the defvar rebinds the
+  variable, not the buffers' local maps) and never ran the new
+  mode body (no local `eldoc-documentation-functions` entry).
+  Patch live buffers explicitly: `(use-local-map
+  code-review-mode-map)` + re-run any local `add-hook`s.
+- Comment sections are dual-role data objects: slots like `hidden`
+  and `end` are initialized by `magit-insert-section` during a real
+  wash; a hand-built instance in tests must `(oset ... hidden nil)`
+  and give it `start`/`end` markers or magit's show/hide machinery
+  signals `unbound-slot`.

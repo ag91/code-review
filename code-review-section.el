@@ -32,6 +32,7 @@
 (require 'deferred)
 (require 'magit-section)
 (require 'magit-diff)
+(require 'cl-lib)
 (require 'shr)
 
 (require 'code-review-faces)
@@ -105,6 +106,17 @@ Matched case-insensitively against the login, e.g.
 when a new automated reviewer shows up in your PRs.
 See `code-review-collapse-bot-comments'."
   :type 'regexp
+  :group 'code-review)
+
+(defcustom code-review-comment-fringe-markers t
+  "When non-nil, diff lines carrying a review thread get a fringe marker.
+The marker (violet chevron in the left fringe) flags exactly which
+diff lines have a conversation attached, including threads folded
+away by `code-review-collapse-bot-comments' or collapsed hunks.
+Mouse-1 on the marked line jumps to the thread.
+Re-laid automatically on every render; turn off if the fringe
+noise bothers you."
+  :type 'boolean
   :group 'code-review)
 
 (defcustom code-review-buffer-name "*Code Review*"
@@ -2098,6 +2110,11 @@ If you want to display a minibuffer MSG in the end."
         (when (and code-review-collapse-bot-comments
                    fresh-render?)
           (code-review--collapse-bot-comments magit-root-section))
+        ;; fringe markers on diff lines carrying a thread: needed on
+        ;; EVERY render (erasing the buffer kills the overlays), and
+        ;; cheap enough (one section-tree walk) to always be worth it.
+        (when code-review-comment-fringe-markers
+          (code-review--mark-comment-lines))
         (if window
             (progn
               (pop-to-buffer buff-name)
@@ -2510,6 +2527,77 @@ and TAB unfolds any of them."
     (dolist (c (oref section children))
       (code-review--collapse-bot-comments c))))
 
+
+;;; Phase 9: fringe markers linking diff lines to their threads
+
+(defvar code-review--fringe-bitmap-defined nil
+  "Non-nil after the `code-review-comment-marker' bitmap was registered.")
+
+(defun code-review--ensure-fringe-bitmap ()
+  "Register the thread marker fringe bitmap once (no-op on text frames)."
+  (when (and (display-graphic-p)
+             (fboundp 'define-fringe-bitmap)
+             (not code-review--fringe-bitmap-defined))
+    (define-fringe-bitmap 'code-review-comment-marker
+      (vector 0 128 192 224 224 192 128 0))
+    (setq code-review--fringe-bitmap-defined t)))
+
+(defvar code-review-fringe-marker-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] 'code-review-fringe-jump-to-thread)
+    map)
+  "Keymap for thread-marker lines.
+A sparse keymap: only mouse-1 is bound (jump to the thread); any
+other key falls through to the buffer's own maps untouched.")
+
+(defun code-review--comment-anchor-position (section)
+  "Buffer position (BOL) of the diff line SECTION is anchored to.
+The wash inserts each thread right AFTER its anchor line, so scan
+backwards from the section start, inside the hunk, until a patch
+line is found.  nil when SECTION does not sit inside a hunk."
+  (when (and (slot-boundp section 'parent)
+             (magit-hunk-section-p (oref section parent)))
+    (let ((bound (oref (oref section parent) start)))
+      (save-excursion
+        (goto-char (oref section start))
+        (catch 'found
+          (while (> (point) bound)
+            (forward-line -1)
+            (when (code-review--patch-line-p)
+              (throw 'found (line-beginning-position))))
+          nil)))))
+
+(defun code-review--mark-comment-line (section)
+  "Lay the clickable fringe marker on SECTION's anchor diff line.
+Idempotent: any previous marker on that line is removed first."
+  (let ((bol (code-review--comment-anchor-position section)))
+    (when bol
+      (remove-overlays bol (1+ bol) 'cr-comment-marker t)
+      (let ((ov (make-overlay bol (min (1+ bol) (point-max)))))
+        (overlay-put ov 'cr-comment-marker t)
+        (overlay-put ov 'evaporate t)
+        (overlay-put ov 'cr-thread-start (copy-marker (oref section start)))
+        (overlay-put ov 'before-string
+                     (propertize
+                      " " 'display
+                      (list 'left-fringe 'code-review-comment-marker
+                            'code-review-fringe-comment-face)
+                      'keymap code-review-fringe-marker-keymap
+                      'help-echo "Review thread on this line (mouse-1: jump)"))))))
+
+(defun code-review--mark-comment-lines ()
+  "Fringe-mark every review thread anchored inside a hunk.
+Sweeps stale marker overlays first (a re-render erases the buffer,
+but the walk below is cheap enough to stay idempotent anyway).
+Runs from `code-review--trigger-hooks' after every render."
+  (dolist (ov (overlays-in (point-min) (point-max)))
+    (when (overlay-get ov 'cr-comment-marker)
+      (delete-overlay ov)))
+  (code-review--ensure-fringe-bitmap)
+  (magit-map-sections
+   (lambda (section)
+     (when (cl-typep section 'code-review-base-comment-section)
+       (code-review--mark-comment-line section)))))
 
 (provide 'code-review-section)
 ;;; code-review-section.el ends here

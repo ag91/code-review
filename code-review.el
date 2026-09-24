@@ -205,6 +205,10 @@ OUTDATED."
     (define-key map (kbd "N") 'code-review-toggle-focus-mode)
     (define-key map (kbd "D") 'code-review-difftastic-file)
     (define-key map (kbd "V") 'code-review-view-wdiff)
+    ;; Global section folding by level (phase 9): like magit's own
+    ;; C-c +/- but with the code-review buffer layout in mind
+    (define-key map (kbd "C-c C-+") 'code-review-fold-more)
+    (define-key map (kbd "C-c C--") 'code-review-fold-less)
     (set-keymap-parent map magit-section-mode-map)
     map))
 
@@ -221,7 +225,11 @@ OUTDATED."
   ;; If the user has global-hl-line enabled, it can also gray the
   ;; current line and hide green/red diff backgrounds; disable it here.
   (when (bound-and-true-p hl-line-mode)
-    (hl-line-mode -1)))
+    (hl-line-mode -1))
+  ;; Phase 9: eldoc shows the current context (file, hunk line, side)
+  ;; at point.  Registered as a local `eldoc-documentation-functions'
+  ;; entry; only actually reports when `eldoc-mode' is on.
+  (add-hook 'eldoc-documentation-functions #'code-review-eldoc-context nil t))
 
 ;; Run after a Code Review buffer is fully rendered
 (defcustom code-review-post-hook

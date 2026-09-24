@@ -588,13 +588,56 @@ Gotchas discovered (they will bite again):
   regenerate) and verify behaviorally; a native function prints
   as =#<subr NAME>= so its body cannot be inspected.
 
-* Phase 9 — Review ergonomics (pr-review polish)                 :STATUS:todo
+* Phase 9 — Review ergonomics (pr-review polish)                 :STATUS:done
 
-- eldoc showing the current context (file, line, section) at
-  point.
-- Global section folding by show-levels (like magit's =C-c +/-=),
-  in addition to per-section TAB.
-- Fringe markers linking diff lines to their threads.
+Three ergonomics features, all live-verified on a local-diff
+render (and covered by ~code-review-ergonomics-test.el~):
+
+** eldoc context — =code-review-eldoc-context=
+
+Registered buffer-locally on =eldoc-documentation-functions= by
+=code-review-mode=.  Inside hunks it reports
+=file:new-side-line (kind)= where kind is =added=, =removed= or
+=n= (= old m)= for context lines with differing old/new numbers;
+the line numbers use the same counting as
+=code-review-jump-to-line= (~--count-patch-advances~ over the
+nearest patch line at point).  On a file header it reports the
+stripped path; anywhere else (containers, root) it stays silent.
+
+** Global folding — =C-c C--= / =C-c C-+=
+
+=code-review-fold-less/-more= cycle a 1..5 scale managed by
+=code-review-fold-show-level=.  The scale is by section KIND, not
+raw nesting depth: the real render wraps files in TWO containers
+(files-report, files-chnged) so magit's own
+=magit-section-show-level -N= depth semantics shift between the
+render and the test harness.  5 = everything, 4 = threads folded
+(useful with bot-collapse), 3 = hunks folded, 2 = files folded,
+1 = containers only.  The fold bypasses magit's visibility cache
+(never remembered across renders).
+
+** Fringe thread markers
+
+=code-review--mark-comment-lines= runs from
+=--trigger-hooks= after EVERY render (buffer erasure kills the
+overlays).  It walks the section tree for comment sections, finds
+each thread's anchor patch line (walk backwards from the section
+start to the nearest patch line — the wash inserts threads right
+after their anchor), and lays a zero-width overlay with a
+=left-fringe= display glyph (violet chevron,
+=code-review-comment-marker= bitmap +
+=code-review-fringe-comment-face=).  Mouse-1 on the marked line
+jumps to the thread and reveals its ancestor chain
+(=code-review-fringe-jump-to-thread=).  Toggle:
+=code-review-comment-fringe-markers=.
+
+Gotchas found while building (also in AGENTS.md):
+- ~magit-map-sections~ returns the section it walked FROM, not a
+  list of results: collect via side effects.
+- Re-defining a derived mode does not update pre-existing
+  buffers: they keep the OLD keymap object and miss the new
+  local hooks, so daemon verification must patch live buffers
+  (=use-local-map= + =add-hook ... nil t=).
 
 * Phase 10 — Tree-sitter semantic hunk highlighting                :STATUS:done
 

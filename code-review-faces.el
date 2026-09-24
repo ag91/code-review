@@ -204,5 +204,16 @@
   "Mouse hover face with no background."
   :group 'code-review)
 
+;; Fringe marker for diff lines that carry a review thread (phase 9).
+;; Uses the same violet family as `code-review-constant-face' so
+;; "there is a conversation here" reads as one visual language.
+(defface code-review-fringe-comment-face
+  '((((class color) (background light))
+     :foreground "dark violet")
+    (((class color) (background dark))
+     :foreground "MediumPurple1"))
+  "Face for fringe markers flagging diff lines with review threads."
+  :group 'code-review)
+
 (provide 'code-review-faces)
 ;;; code-review-faces.el ends here

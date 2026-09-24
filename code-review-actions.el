@@ -1287,5 +1287,122 @@ Nothing is shown while the real heading is still on screen."
                                       'face 'magit-diff-file-heading))
                 nil))))))
 
+;;; Phase 9: review ergonomics
+
+(defun code-review-eldoc--file-section (section)
+  "Nearest file SECTION at or above SECTION, or nil."
+  (while (and section (not (magit-file-section-p section)))
+    (setq section (and (slot-boundp section 'parent) (oref section parent))))
+  section)
+
+(defun code-review-eldoc-context (&optional _callback &rest _)
+  "Eldoc function: report WHERE point is in the review buffer.
+Shows \"file:hunk-line (kind)\" inside hunks (line numbers refer to
+the post-PR side of the diff, matching `code-review-jump-to-line'),
+\"file\" on file headers, and nil elsewhere (eldoc stays quiet).
+Registered buffer-locally on `eldoc-documentation-functions' by
+`code-review-mode'; eldoc passes a CALLBACK argument we ignore
+because the string is computed in bounded time."
+  (let* ((section (magit-current-section))
+         (file (code-review-eldoc--file-section section)))
+    (when (and file (stringp (oref file value)))
+      (let ((path (code-review--strip-diff-prefix (oref file value))))
+        (if (not (and section (magit-hunk-section-p section)
+                      (slot-boundp section 'to-range)
+                      (car (oref section to-range))))
+            path
+          (let ((pos (code-review--hunk-content-start section)))
+            (when pos
+              ;; search origin defaults to point: the nearest patch
+              ;; line AT OR ABOVE point is the line being reported
+              (let ((anchor (code-review--nearest-patch-line-in-hunk section)))
+                (when anchor
+                  (let* ((adv (code-review--count-patch-advances
+                               section pos anchor))
+                         (new-line (+ (car (oref section to-range)) (cdr adv)))
+                         (old-line (and (slot-boundp section 'from-range)
+                                        (car (oref section from-range))
+                                        (+ (car (oref section from-range))
+                                           (car adv))))
+                         (char (char-after anchor)))
+                    (cond
+                     ;; an ADDED line only exists on the new side
+                     ((eq char ?+) (format "%s:%d (added)" path new-line))
+                     ;; a REMOVED line only exists on the old side
+                     ((eq char ?-)
+                      (if old-line
+                          (format "%s:%d (removed)" path old-line)
+                        (format "%s:%d (removed)" path new-line)))
+                     ;; context: show both numbers when they differ
+                     ((and old-line (/= old-line new-line))
+                      (format "%s:%d (= old %d)" path new-line old-line))
+                     (t (format "%s:%d" path new-line)))))))))))))
+
+;;; Global section folding
+
+(defvar-local code-review-fold-level nil
+  "Current global fold level, nil when unset.
+1 shows only the top-level container, 2 collapses files, 3
+collapses hunks, 4 expands everything.  Managed by
+`code-review-fold-less'/`code-review-fold-more'.")
+
+(defun code-review-fold-show-level (level)
+  "Set the global fold LEVEL for this review buffer.
+The scale is by section KIND, not raw nesting depth, so it is
+stable across layouts (the real render wraps files in TWO
+containers, files-report and files-chnged, while tests use one):
+5 everything visible, 4 threads folded, 3 hunks folded,
+2 files folded, 1 only the top-level containers.
+Bypasses magit's visibility cache so a fold never gets remembered
+across renders."
+  (interactive "nCode-review fold level (1 folded ... 5 expanded): ")
+  (let ((magit-section-cache-visibility nil))
+    (magit-map-sections
+     (lambda (s)
+       (let ((type (oref s type)))
+         (oset s hidden
+               ;; a kind is folded AT its fold level and below:
+               ;; threads at 4, hunks at 3, files at 2, the
+               ;; top-level containers at 1
+               (or (and (< level 5)
+                        (cl-typep s 'code-review-base-comment-section))
+                   (and (< level 4) (eq type 'hunk))
+                   (and (< level 3) (eq type 'file))
+                   (and (< level 2)
+                        (not (eq s magit-root-section))
+                        (slot-boundp s 'parent)
+                        (eq (oref s parent) magit-root-section)))))))
+    (magit-section-show magit-root-section)
+    (setq code-review-fold-level level)))
+
+(defun code-review-fold-less ()
+  "Fold one level more (\\[code-review-fold-less]).
+5 = everything visible, 4 = threads folded behind hunks,
+3 = files expanded but hunks folded, 2 = files folded, 1 = only
+the top-level containers."
+  (interactive)
+  (code-review-fold-show-level (max 1 (1- (or code-review-fold-level 5)))))
+
+(defun code-review-fold-more ()
+  "Expand one level more (\\[code-review-fold-more]).
+See `code-review-fold-less' for the level scale."
+  (interactive)
+  (code-review-fold-show-level (min 5 (1+ (or code-review-fold-level 5)))))
+
+(defun code-review-fringe-jump-to-thread ()
+  "From a line with a fringe thread marker, jump to the thread."
+  (interactive)
+  (let ((start (cl-some (lambda (ov) (overlay-get ov 'cr-thread-start))
+                        (overlays-at (point)))))
+    (if (not start)
+        (message "code-review: no review thread marker on this line")
+      (goto-char start)
+      ;; Reveal the whole ancestor chain: the thread may sit inside a
+      ;; section folded away by bot-collapse or global fold.
+      (let ((s (magit-current-section)))
+        (while s
+          (magit-section-show s)
+          (setq s (and (slot-boundp s 'parent) (oref s parent))))))))
+
 (provide 'code-review-actions)
 ;;; code-review-actions.el ends here
