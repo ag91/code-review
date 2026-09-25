@@ -391,3 +391,50 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   exact text and finds nothing (use `re-search-forward`).  The
   existing `search-forward` gotcha (no match data) has a second
   face: it is not a regexp search at all.
+- ERT's `(equal RESULT "*...@ HEAD*")` does NOT glob: `.*` inside
+  the expected string is a literal dot-star and the assertion
+  fails against a real name.  Assert generated buffer names with
+  `string-match-p` and a real regexp.
+- The deferred render chain is ASYNC even in batch emacs
+  (`deferred:parallel` posts its callbacks into
+  `deferred:queue`, consumed by timer ticks): an ERT end-to-end
+  test must poll (`(sit-for 0.05)`, with a deadline) until the
+  row's `raw-diff` is non-nil AND `deferred:queue` is nil.  The
+  `closql-insert` in `--internal-build` landing means the DB
+  assertions are safe, and a drained queue means no async work
+  survives the test's db reset (see
+  `code-review-local/review-commit-end-to-end`).
+- magit 4.x buffer names have NO leading star: a revision buffer
+  is named "magit: commit <rev>", so `(get-buffer "*magit:
+  commit*")` returns nil.  Find magit buffers by name prefix
+  "magit:" or by `derived-mode-p` over `(buffer-list)`.
+- A surplus closer AFTER a complete top-level form does not stop
+  that form from being read and EVALUATED: the reader closes the
+  form early, its side effects land, and the `load` only signals
+  on the NEXT top-level read.  A daemon probe can therefore
+  return correct results from an unbalanced file — pre-flight
+  every probe with check-parens regardless of how well it ran.
+- `(interactive "p")` passes ARG 1 — NOT nil — for no prefix: any
+  no-prefix behavior keyed on `(not arg)` silently never runs
+  interactively (only direct calls with no argument exercise it,
+  which is exactly what an ERT test written naively does).  Call
+  the command with 1 in end-to-end tests, and key no-prefix
+  detection on `(member arg '(nil 1))` (this bug shipped the
+  magit-buffer local review invisibly broken for every real
+  keypress; see Improvements.org phase 12).
+- magit's log machinery chokes on split `-n` args in batch:
+  `(magit-log-head (list "-n" "3"))` dies inside
+  `magit-log-get-commit-limit` with `stringp nil` (the `"-n"`
+  form matches magit's `"^-n\\([0-9]+\\)?$"` with an EMPTY group,
+  and `(string-to-number nil)` explodes).  Pass the merged form
+  `(list "-n3")`, which is what the transient actually produces.
+- magit-log commit sections carry SHORT shas as values (not the
+  40-char form): expect short shas in anything derived from them
+  (stored diff args, buffer-name hints).
+- "the diff of the commits in the region" is NOT magit's
+  `d`-on-region convention: magit diffs the endpoint trees
+  (`OLD..NEW`), which EXCLUDES the oldest commit's own changes.
+  Including them needs `OLD^..NEW` — and a ROOT-commit oldest
+  needs the git EMPTY TREE trick (`4b825dc...` is the same sha in
+  every repository and a valid range endpoint without the object
+  existing).  Probe range semantics with real git before shipping.

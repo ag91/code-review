@@ -29,6 +29,7 @@
 ;;; Code:
 
 (require 'magit-git)
+(require 'magit-section)
 (require 'deferred)
 (require 'a)
 (require 'code-review-db)
@@ -53,19 +54,112 @@ from a timer where `default-directory' is arbitrary."
       (ignore-errors
         (closql-delete (closql-get db (car row) 'code-review-db-pullreq))))))
 
+(defun code-review-local--commit-args (rev)
+  "Return (DIFF-ARGS TITLE) reviewing REV against its first parent.
+\"REV^..REV\" for a commit with a parent, \"REV^!\" for a ROOT
+commit (\"REV^..REV\" fails there: git exit 128, verified with
+real git)."
+  (list (if (magit-rev-verify (concat rev "^"))
+            (format "%s^..%s" rev rev)
+          (format "%s^!" rev))
+        (format "Commit %s (%s)"
+                (magit-git-string "rev-parse" "--short" rev)
+                (magit-git-string "log" "-1" "--format=%s" rev))))
+
+(defconst code-review-local--empty-tree
+  "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+  "The git EMPTY TREE oid.
+It is the same sha in every repository (the hash of an empty
+entry list), so it is a valid `git diff' range endpoint even
+though the object does not exist.  Used when the OLDEST commit
+in a log-region review is the repository's ROOT commit: the
+range starts at the empty tree so the root commit's changes are
+in the diff too (\"ROOT^..NEW\" fails there: git exit 128).")
+
+(defun code-review-local--magit-log-args ()
+  "Return (DIFF-ARGS TITLE) for what a magit log buffer selects.
+The commit at point; with a region marked, ALL the commits in the
+region: their COMBINED diff, from the OLDEST selected commit's
+parent to the NEWEST (\"OLD^..NEW\" — a region of one commit is
+just that commit's diff; when the oldest is the ROOT commit the
+range starts at the git empty tree instead, since ROOT has no
+parent).  nil when nothing commit-like is at point."
+  (let ((revs (magit-region-values '(commit branch) t)))
+    (cond
+     ((and revs (cdr revs))
+      (deactivate-mark)
+      ;; region values are listed newest first: the oldest is last
+      (let* ((newest (car revs))
+             (oldest (car (last revs)))
+             (range (if (magit-rev-verify (concat oldest "^"))
+                        (format "%s^..%s" oldest newest)
+                      (format "%s..%s" code-review-local--empty-tree newest))))
+        (list range
+              (format "Commits %s..%s"
+                      (magit-git-string "rev-parse" "--short" oldest)
+                      (magit-git-string "rev-parse" "--short" newest)))))
+     (revs (deactivate-mark)
+      (code-review-local--commit-args (car revs)))
+     ((let ((rev (magit-commit-at-point)))
+        (and rev (code-review-local--commit-args rev))))
+     (t nil))))
+
+(defun code-review-local--magit-diff-args ()
+  "Return (DIFF-ARGS TITLE) describing the magit diff at point.
+In a `magit-revision-mode' buffer: the shown COMMIT, diffed
+against its first parent (\"REV^..REV\"; \"REV^!\" for a root
+commit, which has no parent to diff against — \"REV^..REV\"
+fails there).  In a `magit-log-mode' buffer: the commit at point,
+or — with a region marked — the COMBINED diff of all the commits
+in the region (see `code-review-local--magit-log-args').  In a
+plain `magit-diff-mode' buffer showing a RANGE: the range as-is.
+nil anywhere else: the caller falls back to the working tree.
+Runs in the magit buffer, so its `default-directory' is the
+repository."
+  (cond
+   ((and (derived-mode-p 'magit-revision-mode)
+         magit-buffer-revision)
+    (code-review-local--commit-args magit-buffer-revision))
+   ((derived-mode-p 'magit-log-mode)
+    (code-review-local--magit-log-args))
+   ((and (derived-mode-p 'magit-diff-mode)
+         (not (derived-mode-p 'magit-revision-mode))
+         magit-buffer-diff-range)
+    (list magit-buffer-diff-range
+          (format "Diff %s" magit-buffer-diff-range)))
+   (t nil)))
+
 ;;;###autoload
 (defun code-review-review-local-diff (&optional arg)
   "Review the local diff as if it were a PR.
-With no prefix ARG review all uncommitted changes (git diff HEAD).
-With one prefix arg review only staged changes (git diff --cached).
-With two prefix args prompt for a ref and review changes since it."
+With no prefix ARG, review what the current buffer is looking at:
+in a `magit-revision-mode' buffer the shown COMMIT (diffed against
+its first parent), in a `magit-log-mode' buffer the commit at
+point — or, with a region marked, the COMBINED diff of all the
+commits in the region — in a `magit-diff-mode' buffer showing a
+range the RANGE, and the uncommitted changes (git diff HEAD)
+anywhere else.  With one prefix ARG review only staged changes
+(git diff --cached).  With two prefix ARGs prompt for a ref and
+review changes since it.
+
+Only ONE local review row exists at a time (rendering a new one
+deletes the previous LOCAL row), so an older local review buffer
+stops responding to G (full reload)."
   (interactive "p")
   (let* ((root (or (magit-toplevel)
                    (user-error "Not inside a git repository")))
-         (diff-args (pcase arg
-                      (4 "--cached")
-                      (16 (read-string "Diff since ref: " "HEAD"))
-                      (_ "HEAD")))
+         ;; `interactive "p"' passes 1 — NOT nil — for no prefix:
+         ;; no-prefix and single-prefix-free both mean "the buffer's
+         ;; own diff", only 4 (C-u) and 16 (C-u C-u) are explicit.
+         (magit-review (and (member arg '(nil 1))
+                            (code-review-local--magit-diff-args)))
+         (diff-args (cond
+                     ((eq arg 4) "--cached")
+                     ((eq arg 16) (read-string "Diff since ref: " "HEAD"))
+                     ((and magit-review (car magit-review)))
+                     (t "HEAD")))
+         (title (or (and magit-review (cadr magit-review))
+                    (format "Local changes (%s)" diff-args)))
          (diff (let ((default-directory root))
                  (magit-git-output "diff" "--no-color" diff-args))))
     (if (or (not diff) (string-empty-p diff))
@@ -80,7 +174,7 @@ With two prefix args prompt for a ref and review changes since it."
           :url nil))
         (let ((pr (code-review-db-get-pullreq)))
           (oset pr state "LOCAL")
-          (oset pr title (format "Local changes (%s)" diff-args))
+          (oset pr title title)
           ;; the git diff args ride this column; difftastic uses them
           (oset pr base-ref-name diff-args)
           ;; the ref header inserts this unconditionally

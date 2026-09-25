@@ -138,6 +138,43 @@ stay open at once."
   "Review buffer a comment buffer was opened for.")
 (put 'code-review-comment-review-buffer 'permanent-local t)
 
+(defun code-review-local--buffer-name-hint (args)
+  "Compact buffer-name hint for a LOCAL review's diff ARGS.
+Empty for the classic args (HEAD, --cached) so existing local
+review buffer names stay unchanged; \"@ REV\" for a commit review
+(7-char short form when REV is a full sha), \"@ A..B\" for a range
+review (each full-sha side shortened, the first-parent \"^\"
+dropped: \"OLD^..NEW\" shows as \"OLD..NEW\"), \"@ ARGS\"
+otherwise."
+  (cond
+   ((or (not args)
+        (member args '("HEAD" "--cached")))
+    "")
+   ;; REV^..REV / REV^!: the commit-review args, same REV both sides
+   ((string-match "\\`\\(.+\\)\\^\\.\\.\\1\\'" args)
+    (format " @ %s"
+            (substring args (match-beginning 1)
+                       (min (match-end 1) (+ (match-beginning 1) 7)))))
+   ((string-match "\\`\\(.+\\)\\^!\\'" args)
+    (format " @ %s"
+            (substring args (match-beginning 1)
+                       (min (match-end 1) (+ (match-beginning 1) 7)))))
+   ;; a range: OLD^..NEW (log-region review) or any other A..B.
+   ;; Bind both sides BEFORE the side-shrinking matches: the global
+   ;; match data is clobbered by any nested string-match.
+   ((string-match "\\`\\(.+\\)\\.\\.\\(.+\\)\\'" args)
+    (let* ((a (match-string 1 args))
+           (b (match-string 2 args))
+           (shrink (lambda (side)
+                     (if (string-match
+                          "\\`\\([0-9a-f]\\{7\\}\\)[0-9a-f]*\\'" side)
+                         (match-string 1 side)
+                       side))))
+      (when (string-suffix-p "^" a)
+        (setq a (substring a 0 -1)))
+      (format " @ %s..%s" (funcall shrink a) (funcall shrink b))))
+   (t (format " @ %s" args))))
+
 (defun code-review-pr-buffer-name (&optional pr)
   "Return the review buffer name for PR (defaults to the DB current pullreq).
 Falls back to `code-review-buffer-name' when the PR cannot be
@@ -148,8 +185,11 @@ determined."
              (slot-boundp pr 'repo)
              (slot-boundp pr 'number))
         (if (equal (oref pr state) "LOCAL")
-            (format "*Code Review: local: %s*"
-                    (replace-regexp-in-string "%2F" "/" (oref pr repo)))
+            (format "*Code Review: local: %s%s*"
+                    (replace-regexp-in-string "%2F" "/" (oref pr repo))
+                    (code-review-local--buffer-name-hint
+                     (and (slot-boundp pr 'base-ref-name)
+                          (oref pr base-ref-name))))
           (format "*Code Review: %s/%s#%s*"
                   (oref pr owner)
                   (replace-regexp-in-string "%2F" "/" (oref pr repo))

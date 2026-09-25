@@ -1409,6 +1409,135 @@ Hard-won gotchas (all bit during implementation):
 - The ref header inserts =head-ref-name= unconditionally: local
   rows set it to "working tree".
 
+**Extension (STATUS:done, 2026-09-25): review the magit buffer's
+diff.**  Running =code-review-review-local-diff= with no prefix
+inside a magit buffer now reviews WHAT THAT BUFFER SHOWS instead
+of the working tree: the shown commit (in
+=magit-revision-mode=, diffed against its first parent,
+="REV^..REV"=; ="REV^!="= for a root commit, which has no parent
+to diff against — ="REV^..REV"= fails there with exit 128,
+verified with real git), or the shown range (in
+=magit-diff-mode= with =magit-buffer-diff-range=).  Outside
+magit, nothing changes: working tree, staged (=C-u=), or a
+prompted ref (=C-u C-u=) as before.  Title =Commit <short>
+(<subject>)= / =Diff <range>= rides the existing =title= column;
+the diff args ride =base-ref-name= (no schema change), and the
+G (full reload) path re-fetches them through
+=code-review-local--diff-text= for free.
+
+The review buffer name carries the reviewed diff as a hint
+(=code-review-local--buffer-name-hint= in section.el, placed
+there to avoid a cross-file dependency):
+=*Code Review: local: <repo> @ <short-sha>*= for a commit (7-char
+short form when the args are full SHAs; the raw rev, e.g.
+"HEAD", otherwise), =@ <range>= for a range, and NO hint for the
+classic args (=nil=/"HEAD"/"--cached"/a prompted ref) — so
+existing buffer names are unchanged and the hint doubles as the
+kill target.  No-prefix semantics changed only for the
+magit-buffer case; all classic invocations keep their old
+meaning.
+
+Verified: 7 new ERT tests (119 total, 115 passed + 4 skipped)
+including an end-to-end that runs the real entry in a temp
+=magit-revision-mode= buffer and pumps the deferred chain until
+the row's =raw-diff= lands and =deferred:queue= drains; live in
+the daemon on this repo's HEAD commit (9 files / 18 hunks /
+42 sections, buffer =*Code Review: local: code-review @ HEAD*=)
+plus a =G= full-reload stability check (identical counts — the
+re-fetch uses the stored ="HEAD^..HEAD"=).
+
+**Extension (STATUS:done, 2026-09-25, later that day): the
+interactive no-prefix bug, and magit-log support.**  The user
+reported the feature "kept opening the files I have staged"
+from a =magit-revision= buffer: =interactive "p"= passes ARG 1 —
+NOT nil — for no prefix, so the entry's =(not arg)= guard was
+never true interactively and every real invocation fell back to
+=git diff HEAD= — only direct =(code-review-review-local-diff)=
+calls (ARG nil, as in the ERT e2e) exercised the magit branch.
+The guard is =(member arg '(nil 1))= now, and the e2e calls the
+entry with ARG 1 (the value the command loop passes).
+
+BONUS (user request): in a =magit-log-mode= buffer the entry now
+reviews the COMMIT AT POINT, and with a region marked over
+commit headings the COMBINED diff of ALL the commits in the
+region — from the OLDEST selected commit's parent to the NEWEST
+(="OLD^..NEW"=; a region of one commit is just that commit's
+diff).  That is "the diff of the commits in the region", NOT
+magit's own =d=-on-region convention ="OLD..NEW"= (endpoint
+trees), which EXCLUDES the oldest commit's changes — verified
+with real git in a scratch repo.  When the oldest selected
+commit is the repository's ROOT commit (no parent,
+="ROOT^..NEW"= fails with exit 128) the range starts at the git
+EMPTY TREE instead
+(=code-review-local--empty-tree=, =4b825dc...=, the same sha in
+every repository, valid without the object existing): every
+selected commit's changes land in the diff.  Titles:
+=Commit <short> (<subject>)= / =Commits <short-old>..<short-new>=.
+Region detection rides =magit-region-values '(commit branch) t=
+(magit's own region machinery, newest-first) and the mark is
+deactivated on use, like magit's dwim.  The buffer-name hint
+grew a generic range case: ="OLD^..NEW"= shows as
+=@ <short-old>..<short-new>= (each full-sha side shortened, the
+first-parent ="^"= dropped; the empty-tree side shortens like
+any sha: =@ 4b825dc..<short>=).
+
+Verified: 122 ERT tests (118 passed + 4 skipped) — log
+commit-at-point, log region (combined diff of the two newest:
+both =+def= additions in the diff, the root's absent), log
+region including the root (empty-tree range: the root's
+addition IS in the diff) — plus live in the daemon: commit at
+point (=f256edc^..f256edc=, 9 file sections, exactly the
+commit's files) and region over the two newest commits
+(=afaf5ce^..f256edc=, 12 file sections, both commits' files).
+
+Gotchas:
+
+- =interactive "p"= passes ARG 1 — NOT nil — for no prefix: any
+  no-prefix behavior keyed on =(not arg)= silently never runs
+  interactively (only direct calls with no argument exercise
+  it).  The e2e must call the command with 1, not with nothing,
+  or it tests a path real keypresses never take.
+- magit's log machinery chokes on split =-n= args in batch:
+  =(magit-log-head (list "-n" "3"))= dies inside
+  =magit-log-get-commit-limit= with =stringp nil= (the ="-n"=
+  form matches magit's ="^-n\\([0-9]+\\)?$"= with an EMPTY
+  group; =(string-to-number nil)= explodes).  Pass the merged
+  form =(list "-n3")= — what the transient actually produces.
+- magit-log commit sections carry SHORT shas as values (not the
+  40-char form): assert =7,40= hex, and expect short shas in
+  the stored diff args and the buffer-name hint.
+- "the diff of the commits in the region" is NOT magit's
+  =d=-on-region convention: magit diffs the endpoint trees
+  (="OLD..NEW"=), which excludes the oldest commit's own
+  changes.  Including them needs ="OLD^..NEW"= — and a
+  root-commit oldest needs the EMPTY TREE trick (probe before
+  shipping range semantics).
+
+- ERT's =(equal RESULT "*...@ HEAD*")= does NOT glob: =.*= in a
+  string is a literal dot-star, the assertion fails on
+  ="...@ HEAD*"= vs ="...@ Yd0NMC..."=.  Match names with
+  =string-match-p= and a real regexp.
+- The deferred render chain is ASYNC in batch too
+  (=deferred:parallel= posts callbacks into =deferred:queue=,
+  consumed by timer ticks): an ERT e2e must poll =(sit-for
+  0.05)= until the row's =raw-diff= is non-nil AND
+  =deferred:queue= is nil, with a deadline — the DB write
+  (=closql-insert= in =--internal-build=) landing means the test
+  can assert before the test's db reset, and a drained queue
+  means no async work survives the reset.
+- =magit 4.x buffer names have no leading star: a revision
+  buffer is named "magit: commit <rev>", not "*magit:
+  commit*" — =(get-buffer "*magit: commit*")= returns nil.  Find
+  them by =(buffer-name b)= prefix "magit:" or by
+  =derived-mode-p 'magit-revision-mode=.
+- A surplus closer AFTER a complete top-level form does not
+  stop that form from being read and evaluated: the reader
+  closes the form early, evals it (so its side effects land),
+  and the =load= only signals on the NEXT top-level read.  A
+  probe can therefore report correct results from an unbalanced
+  file — always check-parens / depth-walk probe scripts
+  regardless.
+
 * Phase 13 — Read tracking: mark files/hunks as reviewed      :STATUS:todo:
 
 Problem: folding a hunk once you have read it is the natural
