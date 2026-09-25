@@ -79,7 +79,8 @@
     code-review-section-insert-pr-description
     code-review-section-insert-feedback-heading
     code-review-section-insert-top-level-comments
-    code-review-section-insert-analysis)
+    code-review-section-insert-analysis
+    code-review-section-insert-review-order)
   "Hook run to insert sections into a code review buffer."
   :group 'code-review
   :type 'hook)
@@ -176,6 +177,8 @@ OUTDATED."
    ("V" "View: whole diff ignoring whitespace (view-only)"
     code-review-view-wdiff)
    ("u" "Copy PR URL (C-u: browse)" code-review-kill-pr-url)
+   ("e" "Export comments: numbered list to the kill ring (C-u: open threads only)"
+    code-review-kill-comments)
    ("G" "Full reload" code-review-reload)
    ("q" "Quit" transient-quit-one)])
 

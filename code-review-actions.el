@@ -234,6 +234,100 @@ Optionally set a FEEDBACK message."
                 (message "Approval process canceled."))))))
       (code-review--submit "APPROVE" feedback))))
 
+;;; Comments export
+
+(defun code-review-comments--numbered-list (raw-infos raw-comments &optional open-only)
+  "Return (TEXT . COUNT) with all comments of a PR as a numbered list.
+Comments are merged oldest first by createdAt.  Top-level comments
+and review summaries come from RAW-INFOS (the same merge the
+conversation section renders); inline comments come from
+RAW-COMMENTS (the reviews nodes; each inline comment inherits its
+review's author, like the diff wash renders).  RAW-COMMENTS nil
+falls back to the reviews in RAW-INFOS (older db rows).  With
+OPEN-ONLY non-nil, skip inline comments on resolved review
+threads (the conversations GitHub marks resolved); top-level
+comments and review summaries are not threads, so they stay.
+Nil when the PR has no comments."
+  (let* ((entries nil)
+         (add
+          (lambda (author when where outdated body)
+            (when (and body (not (string-empty-p body)))
+              (push (list (or when "") (or author "unknown")
+                          where outdated body)
+                    entries))))
+         (reviews (or raw-comments
+                      (a-get-in raw-infos '(reviews nodes)))))
+    (dolist (c (a-get-in raw-infos '(comments nodes)))
+      (funcall add (a-get-in c '(author login)) (a-get c 'createdAt)
+               nil nil (a-get c 'body)))
+    (dolist (r reviews)
+      (let ((author (a-get-in r '(author login))))
+        (funcall add author (a-get r 'createdAt) nil nil
+                 (and (not (string-empty-p (or (a-get r 'bodyHTML) "")))
+                      (a-get r 'body)))
+        (dolist (c (a-get-in r '(comments nodes)))
+          (let* ((path (a-get c 'path))
+                 (line (or (a-get c 'line) (a-get c 'startLine)
+                           (a-get c 'position) (a-get c 'originalPosition)))
+                 (where (and path
+                             (format "%s%s" path
+                                     (if line (format ":%s" line) "")))))
+            (unless (and open-only (a-get c 'isResolved))
+              (funcall add author (a-get c 'createdAt) where
+                       (a-get c 'outdated) (a-get c 'body)))))))
+    (when entries
+      (let ((n 0)
+            (parts nil))
+        (dolist (e (sort entries
+                         (lambda (a b)
+                           (string-lessp (car a) (car b)))))
+          (setq n (1+ n))
+          (pcase-let ((`(,when ,author ,where ,outdated ,body) e))
+            (push (format "%d. %s%s%s:\n   %s"
+                          n author
+                          (if (string-empty-p when) ""
+                            (format " (%s)"
+                                    (code-review-utils--format-timestamp
+                                     when)))
+                          (concat (if where (concat " on " where) "")
+                                  (if outdated " [outdated]" ""))
+                          (replace-regexp-in-string "\n" "\n   " body))
+                  parts)))
+        (cons (string-join (nreverse parts) "\n") n)))))
+
+;;;###autoload
+(defun code-review-kill-comments (arg)
+  "Copy all comments of the current open PR into the kill ring.
+A numbered list, oldest first: author, timestamp, and for inline
+comments file:line and an [outdated] marker.  Reads the PR's
+fetched data (the same the review buffer renders), so run a full
+reload first for the very latest comments from the forge.
+
+With a universal argument (\\[universal-argument]), only feedback
+that is still open: comments on review threads already marked
+resolved are skipped.  Top-level comments and review summaries
+are not threads, so they are always included."
+  (interactive "P")
+  (let ((buf (code-review-review-buffer)))
+    (unless (and buf (buffer-live-p buf))
+      (user-error "No review buffer is open"))
+    (with-current-buffer buf
+      (code-review--sync-db-pullreq)
+      (let* ((pr (code-review-db-get-pullreq))
+             (res (code-review-comments--numbered-list
+                   (oref pr raw-infos) (oref pr raw-comments) arg)))
+        (if (not res)
+            (message "code-review: no comments on this PR")
+          (kill-new
+           (concat (format "#%s %s/%s - %s (%s)\n\n"
+                           (oref pr number) (oref pr owner) (oref pr repo)
+                           (or (oref pr title) "") (or (oref pr state) ""))
+                   (car res)))
+          (message "Copied %d %s of PR #%s to the kill ring"
+                   (cdr res)
+                   (if arg "open comments" "comments")
+                   (oref pr number)))))))
+
 ;;;###autoload
 (defun code-review-submit-comments ()
   "Submit a Review Comment for the current PR."
@@ -937,6 +1031,7 @@ again brings everything back."
                   (&optional rev-or-range args files))
 (declare-function code-review--build-buffer "code-review-section")
 (declare-function code-review-review-buffer "code-review-section")
+(declare-function code-review--sync-db-pullreq "code-review-section")
 (declare-function code-review--hunk-content-start "code-review-section")
 (declare-function code-review--nearest-patch-line-in-hunk "code-review-section")
 (declare-function code-review--count-patch-advances "code-review-section")

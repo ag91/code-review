@@ -24,6 +24,13 @@
 ;;; Code:
 
 (require 'dash)
+
+(defvar code-review-history-heat-tags)       ; code-review-history.el
+(defvar code-review-history-focus-hide-cold) ; code-review-history.el
+(defvar code-review-history-order-diff-by-heat) ; code-review-history.el
+(defvar code-review-history--order)          ; code-review-history.el
+(declare-function code-review-history--tag-for "code-review-history")
+(declare-function code-review-history--score-for "code-review-history")
 (require 'a)
 (require 'code-review-db)
 (require 'code-review-repo)
@@ -209,7 +216,9 @@ combining:
   `code-review-diff-noise-rules';
 - pure renames ([MOVED]);
 - whitespace-only files ([WS-ONLY]), detected textually and,
-  when a local worktree is available, with `git diff -w'.
+  when a local worktree is available, with `git diff -w';
+- phase 14 heat buckets ([HOT]/[WARM]/[COLD]) for the files the
+  checks above left untagged (noise classification wins).
 
 Comment anchors refer to the API diff, so classification only
 tags, collapses and hides: it never replaces the diff itself."
@@ -239,9 +248,18 @@ tags, collapses and hides: it never replaces the diff itself."
                 info (plist-put info :collapse t))))
         (when tag
           (setq info (plist-put info :tag tag)))
+        ;; phase 14 heat tags: only files the noise checks left
+        ;; untagged (noise classification wins over heat)
+        (when (and (null tag)
+                   code-review-history-heat-tags)
+          (when-let ((heat (code-review-history--tag-for path)))
+            (setq info (plist-put info :tag heat)
+                  tag heat)))
         ;; focus mode hides auto-flagged noise, unless a rule
         ;; explicitly opted out with :hide nil
-        (when (and (member tag '("GEN" "DOC" "WS-ONLY"))
+        (when (and (or (member tag '("GEN" "DOC" "WS-ONLY"))
+                       (and code-review-history-focus-hide-cold
+                            (equal tag "COLD")))
                    (not (plist-member info :hide)))
           (setq info (plist-put info :hide t)))
         (puthash path info table)))
@@ -282,7 +300,9 @@ whose classification has a non-nil :hide are omitted from the
 buffer; they remain counted in the \"Files changed\" heading."
   (if (and (not code-review-diff-file-order-rules)
            (not code-review-diff-noise-rules)
-           (not code-review-focus-mode))
+           (not code-review-focus-mode)
+           (not (and code-review-history-order-diff-by-heat
+                     code-review-history--order)))
       diff-text
     (let* ((first-pos (string-match "^diff --git .+$" diff-text 0))
            (prefix (if (and first-pos (> first-pos 0))
@@ -294,9 +314,17 @@ buffer; they remain counted in the \"Files changed\" heading."
                          (lambda (a b)
                            (let* ((ia (code-review--diff--file-order-index (car a)))
                                   (ib (code-review--diff--file-order-index (car b))))
-                             (if (= ia ib)
-                                 (string-lessp (car a) (car b))
-                               (< ia ib))))))
+                             (cond
+                              ((/= ia ib) (< ia ib))
+                              ;; phase 14: equally-ranked (unmatched)
+                              ;; files read in heat order, hottest
+                              ;; first, then alphabetically
+                              ((and code-review-history-order-diff-by-heat
+                                    (/= (code-review-history--score-for (car a))
+                                        (code-review-history--score-for (car b))))
+                               (> (code-review-history--score-for (car a))
+                                  (code-review-history--score-for (car b))))
+                              (t (string-lessp (car a) (car b))))))))
            (kept (if (and code-review-focus-mode classifications)
                      (let (acc)
                        (dolist (blk sorted)

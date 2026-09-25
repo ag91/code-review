@@ -1475,7 +1475,87 @@ Design:
   checks for the tag/folding; live litellm buffer health; and
   beware that daemon staleness lies (see phase 11c correction).
 
-* Phase 14 — Review heat: risk-ranked reading order           :STATUS:todo:
+* Phase 14 — Review heat: risk-ranked reading order          :STATUS:done:
+
+DONE (implementation notes, 2026-09-25) — with the code-compass
+split the research note anticipated: the GENERAL repo-metrics
+primitives live in code-compass (upstreamable to ag91), the
+review-specific orchestration lives here.
+
+- CODE-COMPASS (ag91/code-compass, local checkout, 16/16 ERT):
+  - =code-compass--parse-git-log-metrics=: pure parse of a
+    =git log --name-only= log (the code-maat
+    =--%h--%ad--%aN= header format) into per-file plists
+    =(:revisions :authors (author . count) sorted desc
+    :main-dev :last-touch)=, with bot-author filtering.
+  - =code-compass-file-metrics= (REPO &optional SINCE): ONE
+    partial-clone-safe =git log --all --name-only=
+    (=--numstat= would lazy-fetch blobs per changed file on
+    =--filter=blob:none= clones; =--name-only= fetches
+    nothing).  The elisp-data counterpart of the code-maat
+    revisions/main-dev analyses.
+  - =code-compass-file-complexity=: file-level wrapper over the
+    existing indentation-stats machinery.
+  - =code-compass-show-file-metrics=: quick ranked table
+    command.  Fixed two PRE-EXISTING broken tests on the way
+    (they called the pre-rename dashed complexity function).
+- CODE-REVIEW (=code-review-history.el=, new): soft dependency
+  (=require 'code-compass nil t=; no fallback reimplementation —
+  degrade with a message).
+  - HARVEST: =--repo-key= (worktree -> common git dir; two PRs
+    of one clone share the cache), cache file
+    =<common-git-dir>/code-review/history-<window>.el=, TTL
+    (default 7 days), in-memory warm layer.  The git log
+    EXCLUDES the review package's own fetched PR refs
+    (=--exclude=refs/remotes/code-review/*= — otherwise every
+    review would count as repository churn) and bot authors
+    (the phase 9a regexp).
+  - ASYNC (daemon rule): first render of a repo shows a
+    "harvesting" message and kicks a CHILD BATCH EMACS (the
+    compile-buffer pattern; full =load-path= serialized into
+    =-L= flags, the defcustom values passed in the =--eval=
+    form) that runs the log + parse and writes the cache; the
+    sentinel re-renders the review buffer (after
+    =code-review--sync-db-pullreq= — the db pullreq id is a
+    global and the user may have opened another PR meanwhile).
+    Failure marking prevents harvest loops.  Render afterwards
+    is a hash lookup.
+  - HEAT (pure, ERT): churn PERCENTILE (per-repo normalized)
+    x complexity (max logical indentation of the file at the PR
+    head, code-compass stats) x knowledge (authors spread >= 5
+    -> x1.1; PR author in the repo pool with zero commits on
+    the file -> x1.25 and a "never touched it" reason — gated:
+    a login absent from the repo's authors may just commit
+    under a different name, so NO claim then; bot PR authors get
+    no knowledge claims).  Buckets HOT/WARM/COLD by churn
+    percentile (0.9 / 0.7 defaults).  Local reviews: the repo
+    itself is the worktree and the local git user is the
+    author.
+  - RENDER: "Review order (heuristic)" section right after the
+    phase 5 Analysis section (jump buttons to the file sections
+    IN THE REVIEW BUFFER via a path-based section walk), file
+    heading tags via the phase 3 machinery (only on files the
+    noise checks left untagged — noise wins), "order by heat"
+    within the existing ordering (user rules first, noise still
+    sinks — verified against the user's own 4-rule config),
+    focus-mode COLD hiding behind
+    =code-review-history-focus-hide-cold= (default nil).
+    =code-review-history-reset= re-harvests on demand.
+  - VERIFIED LIVE on the open local review of
+    writer-data-platform: 12-month harvest (553KB cache),
+    15 changed files ranked; top entries exactly the phase's
+    use case — =_marts.yml= HOT "top 1% churn (143 revisions);
+    17 authors; main dev: Laurence Bird" first,
+    =mart-migrations.ts= HOT second, the new COLD files sink
+    with "Andrea never touched it" reasons; HOT/COLD tags on
+    the file headings; suite 113/113.
+  - GOTCHAS (see AGENTS.md): =--exclude= must come AFTER the
+    =log= subcommand (a global-position =--exclude= makes git
+    error out and =call-process= discards stderr, so the
+    harvest silently returned nothing); a compile killed by a
+    command timeout leaves a STALE .elc that the next =make
+    test= happily runs; =search-forward= searches LITERALLY
+    (probe bug, not a render bug).
 
 NOTE (phases 14-18, research 2026-09-24): these phases turn the
 review of a large PR from scrolling in path order into working a

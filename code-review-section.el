@@ -41,11 +41,14 @@
 (require 'code-review-repo)
 (require 'code-review-diff)
 (require 'code-review-analysis)
+(require 'code-review-history)
 (require 'code-review-hunkhighlight)
 (require 'code-review-reactions)
 
 (declare-function code-review--diff--classify-diff "code-review-diff")
 (declare-function code-review--maybe-reorder-diff "code-review-diff")
+(declare-function code-review-browse--reveal "code-review-browse")
+(declare-function code-review-browse--strip-diff-prefix "code-review-browse")
 
 (require 'code-review-interfaces)
 (require 'code-review-github)
@@ -1049,6 +1052,65 @@ nothing (or is disabled, or there is no worktree)."
                  worktree rpath rline)))
             (insert ")\n"))
           (insert ?\n))))))
+
+(defclass code-review-review-order-section (magit-section)
+  (()))
+
+(defun code-review-section--goto-file-section (path)
+  "Move point to the review buffer's file section for PATH.
+Reveal its ancestors and recenter; no-op when the diff carries no
+such file."
+  (let ((target nil))
+    (magit-map-sections
+     (lambda (sec)
+       (when (and (null target)
+                  (magit-file-section-p sec)
+                  (slot-boundp sec 'value)
+                  (stringp (oref sec value))
+                  (equal (code-review-browse--strip-diff-prefix
+                          (substring-no-properties (oref sec value)))
+                         path))
+         (setq target sec))))
+    (when target
+      (code-review-browse--reveal target)
+      (magit-section-goto target)
+      (recenter))))
+
+(defun code-review-section-insert-review-order ()
+  "Insert the phase 14 Review order section (heuristic).
+The PR's changed files ranked by repository heat: churn
+percentile x complexity x knowledge factors, hottest first,
+each with a one-line reason and a button jumping to the file
+section in this buffer.  Nothing is inserted while the heat data
+is unavailable (disabled, code-compass missing, or the history
+harvest still running: the sentinel re-renders when it lands)."
+  (when code-review-history--order
+    (magit-insert-section (code-review-review-order-section)
+      (insert (propertize "Review order"
+                          'font-lock-face 'magit-section-heading))
+      (insert (propertize " (heuristic)" 'font-lock-face 'magit-dimmed))
+      (magit-insert-heading)
+      (let ((n 0))
+        (dolist (e code-review-history--order)
+          (setq n (1+ n))
+          (let ((path (plist-get e :path))
+                (reason (plist-get e :reason)))
+            (insert "  ")
+            (insert (format "%2d. " n))
+            (insert (propertize (format "[%s]" (plist-get e :bucket))
+                                'font-lock-face 'magit-dimmed))
+            (insert " ")
+            (insert-button path
+                           'face 'code-review-url-header-face
+                           'follow-link t
+                           'help-echo "Jump to this file in the review"
+                           'action (lambda (&rest _)
+                                     (code-review-section--goto-file-section
+                                      path)))
+            (unless (string-empty-p reason)
+              (insert (propertize (concat "  " reason)
+                                  'font-lock-face 'magit-dimmed)))
+            (insert ?\n)))))))
 
 ;;; general comments - top level comments
 
@@ -2082,6 +2144,11 @@ If you want to display a minibuffer MSG in the end."
              ;; has never been rendered before
              (fresh-render? (not magit-root-section)))
         (save-excursion
+          ;; phase 14 heat: compute (or load) before the wash; a
+          ;; cold cache kicks the async harvest and stays nil here
+          (code-review-history-prepare
+           (code-review-db--pullreq-raw-diff)
+           code-review-repo-worktree)
           (setq code-review-section--file-classifications
                 (code-review--diff--classify-diff
                  (code-review-db--pullreq-raw-diff)))

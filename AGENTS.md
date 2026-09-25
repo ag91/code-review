@@ -25,6 +25,7 @@ phase moves forward or a new gotcha is discovered.
 | `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
 | `code-review-analysis.el` | phase 5 heuristics: duplicate/dead-code/dangling findings (worktree greps, byte-capped, cached per PR+diff) |
+| `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (git log --name-only via code-compass parse, async child emacs, TTL), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
 | `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
@@ -361,3 +362,32 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   Collect match positions forward in ONE pass (record
   positions, then extract), and keep daemon probes strictly
   single-pass.
+- An unbalanced TEST file (not just a package file) kills the
+  whole `make test` batch at load time, and the symptom is easy
+  to misread: make echoes the huge `command-line-1` `-L` list and
+  the real error ("Error: end-of-file ... loading
+  test/foo-test.el") drowns inside it — exit 255 with only
+  `command-line-1`/`command-line`/`normal-top-level` frames.
+  Redirect `make test` to a file and read the frames ABOVE the
+  `-L` echo line.  Pre-flight every test-file edit with the same
+  paren check used for /tmp scripts (the depth-walk or an
+  external counter) BEFORE running the suite.
+- `git log --exclude=refs/remotes/code-review/*` placement:
+  `--exclude` is a revision option of the `log` SUBCOMMAND —
+  placed before it (global-option position) git errors out, and
+  `call-process` DISCARDS stderr, so the harvest silently
+  returned an empty log and empty metrics (phase 14).  When a
+  git call through `call-process` returns surprising emptiness,
+  re-run it with stderr captured before debugging the parse.
+- A `make compile` KILLED by a command timeout leaves a stale
+  `.elc` behind, and the next `make test` runs the old bytecode
+  while the source looks fixed (the phase 14 accessor bug looked
+  "not fixed" for exactly this reason — 113/113 only after a
+  clean recompile).  After any interrupted compile, re-run
+  `make compile` and verify the `.elc` mtime BEFORE trusting a
+  test verdict.
+- `search-forward` (and `search-backward`) search for a LITERAL
+  STRING: passing a regexp like "\\[HOT\\]" searches for that
+  exact text and finds nothing (use `re-search-forward`).  The
+  existing `search-forward` gotcha (no match data) has a second
+  face: it is not a regexp search at all.
