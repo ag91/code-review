@@ -110,4 +110,29 @@
                   'forge 'gitlab
                   'url "https://gitlab.com/owner/group/subgroup1/subgroup2/subgroup3/project/-/merge_requests/1"))))
 
+(ert-deftest code-review-utils-test/pr-from-url-strips-text-properties ()
+  ;; Slack (lui) buttons hand `browse-url' URLs carrying buffer
+  ;; text properties (`lui-raw-text' with the whole message, plus
+  ;; keymaps); `match-string' preserves them, and emacsql encodes
+  ;; scalars with `prin1', so a propertized slot would write its
+  ;; entire property payload into the db — a giant blob that
+  ;; then fails to read back ("EmacSQL had an unhandled
+  ;; condition" on the embedded unreadable objects).  The parse
+  ;; must return property-free strings.
+  (let* ((url (propertize
+               "https://github.com/WriterInternal/writer-data-platform/pull/780"
+               'lui-raw-text "Zeshan Anwar: two backfill PRs for your eyes"
+               'face 'slack-message-output-text))
+         (pr (code-review-utils-pr-from-url url)))
+    (should (equal pr
+                   (a-alist
+                    'num "780"
+                    'repo "writer-data-platform"
+                    'owner "WriterInternal"
+                    'forge 'github
+                    'url "https://github.com/WriterInternal/writer-data-platform/pull/780")))
+    (dolist (cell pr)
+      (should-not (and (stringp (cdr cell))
+                       (text-properties-at 0 (cdr cell)))))))
+
 ;;; code-review-utils-test.el ends here

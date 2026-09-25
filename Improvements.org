@@ -501,6 +501,46 @@ above remain open.
   refetch happened (pending stayed nil) and the window
   configuration was restored.
 
+SLACK CLICK POISONED THE DB (2026-09-25 incident, fixed).
+
+- Symptom: clicking a GitHub PR link in a slack (emacs-slack/lui)
+  buffer, then any use of the review db, failed with
+  =EmacSQL had an unhandled condition: "#<"= — the read-back
+  error from an unreadable object embedded in a stored value.
+- Root cause: lui link buttons hand =browse-url= a URL STRING
+  CARRYING TEXT PROPERTIES (=lui-raw-text= with the whole
+  message, plus keymap properties holding slack team/channel
+  objects).  =match-string= PRESERVES properties, so
+  =code-review-browse--canonical-url= and
+  =code-review-utils-pr-from-url= produced propertized
+  owner/repo/num/url — and =emacsql-escape-scalar= encodes
+  scalars with =prin1-to-string=, so the INSERT wrote the entire
+  property payload (15-49MB of printed slack state) into the
+  pullreq columns.  Six such rows accumulated (PR 780 "pepper"
+  x3, PR 794 "pine" x2, PR 1295 x1); the db file ballooned to
+  672MB.  Every later read of a poisoned row (=read= on the
+  stored text) died at the first embedded =#<buffer ...>=.
+  The click itself created the row and immediately read it back
+  (=build-buffer= -> =closql-get=), so the error fired right at
+  open time; clean =code-review-start= calls worked, which is
+  what misdirected the initial suspicion.
+- Fix: strip text properties at the parse boundary —
+  =code-review-utils-pr-from-url= rebinds =url= to
+  =substring-no-properties= (every slot it returns flows from
+  there), and =code-review-browse--canonical-url= returns a
+  property-free canonical URL.  Regression:
+  =code-review-utils-test/pr-from-url-strips-text-properties=
+  (propertized slack-style URL parses clean; every string in the
+  alist asserted property-free).  Suite 104/104.
+- Repair: db backed up (=code-review-db-file.sqlite.bak-slack-props=),
+  the 6 poisoned rows deleted (no child rows ever referenced
+  them), =VACUUM= shrank the file 672MB -> 43MB, integrity ok,
+  222 real rows intact, and the previously explosive
+  =code-review-db-all-unfinished= scan runs clean.  Verified
+  live in the daemon: propertized URLs parse clean, the 780
+  buffer's row reads ("780" "OPEN"), zero poisoned rows remain.
+  Delete the backup file once satisfied.
+
 * Phase 8 — Diff drill-down: ediff and base views                :STATUS:todo
 
 Nearly free now that phase 1 gives us the worktree and the base

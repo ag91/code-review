@@ -340,3 +340,24 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   wash; a hand-built instance in tests must `(oset ... hidden nil)`
   and give it `start`/`end` markers or magit's show/hide machinery
   signals `unbound-slot`.
+- Text properties ride STRINGS out of chat buffers and into the
+  db (phase 7 incident): emacs-slack/lui link buttons hand
+  `browse-url` URLs carrying `lui-raw-text` and keymap
+  properties with the whole message; `match-string` PRESERVES
+  them, and `emacsql-escape-scalar` encodes every scalar with
+  `prin1-to-string`, so a propertized slot serializes its entire
+  property payload into the column — tens of MB per row, and
+  the row can never be read back (the reader dies on the
+  embedded unreadable objects: "EmacSQL had an unhandled
+  condition").  Any string destined for a closql slot must be
+  `substring-no-properties`'d at the parse boundary
+  (`code-review-utils-pr-from-url` and
+  `code-review-browse--canonical-url` do this now); never
+  `match-string` buffer text straight into a slot.
+- Never write a probe loop that moves point BACKWARD from each
+  match it collects: `search-forward` re-finds the same match
+  forever, and the loop conses without bound — this hung the
+  live daemon until the user C-g'd (RSS was ~10GB and climbing).
+  Collect match positions forward in ONE pass (record
+  positions, then extract), and keep daemon probes strictly
+  single-pass.

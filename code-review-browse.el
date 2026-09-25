@@ -95,18 +95,23 @@ and carry anchors; the review machinery wants the bare PR URL,
 and the URL stored on the PR object should stay clean (it is used
 for outbound links by `code-review-kill-pr-url' and
 `code-review-jump-to-gh')."
-  (or (and (string-match
-            "\\`\\(https?://github\\.com/[^/]+/[^/]+/pull/[0-9]+\\)" url)
-           (match-string 1 url))
-      (and (string-match
-            "\\`\\(https?://gitlab\\.com/.+/-/merge_requests/[0-9]+\\)" url)
-           (match-string 1 url))
-      (and (string-match
-            "\\`\\(https?://bitbucket\\.org/[^/]+/[^/]+/pull-requests/[0-9]+\\)"
-            url)
-           (match-string 1 url))
-      ;; unknown shape: at least drop fragment and query
-      (replace-regexp-in-string "[?#].*\\'" "" url)))
+  ;; Property-free: chat buffers (slack lui buttons) hand
+  ;; propertized URLs to `browse-url', and `match-string' keeps
+  ;; the properties — downstream db slots must never carry them
+  ;; (see `code-review-utils-pr-from-url').
+  (substring-no-properties
+   (or (and (string-match
+             "\\`\\(https?://github\\.com/[^/]+/[^/]+/pull/[0-9]+\\)" url)
+            (match-string 1 url))
+       (and (string-match
+             "\\`\\(https?://gitlab\\.com/.+/-/merge_requests/[0-9]+\\)" url)
+            (match-string 1 url))
+       (and (string-match
+             "\\`\\(https?://bitbucket\\.org/[^/]+/[^/]+/pull-requests/[0-9]+\\)"
+             url)
+            (match-string 1 url))
+       ;; unknown shape: at least drop fragment and query
+       (replace-regexp-in-string "[?#].*\\'" "" url))))
 
 (defun code-review-browse--parse-fragment (url)
   "Return an anchor plist describing URL's fragment, or nil.

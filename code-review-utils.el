@@ -285,8 +285,16 @@ using COMMENTS."
 ;;; URL PARSE
 
 (defun code-review-utils-pr-from-url (url)
-  "Extract a pr alist from a pull request URL."
-  (let* ((http-or-https (lambda (url) (if (member url ghub-insecure-hosts) "http://%s" "https://%s")))
+  "Extract a pr alist from a pull request URL.
+
+Every returned string is free of text properties.  URLs picked
+out of chat buffers (slack lui buttons) arrive propertized with
+`lui-raw-text' and keymap properties carrying the whole
+message; emacsql encodes scalars with `prin1', so a propertized
+slot would serialize its entire property payload into the db
+(a giant blob that later fails to read back)."
+  (let* ((url (substring-no-properties url))
+	 (http-or-https (lambda (url) (if (member url ghub-insecure-hosts) "http://%s" "https://%s")))
 	 (gitlab-http (funcall http-or-https code-review-gitlab-base-url))
 	 (github-http (funcall http-or-https code-review-github-base-url))
 	 (bitbucket-http (funcall http-or-https code-review-bitbucket-base-url)))
