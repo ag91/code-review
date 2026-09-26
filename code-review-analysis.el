@@ -257,6 +257,18 @@ blame output bytes and the touched history."
   :group 'code-review-analysis
   :type 'integer)
 
+(defcustom code-review-analysis-blame-partial-clones nil
+  "When non-nil, run the hunk blame even on partial clones.
+On a promisor/partial clone (blob:none) `git blame' lazy-fetches
+the blob of EVERY historical version of the blamed lines: an
+old, frequently-modified file blocked the render for minutes
+(litellm PR 43310: blaming 60 lines of proxy_server.py at the
+base branch took over 90 seconds of network fetches).  Default
+nil: on partial clones the age/ownership ingredients are simply
+absent (the rest of the score works)."
+  :group 'code-review-analysis
+  :type 'boolean)
+
 ;;; Normalization (pure)
 
 (defun code-review-analysis--cap-line (line)
@@ -899,6 +911,19 @@ age and ownership ingredients are simply absent then.  Entry:
       (when reasons
         (concat "  (risk: " (string-join reasons "; ") ")")))))
 
+(defun code-review-analysis--partial-clone-p (worktree)
+  "Non-nil when WORKTREE's repository is a partial clone.
+A configured promisor remote means blobs are fetched lazily on
+demand: any `git blame' on an old file walks history and fetches
+one blob per version (network, minutes — see
+`code-review-analysis-blame-partial-clones').  One bounded
+subprocess; nil on any failure."
+  (with-temp-buffer
+    (apply #'call-process "git" nil (list (current-buffer) nil) nil
+           "-C" (expand-file-name worktree)
+           (list "config" "--get-regexp" "^remote\\..*\\.promisor$"))
+    (> (buffer-size) 0)))
+
 (defun code-review-analysis--hunks (worktree blocks refs-hash pr)
   "Delicacy entries for all hunks of BLOCKS, hottest first.
 One `git blame' per changed file with an old side (capped by
@@ -907,8 +932,22 @@ refs hash for blast radius and dead-on-arrival.  Entries below
 `code-review-analysis-delicacy-report-min' are not stored, and
 at most `code-review-analysis-max-hunk-entries' are."
   (let* ((old-rev (code-review-analysis--old-rev (oref pr base-ref-name)))
+         ;; partial clone: blame lazy-fetches a blob per historical
+         ;; version and can block the render for minutes — skip it
+         ;; (one bounded `git config' call, only when a blame could
+         ;; run at all)
+         (blame-rev (and old-rev
+                         (or code-review-analysis-blame-partial-clones
+                             (not (code-review-analysis--partial-clone-p
+                                   worktree)))
+                         old-rev))
          (blame-left code-review-analysis-max-blame-files)
          (entries nil))
+    (when (and old-rev (not blame-rev))
+      (code-review-utils--log
+       "code-review-analysis"
+       "partial clone: skipping hunk blame age (blob lazy-fetch \
+would block the render; see code-review-analysis-blame-partial-clones)"))
     (pcase-dolist (`(,path . ,block) blocks)
       (unless (or (string-match-p "^Binary files" block)
                   (string-match-p "^GIT binary patch" block))
@@ -917,7 +956,7 @@ at most `code-review-analysis-max-hunk-entries' are."
                            (lambda (hu) (plist-get hu :old)) hunks))
                (blame
                 (cond
-                 ((not (and old-rev old-hunks)) nil)
+                 ((not (and blame-rev old-hunks)) nil)
                  ((<= blame-left 0)
                   (code-review-utils--log
                    "code-review-analysis"
@@ -935,7 +974,7 @@ at most `code-review-analysis-max-hunk-entries' are."
                          (ranges (code-review-analysis--slice-blame-ranges raw)))
                     (when ranges
                       (code-review-analysis--blame
-                       worktree old-rev path ranges)))))))
+                       worktree blame-rev path ranges)))))))
           (dolist (hu hunks)
             (let ((entry (code-review-analysis--hunk-entry
                           path hu refs-hash blame)))

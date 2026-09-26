@@ -563,6 +563,44 @@ whose lines are days old."
         (should (equal (code-review-analysis--hunk-reasons e)
                        '("40 callers")))))))
 
+(ert-deftest code-review-analysis/partial-clone-skips-blame ()
+  "A promisor/partial clone skips the hunk blame entirely: the
+blame of an old, frequently-modified file lazy-fetches a blob
+per historical version and blocked the render for minutes
+(litellm PR 43310: 60 lines of proxy_server.py at the base, over
+90 seconds of network fetches).  Age/ownership ingredients are
+absent, the rest of the score still works."
+  (let* ((repo (code-review-analysis-test--make-repo
+                '(("lib.py" . "def one(x):\n    return x\n"))))
+         (default-directory repo))
+    (with-temp-file (expand-file-name "lib.py" repo)
+      (insert "def one(x, y):\n    return x\n"))
+    (call-process "git" nil nil nil "-C" repo "add" "-A")
+    (call-process "git" nil nil nil "-C" repo "commit" "-m" "second")
+    ;; a plain repository is not a partial clone
+    (should-not (code-review-analysis--partial-clone-p repo))
+    ;; a configured promisor remote makes it one
+    (call-process "git" nil nil nil "-C" repo
+                  "config" "remote.origin.promisor" "true")
+    (should (code-review-analysis--partial-clone-p repo))
+    (let* ((diff (with-temp-buffer
+                   (call-process "git" nil t nil "-C" repo
+                                 "diff" "HEAD^..HEAD" "--no-color")
+                   (buffer-string)))
+           (blocks (code-review--diff--split-by-files diff))
+           (refs (make-hash-table :test #'equal))
+           (pr (code-review-analysis-test-pr))
+           entries)
+      (puthash "one" (make-list 40 '("caller.py" 1 "one()")) refs)
+      (oset pr base-ref-name "HEAD^..HEAD")
+      (setq entries (code-review-analysis--hunks repo blocks refs pr))
+      ;; the entry still lands (blast radius), but no blame ran
+      (should (= 1 (length entries)))
+      (let ((e (car entries)))
+        (should (null (plist-get e :median-age)))
+        (should (equal (plist-get e :authors) 0))
+        (should (equal (plist-get e :callers) 40))))))
+
 (ert-deftest code-review-analysis/delicate-hunks-topk ()
   "The top-K accessor filters under the threshold and caps the
 list at `code-review-analysis-delicacy-top-k'."

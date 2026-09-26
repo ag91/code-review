@@ -1733,6 +1733,26 @@ review-specific orchestration lives here.
     test= happily runs; =search-forward= searches LITERALLY
     (probe bug, not a render bug).
 
+NOTE (phase 15 incident, litellm PR 43310, 2026-09-26): the
+harvest now CAPS the log at
+=code-review-history-max-commits= (default 5000, newest first —
+git log is reverse-chronological across refs; 0 disables).
+litellm puts 36k commits in the 12-month window (16MB of
+=--name-only= log): the child's git log itself is fast (2s,
+trees only), but the parse and the metrics hash grow with it.
+With the cap the whole harvest is 0.4s / 9344 files / 1.6MB
+cache.  The SAME incident exposed two worse traps, both in
+phase 15 territory (see the phase 15 note): the render blocked
+for minutes on the partial-clone blame, and the harvest child
+FAILED silently because the installed code-compass =.elc= was
+stale (the daemon had the restored =.el= loaded, the fresh
+child loaded the Sep-18 =.elc= without
+=code-compass--parse-git-log-metrics=, died instantly, and the
+sentinel reported "history harvest failed").  Recompiling the
+dependency's =.elc= fixed the child; verifying an
+async-child dependency with a FRESH batch emacs
+(=fboundp=), not with the daemon, is the durable lesson.
+
 NOTE (phases 14-18, research 2026-09-24): these phases turn the
 review of a large PR from scrolling in path order into working a
 ranked, contextualized queue of the delicate parts.  Evidence
@@ -1924,6 +1944,23 @@ ingredients (a partial clone simply scores without them).  The
 forge PRs; local reviews are exact.  TEST COVERAGE was deferred
 to phase 17, where the touched-def list is needed anyway.
 
+NOTE (litellm PR 43310, 2026-09-26): the design's PARTIAL CLONE
+GOTCHA bit for real, and twice.  (1) The litellm clone is a
+promisor =blob:none= clone; blaming 60 lines of
+=proxy_server.py= at =main= walks the file's whole history,
+lazy-fetching one blob per historical version — over 90 seconds
+of network fetches for ONE file, run SYNCHRONOUSLY in the render
+via =call-process=: Emacs blocked completely until the user
+killed the session.  =code-review-analysis--partial-clone-p=
+(one bounded =git config --get-regexp ^remote\..*\.promisor$=)
+now skips the blame entirely on promisor clones (logged once;
+=code-review-analysis-blame-partial-clones= re-enables it for
+full clones-by-choice users); the age/ownership ingredients are
+simply absent, everything else works.  (2) The failure was
+misattributed to the harvest because the harvest child reported
+failure at the same time — the child actually died INSTANTLY on
+the stale code-compass =.elc= (see the phase 14 note).
+
 Verification (2026-09-26): 9 new ERT tests (split-hunks key and
 sides, old-rev derivation, porcelain blame parse, -L budget,
 score ingredients and reasons, no-blame degradation, one real
@@ -1934,6 +1971,15 @@ compass-gated skips).  Daemon: local commit review of 9e3e6a8
 =C-c C-d= cycling) and a re-render stability check on
 =*Code Review: ag91/code-review#3*= (6 files / 10 hunks / 1
 badge / 1 list entry / cycling to the section.el hunk).
+
+Verification (litellm PR 43310, 2026-09-26): after the
+partial-clone guard + the recompiled code-compass =.elc=, the
+PR re-renders from the stored diff in 7.9s (4 files / 20 hunks),
+the blame skip is logged once, the one delicate entry
+(=proxy_server.py= line 11212: score 0.30, 2 callers, age nil)
+sits correctly under the 0.5 badge threshold, and the capped
+harvest (5000 commits) completed in 0.4s with a 1.6MB cache —
+suite 135/135 (131 + 4 gated).
 
 Gotchas (phase 15):
 - The daemon async-render RACE: the full-refresh build chain is
@@ -1969,6 +2015,22 @@ Gotchas (phase 15):
   rendered).  Deliberate (language-agnostic, tunable via
   =code-review-analysis-branch-keyword-regexp=; per-extension
   filters are the first tuning round if it annoys).
+- On a promisor (=blob:none=) clone, =git blame= of an old,
+  frequently-modified file lazy-fetches a blob for EVERY
+  historical version of the blamed lines — minutes of network
+  fetches inside a SYNCHRONOUS =call-process= in the render
+  (litellm 43310: =proxy_server.py= at =main=, 60 lines, >90s
+  and still going when the user killed the session).  Detect the
+  promisor config and skip the blame
+  (=code-review-analysis--partial-clone-p=); the same applies to
+  ANY blob-reading git call in the render.
+- An async CHILD (=emacs -Q=) resolves dependencies from the
+  STALE =.elc=, while the long-lived daemon has the restored
+  =.el= loaded and answers =fboundp= true: the child then dies
+  instantly and the sentinel reports a harvest "failure" that
+  is actually a STALE ARTIFACT problem.  Verify child-visible
+  dependencies from a FRESH batch emacs, never from the daemon
+  (the phase 11 lesson, now with an async-process face).
 
 * Phase 16 — Hunk dossier: on-demand change context           :STATUS:todo:
 

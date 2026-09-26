@@ -206,6 +206,45 @@ the login may simply commit under a different name."
     (should (> (string-match "diff --git docs.md" reordered)
                (string-match "diff --git cold.py" reordered)))))
 
+(ert-deftest code-review-history/log-caps-newest-commits ()
+  "`--max-count' bounds the harvest log: git log is
+reverse-chronological across refs, so the cap keeps the newest
+commits.  The litellm incident: 36k commits in the 12-month
+window, 16MB of `--name-only' log, a minutes-long child parse."
+  (let* ((repo (make-temp-file "cr-history-log-" t))
+         (git (lambda (&rest args)
+                (apply #'call-process "git" nil nil nil
+                       "-C" repo args)))
+         (log-lines
+          (lambda ()
+            (cl-count-if (lambda (l) (string-prefix-p "--" l))
+                         (split-string
+                          (code-review-history--log repo) "\n")))))
+    (unwind-protect
+        (progn
+          (funcall git "init" "--initial-branch=main")
+          (funcall git "config" "user.email" "test@example.com")
+          (funcall git "config" "user.name" "Alice")
+          (dolist (msg '("one" "two" "three" "four"))
+            (with-temp-file (expand-file-name "a.py" repo)
+              (insert (format "x = %s\n" msg)))
+            (funcall git "add" ".")
+            (funcall git "commit" "-m" msg))
+          ;; no cap (0): the whole window
+          (let ((code-review-history-max-commits 0))
+            (should (= 4 (funcall log-lines))))
+          ;; the window is inside the default cap
+          (should (= 4 (funcall log-lines)))
+          ;; cap 2: the two NEWEST commits, newest header first
+          (let ((code-review-history-max-commits 2))
+            (let ((log (code-review-history--log repo))
+                  (head (code-review-history--git
+                         repo "rev-parse" "--short" "HEAD")))
+              (should (= 2 (funcall log-lines)))
+              ;; newest first: the first header line is HEAD's
+              (should (string-prefix-p (concat "--" head "--") log)))))
+      (ignore-errors (delete-directory repo t)))))
+
 (ert-deftest code-review-history/harvest-and-cache-round-trip ()
   "The harvest reads real git history into the per-repo cache file."
   (skip-unless (code-review-history--compass-p))

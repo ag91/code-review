@@ -484,3 +484,21 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   something only the new render produces (a marker string), or
   re-probe in a separate emacsclient call after the queue drains
   (phase 15).
+- On a promisor/partial clone (`remote.*.promisor` /
+  `blob:none`), `git blame` of an old, frequently-modified file
+  lazy-fetches a blob for EVERY historical version of the blamed
+  lines — minutes of network fetches inside a SYNCHRONOUS
+  `call-process` in the render, which blocks Emacs completely
+  (litellm PR 43310: 60 lines of `proxy_server.py` at the base
+  branch, >90s and unfinished).  Detect the promisor config and
+  skip (`code-review-analysis--partial-clone-p`); the same
+  applies to ANY blob-reading git call in a render path.
+- An async child (`make-process` + `emacs -Q`) resolves
+  dependencies from the STALE `.elc` on disk, while the
+  long-lived daemon has the restored `.el` loaded and answers
+  `fboundp` TRUE: the child dies instantly and its sentinel
+  reports a failure that is really a stale-artifact problem (the
+  phase 14 history child "failed" on litellm for exactly this
+  reason after code-compass's primitives were restored to the
+  `.el` without recompiling).  Verify child-visible
+  dependencies from a FRESH batch emacs, never from the daemon.

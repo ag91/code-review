@@ -87,6 +87,17 @@ Changing it invalidates the per-repository cache."
   :group 'code-review-history
   :type 'string)
 
+(defcustom code-review-history-max-commits 5000
+  "Cap on commits in one harvest (`git log --max-count').
+git log is reverse-chronological across refs, so the cap keeps
+the NEWEST commits in the window.  Bounds the log bytes, the
+elisp parse in the child and the cache size: a huge repository
+(litellm: 36k commits in the 12-month window, 16MB of
+`--name-only' log) made the child harvest run for minutes and
+the parse is quadratic-ish in the log.  0 disables the cap."
+  :group 'code-review-history
+  :type 'integer)
+
 (defcustom code-review-history-ttl-days 7
   "Days a harvested per-repository cache stays fresh."
   :group 'code-review-history
@@ -186,14 +197,18 @@ Two PRs of the same clone share one history cache."
   "One partial-clone-safe history log for WORKTREE.
 `--name-only' reads tree entries only, never blob contents; the
 review package's own fetched PR refs are excluded so reviews do
-not count as repository churn."
+not count as repository churn.  Bounded by
+`code-review-history-max-commits' (newest first)."
   (with-temp-buffer
     (apply #'call-process "git" nil t nil
            `("-C" ,(expand-file-name worktree)
              "log" "--exclude=refs/remotes/code-review/*"
              "--all" "--name-only" "--no-renames"
              "--date=short" "--pretty=format:--%h--%ad--%aN"
-             "--since" ,code-review-history-window))
+             "--since" ,code-review-history-window
+             ,@(when (> code-review-history-max-commits 0)
+                 (list "--max-count"
+                       (number-to-string code-review-history-max-commits)))))
     (buffer-string)))
 
 (defun code-review-history--store (key metrics)
@@ -246,7 +261,10 @@ code-compass is unavailable."
 The child writes the disk cache; the sentinel re-renders BUFFER
 when it finishes.  KEY is the repo key (failure marking)."
   (message "code-review: harvesting repository history for review \
-heat (first time for this repository; a few seconds)...")
+heat (first time for this repository; newest %s commits, a few seconds)..."
+           (if (> code-review-history-max-commits 0)
+               code-review-history-max-commits
+             "all"))
   (let ((proc (make-process
                :name "code-review-history"
                :buffer " *code-review-history*"
@@ -262,11 +280,13 @@ heat (first time for this repository; a few seconds)...")
                           "--eval"
                           (format
                            "(progn (require 'code-review-history) \
-(setq code-review-history-window %S code-review-history-ttl-days %S) \
+(setq code-review-history-window %S code-review-history-ttl-days %S \
+code-review-history-max-commits %S) \
 (setq code-review-bot-author-regexp %S) \
 (code-review-history--harvest-sync %S))"
                            code-review-history-window
                            code-review-history-ttl-days
+                           code-review-history-max-commits
                            (code-review-history--bot-regexp)
                            (expand-file-name worktree))))
                :sentinel #'code-review-history--sentinel)))
