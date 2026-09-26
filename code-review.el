@@ -170,6 +170,8 @@ OUTDATED."
    ("s d" "Description" code-review-set-description)]
   ["Buffer"
    ("w" "Open worktree in Dired" code-review-repo-open-worktree)
+   ("d" "Popup: PR description (toggle; refer to the intent while reviewing)"
+    code-review-popup-pr-description)
    ("N" "Focus: hide auto-flagged noise files (lockfiles, docs, whitespace-only)"
     code-review-toggle-focus-mode)
    ("D" "Difftastic: zoom into the file's real changes (C-u: whole PR)"
@@ -208,6 +210,9 @@ OUTDATED."
     (define-key map (kbd "N") 'code-review-toggle-focus-mode)
     (define-key map (kbd "D") 'code-review-difftastic-file)
     (define-key map (kbd "V") 'code-review-view-wdiff)
+    ;; Refer to the PR's intent without leaving the review: popup,
+    ;; toggle-style (d again dismisses it)
+    (define-key map (kbd "d") 'code-review-popup-pr-description)
     ;; Global section folding by level (phase 9): like magit's own
     ;; C-c +/- but with the code-review buffer layout in mind
     (define-key map (kbd "C-c C-+") 'code-review-fold-more)

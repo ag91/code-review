@@ -6,6 +6,8 @@
 (require 'ert)
 (require 'code-review-actions)
 (require 'code-review-comment)
+(require 'code-review-db)
+(require 'code-review-test-helpers)
 
 (ert-deftest code-review-actions-test/local-review-lifecycle-guards ()
   "Reopen, draft toggle and remote comment edit refuse local reviews."
@@ -82,5 +84,100 @@
                  (a-alist 'comments (a-alist 'nodes nil)
                           'reviews (a-alist 'nodes nil))
                  nil))))
+
+(ert-deftest code-review-actions-test/pr-description-insert ()
+  "The popup content renders the PR title plus the body: plain
+text inserted, HTML rendered, empty bodies get the fallback."
+  (require 'code-review-local)
+  (let ((pr (code-review-github-repo
+             :owner "foo" :repo "bar" :number 1)))
+    (oset pr state "OPEN")
+    ;; plain text body
+    (oset pr title "Fix pepper backfill")
+    (oset pr raw-infos (a-alist 'bodyText "The backfill was wrong."))
+    (with-temp-buffer
+      (code-review-pr-description-insert pr)
+      (should (string-match-p "Fix pepper backfill" (buffer-string)))
+      (should (string-match-p "The backfill was wrong." (buffer-string))))
+    ;; empty body: fallback message
+    (oset pr raw-infos (a-alist 'bodyText "" 'bodyHTML ""))
+    (with-temp-buffer
+      (code-review-pr-description-insert pr)
+      (should (string-match-p "No description provided."
+                              (buffer-string))))
+    ;; HTML body: rendered, not inserted raw (shr wraps at
+    ;; code-review-fill-column, so allow line breaks)
+    (oset pr raw-infos (a-alist 'bodyHTML "<p>Rendered from html</p>"))
+    (with-temp-buffer
+      (code-review-pr-description-insert pr)
+      (should (string-match-p "Rendered[[:space:]\n]*from" (buffer-string)))
+      (should-not (string-match-p "<p>" (buffer-string))))
+    ;; local review: no forge description, the title is the intent
+    (let ((local (code-review-local-diff
+                  :owner "local" :repo "myrepo" :number 0 :url nil)))
+      (oset local state "LOCAL")
+      (oset local title "Commit 5dc7268 (add pepper)")
+      (with-temp-buffer
+        (code-review-pr-description-insert local)
+        (should (string-match-p "Commit 5dc7268" (buffer-string)))
+        (should (string-match-p "Local review: no forge description"
+                                (buffer-string)))))))
+
+(ert-deftest code-review-actions-test/popup-pr-description ()
+  "The popup command renders the current PR's description and a
+RECREATE refreshes the content for a new PR; with no PR at all
+it user-errors instead of exploding."
+  (code-review-test--with-db
+    ;; no PR yet: friendly error, no signal
+    (should-error (code-review-popup-pr-description)
+                  :type 'user-error)
+    ;; create a PR: popup shows its title and description
+    (let ((pr (code-review-github-repo
+               :owner "foo" :repo "bar" :number 1)))
+      (oset pr state "OPEN")
+      (oset pr title "Fix pepper backfill")
+      (oset pr raw-infos (a-alist 'bodyText "The backfill was wrong."))
+      (code-review-db--pullreq-create pr))
+    (code-review-popup-pr-description)
+    (should (string-match-p
+             "Fix pepper backfill"
+             (with-current-buffer code-review-pr-description-buffer-name
+               (buffer-string))))
+    (should (string-match-p
+             "The backfill was wrong."
+             (with-current-buffer code-review-pr-description-buffer-name
+               (buffer-string))))
+    ;; a new current PR: recreate (dismiss first, however it is
+    ;; displayed) refreshes the content for it
+    (let ((pr2 (code-review-github-repo
+                :owner "foo" :repo "bar" :number 2)))
+      (oset pr2 state "OPEN")
+      (oset pr2 title "Second PR")
+      (oset pr2 raw-infos (a-alist 'bodyText "Other intent."))
+      (code-review-db--pullreq-create pr2))
+    (let ((win (get-buffer-window code-review-pr-description-buffer-name)))
+      (when win (quit-window nil win)))
+    (code-review-popup-pr-description)
+    (should (string-match-p
+             "Other intent."
+             (with-current-buffer code-review-pr-description-buffer-name
+               (buffer-string))))
+    (should-not (string-match-p
+                 "The backfill was wrong."
+                 (with-current-buffer code-review-pr-description-buffer-name
+                   (buffer-string))))
+    ;; toggle: with the popup's window visible the command DISMISSES it
+    (let ((win (get-buffer-window code-review-pr-description-buffer-name)))
+      (when win
+        (code-review-popup-pr-description)
+        (should-not (get-buffer-window
+                     code-review-pr-description-buffer-name))
+        ;; and a further call recreates it, content intact
+        (code-review-popup-pr-description)
+        (should (string-match-p
+                 "Other intent."
+                 (with-current-buffer code-review-pr-description-buffer-name
+                   (buffer-string))))))
+    (kill-buffer code-review-pr-description-buffer-name)))
 
 ;;; code-review-actions-test.el ends here

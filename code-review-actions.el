@@ -992,6 +992,83 @@ again brings everything back."
     (kill-this-buffer)
     (code-review--build-buffer)))
 
+;;; * PR description popup (refer to the author's intent mid-review)
+
+(defconst code-review-pr-description-buffer-name
+  "*Code Review: PR description*"
+  "Popup buffer showing the description of the PR under review.")
+
+(defcustom code-review-pr-description-display-alist
+  '((display-buffer-in-side-window)
+    (side . bottom)
+    (window-height . 0.33))
+  "Display buffer alist for the PR description popup.
+The default pops a one-third-height bottom side window (see
+`display-buffer'): it never steals point from the review buffer.
+Dismiss with \\[quit-window] in the popup, or by running
+`code-review-popup-pr-description' again (toggle)."
+  :group 'code-review
+  :type 'alist)
+
+(declare-function code-review--insert-html "code-review-section")
+
+(defun code-review-pr-description-insert (pr)
+  "Insert the title and description of PR into the current buffer.
+The body comes from PR's raw-infos: HTML rendered (same shr wash
+as the review buffer's description section), plain text inserted
+as-is, \"No description provided.\" when empty.  A local diff
+review has no forge description: its title (the commit subject,
+or what the diff being reviewed is) is the intent, shown with an
+explanatory note."
+  (let-alist (oref pr raw-infos)
+    (let* ((html? (and .bodyHTML (not (string-empty-p .bodyHTML))))
+           (body (cond (html? .bodyHTML)
+                       ((and .bodyText (not (string-empty-p .bodyText)))
+                        .bodyText)
+                       (t "No description provided."))))
+      (insert (propertize (oref pr title) 'face 'bold))
+      (insert ?\n ?\n)
+      (cond
+       ((equal (oref pr state) "LOCAL")
+        (insert (propertize
+                 (concat "Local review: no forge description. "
+                         "The title above is the reviewed diff's intent.")
+                 'face 'magit-dimmed)))
+       (html? (code-review--insert-html body))
+       (t (insert body))))))
+
+;;;###autoload
+(defun code-review-popup-pr-description ()
+  "Show the description of the PR under review in a popup buffer.
+Handy mid-review to check the code against the author's intent.
+The popup is a bottom side window (see
+`code-review-pr-description-display-alist') and does not steal
+point from the review buffer.  Toggle-style: with the popup
+visible, this command DISMISSES it instead; otherwise it
+(re)creates it with fresh content (the PR of the review buffer
+at point — comment buffers are followed to their review
+buffer).  \\[quit-window] dismisses from inside the popup too."
+  (interactive)
+  (let ((win (get-buffer-window code-review-pr-description-buffer-name)))
+    (if win
+        (quit-window nil win)
+      (let ((pr (ignore-errors
+                  (if-let ((buf (code-review-review-buffer)))
+                      (with-current-buffer buf
+                        (code-review--sync-db-pullreq)
+                        (code-review-db-get-pullreq))
+                    (code-review-db-get-pullreq)))))
+        (unless pr (user-error "No PR under review"))
+        (with-current-buffer
+            (get-buffer-create code-review-pr-description-buffer-name)
+          (let ((inhibit-read-only t))
+            (special-mode)
+            (erase-buffer)
+            (code-review-pr-description-insert pr)
+            (goto-char (point-min))))
+        (display-buffer (get-buffer code-review-pr-description-buffer-name)
+                        code-review-pr-description-display-alist)))))
+
 ;;; * Handle deprecated commands
 ;;; all these commands were renamed and you should use the new version
 

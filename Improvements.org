@@ -712,6 +712,53 @@ Gotchas found while building (also in AGENTS.md):
   local hooks, so daemon verification must patch live buffers
   (=use-local-map= + =add-hook ... nil t=).
 
+**Extension (STATUS:done, 2026-09-26): PR description popup
+(=d=).**  =code-review-popup-pr-description= (bound to =d= in
+=code-review-mode-map=, also in the =r= transient's Buffer menu)
+pops the PR description in a bottom side window
+(=code-review-pr-description-display-alist= defcustom: side,
+height, function — default =display-buffer-in-side-window=,
+one third of the frame's height) so the reviewer can check the
+code against the author's intent WITHOUT leaving the review:
+point never moves to the popup.  Toggle-style: with the popup
+visible =d= DISMISSES it (as does =q= inside the popup —
+=special-mode=); otherwise =d= (re)creates it with FRESH content
+(the PR of the review buffer at point —
+=code-review-review-buffer= resolves comment buffers to their
+review buffer, everything else falls back to the DB's current
+PR).  Content (=code-review-pr-description-insert=): the PR
+title (bold) then the body from =raw-infos= — =bodyHTML=
+rendered through the same shr wash as the review buffer's
+description section, =bodyText= inserted as-is, "No description
+provided." when both are empty.  LOCAL reviews have no forge
+description: their title (the commit subject / what the reviewed
+diff is) is shown with a dimmed explanatory note.  No PR at all
+= a friendly user-error.
+
+Verified: 124 ERT (120 passed, 4 skipped — the long-skipping
+compass-gated history tests) incl. content (text/html/empty/
+local) and the end-to-end (render, recreate-with-refresh for a
+new PR, user-error on empty db, dismiss-toggle when a window is
+displayed); live in the daemon from a real forge review buffer
+(description rendered, popup window up, =d= dismisses) and from
+a local commit review (title + the local note, dismiss-toggle).
+
+Gotchas:
+
+- ~code-review-db-pullreq~ is =:abstract=: ERT fixtures cannot
+  instantiate it ("Class ... is abstract") — use a concrete
+  subclass (=code-review-github-repo=, =code-review-local-diff=).
+- shr wraps at =shr-width= (=code-review-fill-column=): an
+  assertion like ~"Rendered from"~ fails on ~"Rendered\nfrom"~ —
+  match with ~[[:space:]\n]*~ between words.
+- A KEYMAP defined with ~defvar~ does not rebind on reload in
+  a live daemon (the defvar no-op gotcha): =(use-local-map
+  code-review-mode-map)= patches buffers with the STALE map
+  object.  Patch the SHARED old map object in place —
+  =(define-key code-review-mode-map ...)= — every existing
+  buffer (same object) and every future one (the mode uses the
+  variable) sees the key.
+
 * Phase 10 — Tree-sitter semantic hunk highlighting                :STATUS:done
 
 NOTE (phase 12): highlighting must work in LOCAL diff reviews

@@ -391,6 +391,23 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   exact text and finds nothing (use `re-search-forward`).  The
   existing `search-forward` gotcha (no match data) has a second
   face: it is not a regexp search at all.
+- `code-review-db-pullreq` is `:abstract`: ERT fixtures cannot
+  instantiate it ("Class code-review-db-pullreq is abstract") —
+  build rows with a concrete subclass
+  (`code-review-github-repo`, `code-review-local-diff`, ...).
+- shr wraps rendered HTML at `shr-width`
+  (`code-review-fill-column` in `code-review--insert-html`): an
+  assertion on rendered words like "Rendered from" fails when
+  shr breaks the line between them — match with
+  `[[:space:]\n]*` between words.
+- A KEYMAP built with `defvar` does not REBIND when its file is
+  reloaded in a live daemon (the defvar no-op gotcha): the
+  variable still holds the OLD map object, so
+  `(use-local-map code-review-mode-map)` patches live buffers
+  with a STALE map.  Patch the SHARED old map object in place
+  with `(define-key code-review-mode-map ...)` instead: every
+  existing buffer (same object) and every future one (the mode
+  uses the variable) sees the key.
 - ERT's `(equal RESULT "*...@ HEAD*")` does NOT glob: `.*` inside
   the expected string is a literal dot-star and the assertion
   fails against a real name.  Assert generated buffer names with
