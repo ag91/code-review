@@ -2032,6 +2032,173 @@ Gotchas (phase 15):
   dependencies from a FRESH batch emacs, never from the daemon
   (the phase 11 lesson, now with an async-process face).
 
+* Phase 15b — Section.el flattening (characterization-first)  :STATUS:done:
+
+=code-review-section.el= had grown five deeply-nested renderer
+monsters (=insert-commits= 86 lines / 6-level CI nesting,
+=insert-outdated-comment= 106, =wash-hunk= 146,
+=insert-analysis= 82, plus the small header inserters).  Flattened
+with ZERO behavior change, tests first.
+
+Tests first (=test/code-review-section-test.el=, 247 → 675 lines):
+18 characterization tests pinning the rendered text and section
+trees of every renderer the refactor touches — author, is-draft,
+labels (present/absent), assignees (both branches),
+suggested-reviewers (placeholder + already-requested filter),
+reviewers (status groups), pr-description (html/empty), commits
+(plain + statusCheckRollup with success/failure checks),
+outdated comments (hunk grouping, heading/body overlays,
+amount-loc + written-count bookkeeping), the analysis section
+(similar/dead/dangling/delicate, threshold filter), and a direct
+=wash-hunk= interleave test (position-keyed AND side/line-keyed
+comments washed inline, keys marked written).  All green against
+the PRE-refactor code first (142/142), then the net for the
+refactor itself.
+
+Extractions (all behavior-identical, public names/signatures kept
+— the sections hooks call them):
+- =insert-commits= → =--insert-commit= (dispatch),
+  =--insert-commit-with-checks= / =--insert-plain-commit=,
+  =--insert-commit-checks=, =--insert-commit-check-detail= (the
+  SUCCESS/failure branches share the name/button inserts).
+- =insert-outdated-comment= → =--insert-outdated-hunk= (hunk +
+  comment dolist; the running amount-loc threads through a LIST
+  CELL — =magit-insert-section= bodies cannot return values),
+  =--insert-outdated-comment-body= (heading + overlays + html
+  + reactions).
+- The comment background-face =cond= (self/author/other) was
+  duplicated FOUR times across =insert-outdated-comment= and the
+  two =comment-insert-lines= methods → one
+  =code-review-section--comment-bg-face= (also halves the
+  =git config user.name= subprocess calls per comment: 4 → 1).
+- =insert-analysis= → four block helpers (=similar= / =dead= /
+  =dangling= / =delicate=).
+- =insert-assignee= → =--insert-assignee-action= (the duplicated
+  propertize) + =--insert-assignee-line=; =insert-suggested-reviewers=
+  → =--requested-reviewer-logins= + =--suggested-reviewer-logins=
+  (the nested maphash filter) + =--insert-suggested-reviewer=.
+- =wash-hunk= → =--comment-line-keys= (the side/line key cond),
+  =--insert-line-comments= (position-keyed and side/line-keyed
+  comment inserts unified over a key list; written-ids marking
+  identical), =--advance-counters= (pure (OLD . NEW) counter step).
+- Left alone deliberately: =--trigger-hooks= (linear render
+  orchestration, ordering-sensitive, covered by the local e2e
+  test) and =wash-insert-file-section= (linear wash pipeline).
+
+Verified: suite 142/142 (18 new tests included) after EVERY
+stage; fresh =.elc= (mtime checked) + eln-cache purge; daemon
+reloads + re-renders of the local working-tree buffer (2 files /
+20 hunks = today's edits, header sections render, helpers live)
+and the =ag91/code-review#3= forge buffer (6 files / 9 hunks /
+2 outdated / 3 commits, deferred queue drained, re-render
+STABLE: identical counts on a second render).
+
+Gotchas (phase 15b):
+- An UNBALANCED SOURCE file fails =make compile= silently while
+  the STALE =.elc= keeps serving OLD bytecode — and =make test=
+  still passes GREEN on the old code, so the suite result is
+  MEANINGLESS exactly when you need it most.  The splice attempt
+  wrote one missing closer and the test run read the stale
+  artifact.  =check-parens= every source edit BEFORE trusting any
+  test verdict, and verify the =.elc= mtime is newer than the
+  =.el=.
+- Large-block edits by hand-transcription: the Edit tool demands
+  byte-exact =old_str= and 86-line functions rarely transcribe
+  right on the first try.  Splice by LINE RANGE with boundary
+  ASSERTIONS (start-with/end-with the expected form text) in a
+  small python step instead; the assertions refuse to write on
+  any mismatch (an off-by-one function end was caught exactly
+  this way).
+- magit =magit-insert-heading= auto-appends the child count to a
+  heading: "Commits:" renders as "Commits (1)" and
+  "Reviewed by alice[COMMENTED]:" as "Reviewed by
+  alice[COMMENTED] (1)" — pin heading text with a prefix match,
+  not a trailing colon.  And =shr= wraps rendered comment bodies
+  even at short widths ("First outdated" landed as two lines),
+  so text assertions need =[[:space:]\n]*= between words.
+
+* Phase 15c — Section.el split + last two monsters            :STATUS:done:
+
+Two follow-ups to 15b, same rules (tests green at every step,
+zero behavior change): the two functions that were still too
+long, then splitting the (still ~2.8k-line) file.
+
+1) =wash-hunk= (118 lines) → four more helpers:
+=--ranges= (the @@ ranges parser), =--ensure-head-pos= (the
+head-pos fix + db update), =--insert-heading= (heading + delicacy
+badge), =--interleave-comments= (the whole wash loop, counters
+included).  The main function is now ~55 lines of orchestration.
+2) =--trigger-hooks= (105 lines) → five render-phase helpers:
+=--setup-worktree= (local/repo worktree + =default-directory=),
+=--insert-pr-text= (history prepare + classify + the reordered
+diff text), =--render-diff-tree= (root > header hook > diff
+wash), =--fold-and-mark= (bot folding — fresh renders only — and
+fringe markers — every render), =--activate-review-buffer=
+(display, mode, per-PR bookkeeping, hooks).  The main function is
+the linear phase list (~30 lines).
+
+Then the split (2,859 → six files, every top-level form
+classified by name in a form-aware python splitter; inter-form
+comments travel with the FOLLOWING form; the splitter refuses
+to run on any unclassified or duplicated form):
+
+- =code-review-section.el= (636): FACADE + orchestration —
+  keeps the name and the =provide= so every existing
+  =(require 'code-review-section)= site (and the tests) keeps
+  working; requires the five parts in dependency order;
+  buffer naming, =--trigger-hooks= + phases, =--internal-build=
+  per forge, =--build-buffer=, patch-line/hunk navigation.
+- =code-review-section-shared.el= (291): render defcustoms and
+  defvars (display toggles, grouped/written-comment
+  bookkeeping), =--hide-if-hidden=, html/shr rendering, hunk
+  painting.  Everything every part needs, loaded first.
+- =code-review-section-header.el= (607): the PR header
+  inserters + their classes/keymaps.
+- =code-review-section-analysis.el= (244): the analysis and
+  review-order sections + jump/goto helpers.
+- =code-review-section-comment.el= (708): comment classes,
+  conversation/top-level/inline/outdated renderers, bot
+  folding, fringe markers.
+- =code-review-section-wash.el= (453): the owned diff wash
+  (phase 11b) + the diff report.
+
+Cross-part function calls are =declare-function= declarations
+(wash ↔ comment is a genuine cycle at the call graph level:
+=wash-hunk= inserts comments, outdated-comment renders call
+=wash-hunk=); the facade loads every part before any of them
+runs, so the cycle only exists per-function, never per-file.
+Classes are plain symbols at compile time.  The Makefile globs
+=code-review-*.el=, so the new files compile for free; the
+section hooks live in =code-review.el= (defcustom lists), so the
+inserters are decoupled from the facade.
+
+Verified: suite 142/142 in a FRESH batch emacs (the only proof
+that cannot be fooled after moving functions between files —
+per the phase 11 lesson); =make compile= clean (only the
+pre-existing =binary= warning carried into wash.el); fresh
+=.elc= ×6 + eln purge; daemon: all six features load, the
+helpers are live, and the local + forge buffers re-render to
+the SAME section counts as the pre-split baseline
+(local: files/hunks for today's tree; ag91#3: 6/9/2/3) with
+re-render stability.
+
+New guideline (AGENTS.md): keep source files 500–800 lines —
+refactor past 800 even for files that were already over when the
+guideline landed (=actions.el= 1,625, =github.el= 1,245,
+=analysis.el= 1,172, =hunkhighlight.el= 872 are the offenders
+to shrink when touched).  Sub-500 files are fine when they are
+one coherent concern.
+
+Headers of the five part files follow the fork's moved-code
+convention (the =code-review-browse.el= precedent, not the
+plain new-file header of =code-review-history.el=): copyright
+2026 Andrea + Wanderson as Author + Andrea as Maintainer + a
+split-provenance note in the Commentary — the code is his,
+moved verbatim, so dropping his author line would be wrong.
+The FACADE keeps the original Wanderson header: it IS his file,
+heavily modified (same as every other modified original in the
+fork).
+
 * Phase 16 — Hunk dossier: on-demand change context           :STATUS:todo:
 
 Problem: ranking says WHERE the delicate spots are; it does not

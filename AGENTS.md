@@ -13,15 +13,21 @@ affect the user's live Emacs immediately.
 
 `Improvements.org` is the roadmap and engineering log: phase plans,
 status (done / design / todo), and hard-won gotchas.  Read it before
-changing anything in `code-review-section.el`, and update it whenever a
-phase moves forward or a new gotcha is discovered.
+changing anything in the `code-review-section-*` render files, and
+update it whenever a phase moves forward or a new gotcha is
+discovered.
 
 ## Layout
 
 | File | Role |
 |---|---|
 | `code-review.el` | entrypoints, `code-review-mode`, transient menus |
-| `code-review-section.el` | section rendering, the owned diff wash, comment/reaction section classes (~2.4k lines) |
+| `code-review-section.el` | the section-rendering FACADE + review-buffer build/orchestration: `--trigger-hooks` render phases, `--internal-build` per forge, `--build-buffer`, patch-line/hunk navigation |
+| `code-review-section-shared.el` | shared section-render primitives: the render defcustoms/defvars (indent, fill, display toggles, grouped/written-comment bookkeeping), `--hide-if-hidden`, html rendering, hunk painting |
+| `code-review-section-header.el` | the PR header section inserters (title/state/milestone/labels/assignees/reviewers/commits+CI checks/description/feedback) |
+| `code-review-section-analysis.el` | the analysis + review-order sections and their jump/goto helpers |
+| `code-review-section-comment.el` | the comment section classes and renderers (conversation, top-level, inline code comments, outdated hunks, bot folding, fringe markers) |
+| `code-review-section-wash.el` | the owned diff wash (phase 11b): `wash-diff` / `wash-insert-file-section` / `wash-hunk` + the comment interleaving, and the diff report |
 | `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
 | `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps, byte-capped, cached per PR+diff) |
@@ -33,6 +39,24 @@ phase moves forward or a new gotcha is discovered.
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
 | `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support (`actions.el` also holds the interactive/navigation commands) |
 | `test/` | ERT tests (`make test`) |
+
+## File size guideline
+
+Keep every source file **500–800 lines**.  When a file crosses
+800 lines — or a single function grows past ~80 — stop adding and
+refactor first: extract cohesive helpers, then split by concern
+(the `code-review-section-*` split of phase 15c is the template:
+a thin facade that `(require)`s the parts in dependency order, so
+every existing `(require 'code-review-section)` site keeps
+working; cross-part function calls go through `declare-function`,
+classes are plain symbols at compile time).  This applies even to
+files that were ALREADY over the limit when the guideline landed —
+`code-review-actions.el`, `code-review-github.el`,
+`code-review-analysis.el`, `code-review-hunkhighlight.el` are the
+current offenders to shrink when touched.  Two smaller-than-500
+files are fine when they are one coherent concern
+(`-section-shared`, `-section-analysis`); do not pad or merge
+files just to hit the range.
 
 ## Build and test
 
@@ -386,6 +410,23 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   clean recompile).  After any interrupted compile, re-run
   `make compile` and verify the `.elc` mtime BEFORE trusting a
   test verdict.
+- The same trap with an UNBALANCED SOURCE file (not just an
+  interrupted compile): `make compile` fails, the stale `.elc`
+  keeps serving OLD bytecode, and `make test` still passes GREEN
+  on the old code — the suite result is meaningless exactly when
+  you need it most (a one-closer-short splice did exactly this).
+  `check-parens` every source edit BEFORE running the suite, and
+  after compiling verify the `.elc` mtime is newer than the `.el`.
+  For big block edits, splice by line range with boundary
+  ASSERTIONS (start-with/end-with the expected form text) rather
+  than hand-transcribing `old_str` blocks — the assertions refuse
+  to write on any mismatch.
+- magit's `magit-insert-heading` AUTO-APPENDS the child count to a
+  heading ("Commits:" renders as "Commits (1)"; "Reviewed by
+  alice[COMMENTED]:" as "Reviewed by alice[COMMENTED] (1)"), and
+  `shr` wraps rendered comment bodies even at short widths: pin
+  heading/body text in tests with prefix matches and
+  `[[:space:]\n]*` between words, never a trailing colon.
 - `search-forward` (and `search-backward`) search for a LITERAL
   STRING: passing a regexp like "\\[HOT\\]" searches for that
   exact text and finds nothing (use `re-search-forward`).  The

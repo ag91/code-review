@@ -243,4 +243,433 @@ badge.  The analysis run is faked: the wash only READS its result
             (should (looking-at "^@@ -1,3 \\+1,4")))
         (fset 'code-review-analysis-run orig)))))
 
+;;; Characterization tests: header inserters (refactor safety net)
+;;;
+;;; They pin the rendered TEXT and the section tree of each inserter
+;;; so a behavior-preserving refactor of code-review-section.el can
+;;; be verified mechanically.
+
+(defun code-review-section-test--section-types ()
+  "Collect the types of all sections under `magit-root-section'."
+  (let (types)
+    (let ((walk nil))
+      (setq walk (lambda (sec)
+                   (dolist (c (oref sec children))
+                     (push (oref c type) types)
+                     (funcall walk c))))
+      (funcall walk magit-root-section))
+    types))
+
+(ert-deftest code-review-section-test/author ()
+  "Author line renders the login."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((author (login . "octocat")
+               (url . "https://example.com/octocat"))))
+    (code-review-test--sections-match
+     (lambda () (code-review-section-insert-author))
+     `(((type . code-review-author-section)
+        (value . ,(code-review-author-section
+                   :login "octocat"
+                   :url "https://example.com/octocat")))))))
+
+(ert-deftest code-review-section-test/author-missing ()
+  "Missing author login: nothing inserted."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update nil)
+    (code-review-test--sections-match
+     (lambda () (code-review-section-insert-author))
+     nil t)))
+
+(ert-deftest code-review-section-test/is-draft ()
+  "Draft flag renders true/false."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update `((isDraft . t)))
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (code-review-section-insert-is-draft))
+      (should (string-match-p "Draft: +true" (buffer-string))))
+    (code-review-db--pullreq-raw-infos-update `((isDraft)))
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (code-review-section-insert-is-draft))
+      (should (string-match-p "Draft: +false" (buffer-string)))))
+
+(ert-deftest code-review-section-test/labels ()
+  "Labels render each name; missing labels show the placeholder."
+  (code-review-section-test--with-section-env
+    (let ((pr (code-review-db-get-pullreq)))
+      (oset pr labels (list '((name . "bug") (color . "ff0000"))))
+      (closql-insert (code-review-db) pr t))
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-labels)))
+      (should (string-match-p "Labels: +bug" (buffer-string)))
+      (should (= 1 (length (overlays-in (point-min) (point-max))))))
+    ;; no labels at all: the dimmed placeholder
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (code-review-section-insert-labels))
+      (should (string-match-p "Labels: +None yet" (buffer-string))))))
+
+(ert-deftest code-review-section-test/assignees-none ()
+  "No assignees: the assign-yourself placeholder."
+  (code-review-section-test--with-section-env
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (code-review-section-insert-assignee))
+      (should (string-match-p
+               "Assignees: +No one — Assign yourself"
+               (buffer-string))))))
+
+(ert-deftest code-review-section-test/assignees ()
+  "Assignees render the set-new-assignee button and each name."
+  (code-review-section-test--with-section-env
+    (let ((pr (code-review-db-get-pullreq)))
+      (oset pr assignees
+            (list '((name . "Ana") (login . "ana")
+                    (url . "https://example.com/ana"))))
+      (closql-insert (code-review-db) pr t))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-assignee)))
+      (let ((text (buffer-string)))
+        (should (string-match-p "Assignees: " text))
+        (should (string-match-p "Set new assignee" text))
+        (should (string-match-p "Ana (@ana)" text)))
+      (let ((types (code-review-section-test--section-types)))
+        (should (member 'code-review-assignees-section types))
+        (should (member 'code-review-assignee-section types))))))
+
+(ert-deftest code-review-section-test/suggested-reviewers-none ()
+  "No suggested reviewers: the dimmed placeholder."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update nil)
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (code-review-section-insert-suggested-reviewers))
+      (should (string-match-p
+               "Suggested-Reviewers: No suggestions"
+               (buffer-string))))))
+
+(ert-deftest code-review-section-test/suggested-reviewers-filter-requested ()
+  "Suggested reviewers already requested/reviewed are filtered out."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((suggestedReviewers
+        . (((reviewer (login . "alice")))
+           ((reviewer (login . "bob")))))
+       (reviewRequests
+        (nodes ((requestedReviewer (login . "bob")
+                                    (url . "https://example.com/bob")))))
+       (latestOpinionatedReviews (nodes))))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-suggested-reviewers)))
+      (let ((text (buffer-string)))
+        (should (string-match-p "Suggested-Reviewers:" text))
+        (should (string-match-p "Request Review - @alice" text))
+        ;; bob is already requested: not offered again
+        (should-not (string-match-p "@bob" text))))))
+
+(ert-deftest code-review-section-test/reviewers ()
+  "Reviewers render grouped by status (pending and reviewed)."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((reviewRequests
+        (nodes ((requestedReviewer (login . "bob")
+                                    (url . "https://example.com/bob")))))
+       (latestOpinionatedReviews
+        (nodes ((author (login . "alice")
+                        (url . "https://example.com/alice")
+                        (state . "APPROVED")
+                        (createdAt . "2021-11-08T00:24:09Z")))))))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-reviewers)))
+      (let ((text (buffer-string)))
+        (should (string-match-p "Reviewers:" text))
+        (should (string-match-p "PENDING - @bob" text))
+        (should (string-match-p "APPROVED - @alice" text)))
+      (let ((types (code-review-section-test--section-types)))
+        (should (member 'code-review-reviewers-section types))
+        (should (= 2 (cl-count 'code-review-reviewer-section types)))))))
+
+(ert-deftest code-review-section-test/pr-description-html ()
+  "Description renders bodyHTML via shr."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((databaseId . 42)
+       (bodyHTML . "<p>Some description text</p>")
+       (bodyText . "Some description text")
+       (reactions (nodes))))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-pr-description)))
+      (let ((text (buffer-string)))
+        (should (string-match-p "Description" text))
+        ;; shr may wrap the line: allow whitespace between words
+        (should (string-match-p
+                 "Some[[:space:]\n]*description[[:space:]\n]*text" text))))))
+
+(ert-deftest code-review-section-test/pr-description-empty ()
+  "Empty description renders the dimmed placeholder."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((databaseId . 42)
+       (bodyHTML . "")
+       (bodyText . "")))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-pr-description)))
+      (should (string-match-p "No description provided." (buffer-string))))))
+
+(ert-deftest code-review-section-test/commits-plain ()
+  "Commit without CI checks: sha + message only."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((commits (nodes ((commit (abbreviatedOid . "abc1234")
+                                (message . "plain subject"))))))))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-commits)))
+      (should (string-match-p "Commits:" (buffer-string)))
+      (should (string-match-p "abc1234 plain subject" (buffer-string)))
+      (should-not (string-match-p "CI Checks" (buffer-string)))
+      (let ((types (code-review-section-test--section-types)))
+        (should (= 1 (cl-count 'code-review-commits-header-section types)))
+        (should (= 1 (cl-count 'code-review-commit-section types)))))))
+
+(ert-deftest code-review-section-test/commits-with-checks ()
+  "Commit with a statusCheckRollup: heading icon, multiline message
+body, the CI Checks section and one detail section per check
+(success with workflow name and elapsed time, failure with summary)."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((commits
+        (nodes
+         ((commit (abbreviatedOid . "abc1234")
+                  (message . "subject line
+
+body line")
+                  (statusCheckRollup
+                   (state . "FAILURE")
+                   (contexts
+                    (nodes
+                     ((conclusion . "SUCCESS")
+                      (name . "build")
+                      (checkSuite (app (name . "gh"))
+                                  (workflowRun (workflow (name . "CI"))))
+                      (startedAt . "2021-11-08T00:00:00Z")
+                      (completedAt . "2021-11-08T00:01:00Z")
+                      (detailsUrl . "https://example.com/build"))
+                     ((conclusion . "FAILURE")
+                      (summary . "tests exploded")
+                      (context . "coverage")))))))))))
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (code-review--root-section)
+          (code-review-section-insert-commits)))
+      (let ((text (buffer-string)))
+        (should (string-match-p "Commits (1)" text))
+        (should (string-match-p "abc1234 subject line :x:" text))
+        (should (string-match-p "Expand for Details (1)" text))
+        (should (string-match-p "body line" text))
+        (should (string-match-p "CI Checks (2)" text))
+        (should (string-match-p "CI / build" text))
+        (should (string-match-p "Successful in" text))
+        (should (string-match-p ":white_check_mark: Details" text))
+        (should (string-match-p "coverage - tests exploded" text))
+        (should (string-match-p ":x: Details" text)))
+      (let ((types (code-review-section-test--section-types)))
+        (should (= 1 (cl-count 'code-review-commits-header-section types)))
+        (should (= 1 (cl-count 'code-review-commit-section types)))
+        (should (= 1 (cl-count 'code-review-commit-checks-section types)))
+        (should (= 2 (cl-count
+                       'code-review-commit-check-detail-section types)))))))
+
+(ert-deftest code-review-section-test/insert-analysis-content ()
+  "The Analysis section renders similar/dead/dangling findings and
+the delicate-hunk jump list (threshold-filtered, score printed)."
+  (code-review-section-test--with-section-env
+    (let ((orig (symbol-function 'code-review-analysis-run))
+          (code-review-repo-worktree "/tmp/wt")
+          (code-review-analysis-delicacy-threshold 0.5)
+          (code-review-analysis-delicacy-top-k 5))
+      (fset 'code-review-analysis-run
+            (lambda ()
+              (list :similar (list (list "new.py" 10 "old.py" 3 5 9))
+                    :dead (list (list "deadfn" "old.py" 7))
+                    :dangling (list (list "gonefn" "old.py"
+                                          (list (list "u.py" 3 "use"))))
+                    :hunks (list (list :path "p.py" :ranges "-1,3 +1,4"
+                                       :score 0.9 :callers 2
+                                       :dead nil :median-age nil
+                                       :authors 1 :cplx 0)
+                                 (list :path "q.py" :ranges "-9 +9"
+                                       :score 0.1 :callers 0
+                                       :dead nil :median-age nil
+                                       :authors 1 :cplx 0)))))
+      (unwind-protect
+          (with-temp-buffer
+            (magit-section-mode)
+            (let ((inhibit-read-only t))
+              (magit-insert-section (code-review--root-section)
+                (code-review-section-insert-analysis)))
+            (let ((text (buffer-string)))
+              (should (string-match-p "Analysis (heuristic)" text))
+              (should (string-match-p
+                       "similar: new.py: 3/10 added lines also in" text))
+              (should (string-match-p "old.py:5-9" text))
+              (should (string-match-p
+                       "possibly dead: deadfn (added in old.py:7; no references found in the worktree)"
+                       text))
+              (should (string-match-p
+                       "dangling: gonefn (deleted in old.py; still used at u.py:3)"
+                       text))
+              (should (string-match-p "delicate: p.py -1,3 \\+1,4" text))
+              (should (string-match-p "0.90" text))
+              ;; below the threshold: not listed
+              (should-not (string-match-p "delicate: q.py" text))))
+        (fset 'code-review-analysis-run orig)))))
+
+(ert-deftest code-review-section-test/outdated-comment-group ()
+  "Outdated comments render grouped by hunk: one hunk section with
+the washed hunk, one nested heading+body section pair per comment,
+and the written-count bookkeeping records the comment path."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((author (login . "pr-author"))))
+    (code-review-db--curr-path-update "README.md")
+    (let* ((hunk "@@ -5,3 +5,5 @@
+ - old line
+ + new line")
+           (c1 (code-review-code-comment-section
+                :author "alice" :state "COMMENTED"
+                :msg "<p>First outdated</p>"
+                :path "README.md" :diffHunk hunk :id 101
+                :createdAt "2021-11-08T00:24:09Z"
+                :reactions nil))
+           (c2 (code-review-code-comment-section
+                :author "bob" :state "REQUEST_CHANGES"
+                :msg "<p>Second outdated</p>"
+                :path "README.md" :diffHunk hunk :id 102
+                :createdAt "2021-11-08T00:24:09Z"
+                :reactions nil)))
+      (oset c1 outdated? t)
+      (oset c2 outdated? t)
+      (let ((code-review-section-hold-written-comment-count nil))
+        (with-temp-buffer
+          (magit-section-mode)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (code-review--root-section)
+              (code-review-section-insert-outdated-comment (list c1 c2) 0)))
+          (let ((text (buffer-string)))
+            (should (string-match-p "Reviewed - \\[OUTDATED\\]" text))
+            (should (string-match-p "old line" text))
+            (should (string-match-p "new line" text))
+            ;; magit appends the child count to the heading: the
+            ;; heading regexes must not require the trailing colon
+            (should (string-match-p "Reviewed by alice\\[COMMENTED\\]" text))
+            (should (string-match-p
+                     "Reviewed by bob\\[REQUEST_CHANGES\\]" text))
+            ;; shr may wrap the rendered body: allow line breaks
+            (should (string-match-p "First[[:space:]\n]*outdated" text))
+            (should (string-match-p "Second[[:space:]\n]*outdated" text)))
+          (let ((types (code-review-section-test--section-types)))
+            (should (= 1 (cl-count 'code-review-outdated-hunk-section types)))
+            ;; heading + body section per comment
+            (should (= 4 (cl-count 'code-review-outdated-comment-section
+                                    types))))
+          ;; the amount-loc bookkeeping lands on the comment objects
+          (should (numberp (oref c1 amount-loc)))
+          (should (numberp (oref c2 amount-loc)))
+          ;; and the written-count alist records the path
+          (should (numberp (alist-get "README.md"
+                                      code-review-section-hold-written-comment-count
+                                      nil nil 'equal))))))))
+
+(ert-deftest code-review-section-test/wash-hunk-interleaves-comments ()
+  "The hunk wash interleaves grouped comments inline: the
+position-keyed comment lands after its anchor line, the
+side/line-keyed one after its new-side line, and the hunk itself is
+still painted."
+  (code-review-section-test--with-section-env
+    (code-review-db--pullreq-raw-infos-update
+     `((author (login . "pr-author"))))
+    (let* ((pos-c (code-review-code-comment-section
+                   :author "alice" :state "COMMENTED"
+                   :msg "<p>at position one</p>"
+                   :path "github.el" :position 1 :id 201
+                   :createdAt "2021-11-08T00:24:09Z"
+                   :reactions nil))
+           (line-c (code-review-code-comment-section
+                    :author "bob" :state "COMMENTED"
+                    :msg "<p>at right line two</p>"
+                    :path "github.el" :id 202
+                    :createdAt "2021-11-08T00:24:09Z"
+                    :reactions nil))
+           (code-review-section-grouped-comments
+            (list (cons (code-review-utils--comment-key "github.el" 1)
+                        (list pos-c))
+                  (cons (code-review-utils--comment-key-from-line
+                         "github.el" "RIGHT" 2)
+                        (list line-c))))
+           (code-review-section-hold-written-comment-count nil)
+           (code-review-section-hold-written-comment-ids nil))
+      (with-temp-buffer
+        (magit-section-mode)
+        (let ((inhibit-read-only t))
+          (insert "diff --git a/github.el b/github.el\n"
+                  "index 111..222 100644\n"
+                  "--- a/github.el\n"
+                  "+++ b/github.el\n"
+                  "@@ -1,3 +1,4 @@\n"
+                  " context\n"
+                  "-old\n"
+                  "+added\n")
+          (goto-char (point-min))
+          (magit-insert-section (code-review--root-section)
+            (magit-insert-section (code-review-files-chnged)
+              (save-restriction
+                (narrow-to-region (point) (point-max))
+                (magit-wash-sequence #'code-review-wash-diff)))))
+        (let ((text (buffer-string)))
+          ;; shr may wrap the rendered body: allow line breaks
+          (should (string-match-p
+                   "at[[:space:]\n]*position[[:space:]\n]*one" text))
+          (should (string-match-p
+                   "at[[:space:]\n]*right[[:space:]\n]*line[[:space:]\n]*two"
+                   text))
+          ;; the comment headings use the non-outdated format
+          (should (string-match-p "Reviewed by @alice" text))
+          (should (string-match-p "Reviewed by @bob" text))
+          ;; the hunk itself is still washed and painted
+          (should (save-excursion
+                    (goto-char (point-min))
+                    (search-forward "+added" nil t)
+                    (eq (get-text-property (line-beginning-position)
+                                           'font-lock-face)
+                        'magit-diff-added)))
+          ;; both keys were marked written
+          (should (member (code-review-utils--comment-key "github.el" 1)
+                          code-review-section-hold-written-comment-ids))
+          (should (member (code-review-utils--comment-key-from-line
+                           "github.el" "RIGHT" 2)
+                          code-review-section-hold-written-comment-ids)))))))
+
 ;;; code-review-section-test.el ends here
