@@ -381,3 +381,209 @@ no review buffer at all."
                       (search-forward "injected boom" nil t))))
         (fset 'code-review-analysis--compute orig)
         (ignore-errors (delete-file code-review-log-file))))))
+
+;;; Phase 15: hunk delicacy
+
+(ert-deftest code-review-analysis/split-hunks-key-and-sides ()
+  "Per-hunk :ranges is the raw @@ ranges text — byte-identical to
+what the wash reads via `match-string 1', which is the whole point
+(delicate-entry lookup from the washer and the phase 13 key)."
+  (let* ((block "diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,4 @@
+ context
+-removed
++added1
++added2
+ context
+@@ -10,2 +20,3 @@
+ ctx
++addedX
+\\ No newline at end of file
+")
+         (hunks (code-review-analysis--split-hunks block)))
+    (should (equal (mapcar (lambda (h) (plist-get h :ranges)) hunks)
+                   '("-1,3 +1,4" "-10,2 +20,3")))
+    ;; old side: context + deleted lines (blame side), with OLD line
+    ;; numbers
+    (should (equal (plist-get (car hunks) :old)
+                   '((1 . "context") (2 . "removed") (3 . "context"))))
+    ;; new-side numbers: context at 1, then added1 at 2, added2 at 3
+    (should (equal (plist-get (car hunks) :added)
+                   '((2 . "added1") (3 . "added2"))))
+    (should (equal (plist-get (car hunks) :deleted)
+                   '((2 . "removed"))))
+    ;; the "\ No newline" line is not a code line
+    (should (equal (plist-get (cadr hunks) :old)
+                   '((10 . "ctx"))))
+    ;; a block with no @@ header (binary) yields no hunks
+    (should (null (code-review-analysis--split-hunks
+                   "diff --git a/a.bin b/a.bin\nBinary files differ\n")))))
+
+(ert-deftest code-review-analysis/old-rev-from-diff-args ()
+  "The blame rev comes from the PR's `base-ref-name': forge branch
+names as-is, local git diff args special-cased."
+  (should (equal (code-review-analysis--old-rev "--cached") "HEAD"))
+  (should (equal (code-review-analysis--old-rev "HEAD^..HEAD") "HEAD^"))
+  (should (equal (code-review-analysis--old-rev "master..feature") "master"))
+  (should (null (code-review-analysis--old-rev "abc123^!")))
+  (should (equal (code-review-analysis--old-rev "HEAD") "HEAD"))
+  (should (equal (code-review-analysis--old-rev "main") "main"))
+  (should (null (code-review-analysis--old-rev nil))))
+
+(ert-deftest code-review-analysis/parse-blame-porcelain ()
+  "Porcelain blame: header line sets the original line, author
+metadata lines fill the entry, the tab-content line closes it."
+  (let ((table (make-hash-table :test #'eql))
+        (out "1111111111111111111111111111111111111111 1 1 1
+author Alice
+author-time 1700000000
+author-mail <a@x>
+\tfirst line
+2222222222222222222222222222222222222222 2 2 1
+author Bob
+author-time 1600000000
+\tsecond line
+summary x
+filename a.py
+"))
+    (code-review-analysis--parse-blame out table)
+    (should (equal (gethash 1 table) '("Alice" . 1700000000)))
+    (should (equal (gethash 2 table) '("Bob" . 1600000000)))
+    (should (null (gethash 3 table)))))
+
+(ert-deftest code-review-analysis/slice-blame-ranges-budget ()
+  "Ranges over the line budget are dropped whole; the budget only
+counts BLAMED lines, never the whole hunk."
+  ;; two ranges of 3 lines each fit in the default budget
+  (should (equal (code-review-analysis--slice-blame-ranges
+                  '((4 . 6) (1 . 3)))
+                 '((1 . 3) (4 . 6))))
+  ;; budget 5: the second range (3 lines) does not fit anymore
+  (let ((code-review-analysis-max-blame-lines 5))
+    (should (equal (code-review-analysis--slice-blame-ranges
+                    '((4 . 6) (1 . 3)))
+                   '((1 . 3))))))
+
+(ert-deftest code-review-analysis/hunk-entry-score-ingredients ()
+  "The score sums its ingredients, capped: blast radius saturates
+at 40 callers, age at 3y, +0.25 from 3 authors, +0.5 per 10
+branches added, +0.5 per dead def (max 1.0)."
+  (let* ((refs (make-hash-table :test #'equal))
+         (blame (make-hash-table :test #'eql))
+         (hunk (list :ranges "-1,4 +1,6"
+                     :old '((1 . "context") (2 . "def one(x):")
+                            (3 . "    return one(x) - 1") (4 . "context"))
+                     :added '((2 . "def one(x):")
+                              (5 . "    if x and y:"))
+                     :deleted '((2 . "def one(x):")
+                                (3 . "    return one(x) - 1"))))
+         entry)
+    ;; 40 references elsewhere -> blast radius 1.0; age is in DAYS
+    (puthash "one" (make-list 40 '("caller.py" 1 "one()")) refs)
+    ;; blame: line 2 is ancient, line 3 fresh, line 1/4 medium
+    (puthash 2 (cons "Alice" (- (float-time) (* 4.0 365 86400))) blame)
+    (puthash 3 (cons "Bob" (- (float-time) 0)) blame)
+    (puthash 1 (cons "Carol" (- (float-time) (* 2.0 365 86400))) blame)
+    (puthash 4 (cons "Dan" (- (float-time) (* 2.0 365 86400))) blame)
+    (setq entry (code-review-analysis--hunk-entry "a.py" hunk refs blame))
+    ;; def "one" (added+deleted) has 40 callers: blast 1.0;
+    ;; median age of (0 2y 2y 4y) = 2y = 730 days -> 730/1095;
+    ;; 4 distinct authors -> +0.25; +1 branch -> +0.05; no dead defs
+    (should (equal (plist-get entry :callers) 40))
+    (should (equal (plist-get entry :authors) 4))
+    (should (equal (plist-get entry :cplx) 1))
+    (should (null (plist-get entry :dead)))
+    (should (< 1.9 (plist-get entry :score) 2.0))
+    ;; reasons report only what stands out (callers, age, authors);
+    ;; a single branch does not
+    (should (equal (code-review-analysis--hunk-reasons entry)
+                   '("40 callers" "lines 2y old" "4 authors")))
+    ;; badge over the default threshold
+    (should (equal (code-review-analysis--hunk-badge entry)
+                   "  (risk: 40 callers; lines 2y old; 4 authors)"))
+    ;; a definition with no references at all: dead-on-arrival
+    (remhash "one" refs)
+    (let ((entry2 (code-review-analysis--hunk-entry "a.py" hunk refs blame)))
+      (should (equal (plist-get entry2 :dead) '("one")))
+      (should (cl-some (lambda (s) (string= s "1 dead def"))
+                       (code-review-analysis--hunk-reasons entry2))))))
+
+(ert-deftest code-review-analysis/hunk-entry-without-blame ()
+  "No blame (working-tree review, budget spent, rev missing in a
+partial clone): age and ownership ingredients are absent, the
+rest of the score still works."
+  (let* ((refs (make-hash-table :test #'equal))
+         (hunk (list :ranges "-1,4 +1,6"
+                     :old '((1 . "context") (2 . "def one(x):"))
+                     :added '((2 . "def one(x):"))
+                     :deleted '((2 . "def one(x):")))))
+    (puthash "one" (make-list 40 '("caller.py" 1 "one()")) refs)
+    (let ((entry (code-review-analysis--hunk-entry "a.py" hunk refs nil)))
+      (should (null (plist-get entry :median-age)))
+      ;; authors/ownership ingredient absent without blame (0, not
+      ;; a count of authors)
+      (should (equal (plist-get entry :authors) 0))
+      (should (equal (plist-get entry :callers) 40))
+      ;; blast radius alone: exactly 1.0
+      (should (equal (plist-get entry :score) 1.0)))))
+
+(ert-deftest code-review-analysis/hunks-entries-and-order ()
+  "One blame pass per file, entries sorted hottest first, the
+report floor drops the uninteresting ones.  Real git history: the
+diff rewrites a definition with 40 (faked) references in a repo
+whose lines are days old."
+  (let* ((repo (code-review-analysis-test--make-repo
+                '(("lib.py" . "def one(x):\n    return x\n"))))
+         (default-directory repo))
+    (with-temp-file (expand-file-name "lib.py" repo)
+      (insert "def one(x, y):\n    if x and y:\n        return x\n    return x - 1\n"))
+    (call-process "git" nil nil nil "add" "-A")
+    (call-process "git" nil nil nil "commit" "-m" "second")
+    (let* ((diff (with-temp-buffer
+                   (call-process "git" nil t nil
+                                 "diff" "HEAD^..HEAD" "--no-color")
+                   (buffer-string)))
+           (blocks (code-review--diff--split-by-files diff))
+           (refs (make-hash-table :test #'equal))
+           (pr (code-review-analysis-test-pr))
+           entries)
+      (puthash "one" (make-list 40 '("caller.py" 1 "one()")) refs)
+      (oset pr base-ref-name "HEAD^..HEAD")
+      (setq entries (code-review-analysis--hunks repo blocks refs pr))
+      ;; one entry for the one hunk, blast-radius driven
+      (should (= 1 (length entries)))
+      (let ((e (car entries)))
+        (should (equal (plist-get e :path) "lib.py"))
+        (should (equal (plist-get e :ranges) "-1,2 +1,4"))
+        (should (equal (plist-get e :callers) 40))
+        (should (equal (plist-get e :authors) 1))
+        ;; fresh repo: age ~0 days, one branch: nothing but callers
+        (should (equal (code-review-analysis--hunk-reasons e)
+                       '("40 callers")))))))
+
+(ert-deftest code-review-analysis/delicate-hunks-topk ()
+  "The top-K accessor filters under the threshold and caps the
+list at `code-review-analysis-delicacy-top-k'."
+  (let ((orig (symbol-function 'code-review-analysis-run)))
+    (unwind-protect
+        (progn
+          (fset 'code-review-analysis-run
+                (lambda ()
+                  (list :hunks
+                        (list (list :path "a.py" :ranges "-1,3 +1,4"
+                                    :score 0.9 :callers 40)
+                              (list :path "b.py" :ranges "-1,3 +1,4"
+                                    :score 0.6 :callers 30)
+                              (list :path "c.py" :ranges "-1,3 +1,4"
+                                    :score 0.2 :callers 5)))))
+          ;; default threshold 0.5 drops the 0.2 entry
+          (should (equal (mapcar (lambda (e) (plist-get e :path))
+                                 (code-review-analysis--delicate-hunks))
+                         '("a.py" "b.py")))
+          (let ((code-review-analysis-delicacy-top-k 1))
+            (should (equal (mapcar (lambda (e) (plist-get e :path))
+                                   (code-review-analysis--delicate-hunks))
+                           '("a.py")))))
+      (fset 'code-review-analysis-run orig))))

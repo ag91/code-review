@@ -24,7 +24,7 @@ phase moves forward or a new gotcha is discovered.
 | `code-review-section.el` | section rendering, the owned diff wash, comment/reaction section classes (~2.4k lines) |
 | `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
-| `code-review-analysis.el` | phase 5 heuristics: duplicate/dead-code/dangling findings (worktree greps, byte-capped, cached per PR+diff) |
+| `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps, byte-capped, cached per PR+diff) |
 | `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (git log --name-only via code-compass parse, async child emacs, TTL), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
 | `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
@@ -455,3 +455,32 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   needs the git EMPTY TREE trick (`4b825dc...` is the same sha in
   every repository and a valid range endpoint without the object
   existing).  Probe range semantics with real git before shipping.
+- `apply` requires its LAST argument to be a LIST: spreading
+  subprocess args with `apply` and appending a trailing PATH
+  STRING signals `(wrong-type-argument listp "lib.py")`.  Collect
+  the trailing scalars into the spread list with `append` (see
+  `code-review-analysis--blame`).
+- Raw diff ranges text inside a REGEXP: the `+` of `+1,4` is a
+  QUANTIFIER — `"^@@ -1,3 +1,4"` matches nothing (the space
+  before `+` swallows it as "one or more spaces"); escape it:
+  `"^@@ -1,3 \\+1,4"`.  (Or use `search-forward`, which is a
+  literal search.)
+- `(string-prefix-p "\\" line)` guards the `git diff` "\ No
+  newline at end of file" marker line; writing `"\\\\"` (a
+  TWO-character string) does not guard anything and the marker
+  leaks into the hunk's context/blame lines.
+- `recenter` acts on the SELECTED window: guarding with
+  `(get-buffer-window (current-buffer))` (displayed SOMEWHERE)
+  still errors with "recenter'ing a window that does not display
+  current-buffer" when the buffer is displayed but not selected —
+  exactly the `emacsclient --eval` probe case.  Guard on `(eq
+  (window-buffer (selected-window)) (current-buffer))` (see
+  `code-review-section--goto-hunk-section`).
+- A daemon verification script that polls for an async
+  (deferred) render can be satisfied INSTANTLY by the buffer's
+  PREVIOUS content: "buffer exists, non-empty, has a root
+  section" was all true of the stale render, so the probes read
+  the old buffer while the new render was still queued.  Poll on
+  something only the new render produces (a marker string), or
+  re-probe in a separate emacsclient call after the queue drains
+  (phase 15).

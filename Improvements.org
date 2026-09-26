@@ -1833,7 +1833,7 @@ Tuning/caveats: heat punishes actively-developed healthy modules
 with =code-review-bot-author-regexp=; expect one tuning round
 (phase 5 scalafmt precedent).
 
-* Phase 15 — Hunk delicacy score and delicate-hunk navigation :STATUS:todo:
+* Phase 15 — Hunk delicacy score and delicate-hunk navigation :STATUS:done:
 
 Problem: file ranking finds the room; review happens at hunk
 granularity.  This phase is hunk-level just-in-time defect
@@ -1884,6 +1884,91 @@ Use case — what this catches in review:
 
 Caveats: blame signals are noisy on generated/reformatted code;
 expect one tuning round.
+
+NOTE (phase 15, as implemented): the score = BLAST RADIUS
+(=min 1.0= at =code-review-analysis-delicacy-blast-saturation=,
+default 40 callers) + AGE (=min 1.0= at
+=code-review-analysis-delicacy-age-saturation=, default 3y, the
+median age in DAYS of the blame side) + 0.25 when the blame side
+has =>=3= authors + =min 0.5= per 10 net BRANCH KEYWORDS
+(=code-review-analysis-branch-keyword-regexp=, the
+language-agnostic approximation of the treesitter branch nodes:
+diff text has no treesit buffer, and the keyword family carries
+the same added-vs-removed signal; =?= excluded, elisp character
+literals make it noise) + 0.5 per DEAD def (=min 1.0=).  Hunks
+are split by =code-review-analysis--split-hunks=; the hunk KEY is
+the raw @@ ranges text, byte-identical to the wash's
+=match-string 1= — it rides the hunk section value as =(ranges
+. ...)= for the phase 13 read-tracking key too.  The badge shows
+only reasons that stand out (=>=5= callers, =>=1y= age, =>=3=
+authors, =>=3= branches, any dead def); the wash looks it up via
+=code-review-analysis--hunk-badge-for=, a CACHE HIT (the
+Analysis section runs before the diff wash in
+=code-review-sections-hook=).  =C-c C-d=
+(=code-review-next-delicate-hunk=, also in the transient) cycles
+the top-K (=code-review-analysis-delicacy-top-k=) in score order
+— inside a delicate hunk it moves to the next in the LIST, wraps
+at the end, reveals collapsed ancestors — and the Analysis
+section shows the same ranked list with jump buttons.  Entries
+are stored from =code-review-analysis-delicacy-report-min=
+(default 0.3, below the 0.5 threshold so retuning does not
+invalidate the cache) up to =code-review-analysis-max-hunk-entries=.
+Blame is bounded: one subprocess per changed file WITH an old
+side, =code-review-analysis-max-blame-files= files, =-L= ranges
+under =code-review-analysis-max-blame-lines= lines; the rev is
+derived from =base-ref-name= (forge branch as-is; local =A..B=
+= A=, =HEAD^..HEAD= = =HEAD^=, =--cached= = =HEAD=, =REV^!= =
+none), and any blame failure just drops the age/ownership
+ingredients (a partial clone simply scores without them).  The
+=base-ref-name= blame side is a merge-base approximation for
+forge PRs; local reviews are exact.  TEST COVERAGE was deferred
+to phase 17, where the touched-def list is needed anyway.
+
+Verification (2026-09-26): 9 new ERT tests (split-hunks key and
+sides, old-rev derivation, porcelain blame parse, -L budget,
+score ingredients and reasons, no-blame degradation, one real
+git-history hunk pass, top-K accessor, wash badge + hunk key +
+C-c C-d cycling) — =make test= 133/133 green (129 + 4
+compass-gated skips).  Daemon: local commit review of 9e3e6a8
+(badge on the Improvements.org hunk heading, jump list entry,
+=C-c C-d= cycling) and a re-render stability check on
+=*Code Review: ag91/code-review#3*= (6 files / 10 hunks / 1
+badge / 1 list entry / cycling to the section.el hunk).
+
+Gotchas (phase 15):
+- The daemon async-render RACE: the full-refresh build chain is
+  deferred (timer ticks), so a verification script's poll
+  condition can be satisfied INSTANTLY by the buffer's previous
+  content (buffer exists, >500 bytes, has a root section) and
+  the script then probes the STALE render.  Poll on something
+  only the NEW render produces, or let the deferred queue drain
+  first (a second emacsclient call sees the completed render).
+- =recenter= acts on the SELECTED window: a guard on
+  =get-buffer-window= (displayed SOMEWHERE) still errors with
+  "recenter'ing a window that does not display current-buffer"
+  when the buffer is displayed but not selected (exactly what an
+  =emacsclient --eval= probe does).  Guard on =(eq (window-buffer
+  (selected-window)) (current-buffer))= instead
+  (=code-review-section--goto-hunk-section=).
+- =apply= needs its LAST argument to be a LIST: spreading git
+  args for =call-process= with a trailing PATH string signals
+  =(wrong-type-argument listp "lib.py")=.  =append= the trailing
+  scalars into the spread list
+  (=code-review-analysis--blame=).
+- The raw @@ ranges text inside a REGEXP: the =+= of =+1,4= is a
+  QUANTIFIER (="^@@ -1,3 +1,4"= matches nothing; the space before
+  =+= swallows it as "one or more spaces").  Escape it:
+  ="^@@ -1,3 \\+1,4"= (the wash test's =looking-at= assertions).
+- =(string-prefix-p "\\\\" line)= is TWO backslashes (a
+  two-character string): the =git diff= "\ No newline" marker
+  line then leaks into the blame side as a context line.  The
+  prefix is ONE backslash: =(string-prefix-p "\\" line)=.
+- The branch-keyword heuristic reads PROSE too: the phase 15
+  verification itself scored an Improvements.org hunk =+18
+  branches= from "if/when/case" in gotcha text (score 0.5, badge
+  rendered).  Deliberate (language-agnostic, tunable via
+  =code-review-analysis-branch-keyword-regexp=; per-extension
+  filters are the first tuning round if it annoys).
 
 * Phase 16 — Hunk dossier: on-demand change context           :STATUS:todo:
 

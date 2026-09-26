@@ -178,4 +178,69 @@ text."
                                          'font-lock-face))
                     'magit-diff-added)))))
 
+;;; Phase 15: delicate hunk badge, hunk key, cycling
+
+(ert-deftest code-review-section-test/wash-hunk-delicate-badge-and-key ()
+  "The wash paints the risk badge on a delicate hunk's heading and
+records the raw ranges text in the section value (the hunk key the
+jump list and `C-c C-d' cycle by).  Hunks with no entry get no
+badge.  The analysis run is faked: the wash only READS its result
+(cache hit at wash time by section-hook ordering)."
+  (code-review-section-test--with-section-env
+    (let ((orig (symbol-function 'code-review-analysis-run)))
+      (fset 'code-review-analysis-run
+            (lambda ()
+              (list :hunks
+                    (list (list :path "dbt/macros/mrt.sql"
+                                :ranges "-1,3 +1,4"
+                                :score 1.0
+                                :callers 40
+                                :dead '("deadfn")
+                                :median-age 1500
+                                :authors 1
+                                :cplx 5)))))
+      (unwind-protect
+          (with-temp-buffer
+            (magit-section-mode)
+            (let ((inhibit-read-only t))
+              (insert code-review-section-test--wash-diff-text)
+              (goto-char (point-min))
+              (magit-insert-section (code-review--root-section)
+                (magit-insert-section (code-review-files-chnged)
+                  (save-restriction
+                    (narrow-to-region (point) (point-max))
+                    (magit-wash-sequence #'code-review-wash-diff)))))
+            ;; the badge rides the delicate hunk's heading line
+            (should (save-excursion
+                      (goto-char (point-min))
+                      (search-forward
+                       "@@ -1,3 +1,4 @@  (risk: 40 callers; lines 4y old; +5 branches; 1 dead def)"
+                       nil t)))
+            ;; the untracked-by-analysis hunk (rename block) is bare:
+            ;; no badge text right after its heading
+            (should-not (save-excursion
+                          (goto-char (point-min))
+                          (search-forward "@@ -1,5 +1,16 @@" nil t)
+                          (looking-back "(risk:" (line-beginning-position))))
+            ;; the hunk key rides the section value
+            (should (code-review-section--find-hunk-section
+                     "dbt/macros/mrt.sql" "-1,3 +1,4"))
+            (should-not (code-review-section--find-hunk-section
+                         "dbt/macros/mrt.sql" "-1,5 +1,16"))
+            ;; C-c C-d cycles to the delicate hunk, wrapping from the
+            ;; end of the buffer back to it.  NB: the @@ ranges text
+            ;; in a REGEXP needs the `+' escaped ("+1,4" is a
+            ;; quantifier otherwise).
+            (goto-char (point-min))
+            (code-review-next-delicate-hunk)
+            (should (looking-at "^@@ -1,3 \\+1,4"))
+            (goto-char (point-max))
+            (code-review-next-delicate-hunk)
+            (should (looking-at "^@@ -1,3 \\+1,4"))
+            ;; from inside the hunk: wraps around to itself (only
+            ;; target in the list)
+            (code-review-next-delicate-hunk)
+            (should (looking-at "^@@ -1,3 \\+1,4")))
+        (fset 'code-review-analysis-run orig)))))
+
 ;;; code-review-section-test.el ends here

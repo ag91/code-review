@@ -1113,6 +1113,9 @@ buffer).  \\[quit-window] dismisses from inside the popup too."
 (declare-function code-review--nearest-patch-line-in-hunk "code-review-section")
 (declare-function code-review--count-patch-advances "code-review-section")
 (declare-function code-review--patch-line-p "code-review-section")
+(declare-function code-review-analysis--delicate-hunks "code-review-analysis")
+(declare-function code-review-section--goto-hunk-section "code-review-section")
+(declare-function code-review-section--find-hunk-section "code-review-section")
 (defvar code-review-comment-cursor-pos)
 (defvar code-review-section-full-refresh?)
 (defvar code-review-repo-worktree)
@@ -1438,6 +1441,48 @@ to the current hunk's heading)."
     (if target
         (goto-char (oref target start))
       (user-error "No previous hunk"))))
+(defun code-review--delicate-hunk-targets ()
+  "Top-K delicate hunk sections of the buffer as (PATH RANGES SEC).
+Score order (hottest first).  Entries with no section in the
+current diff are skipped."
+  (let ((targets nil))
+    (dolist (e (code-review-analysis--delicate-hunks))
+      (let* ((path (plist-get e :path))
+             (ranges (plist-get e :ranges))
+             (sec (code-review-section--find-hunk-section path ranges)))
+        (when sec
+          (push (list path ranges sec) targets))))
+    (nreverse targets)))
+(defun code-review-next-delicate-hunk ()
+  "Move to the next delicate hunk (phase 15), wrapping around.
+Cycles the top-K delicate hunks — the same ranked list the
+Analysis section shows — hottest first.  Called from inside a
+delicate hunk, it moves to the next one in the list (not the
+next one in the buffer).  A hunk inside a collapsed file is
+revealed."
+  (interactive)
+  (let ((targets (code-review--delicate-hunk-targets)))
+    (unless targets
+      (user-error "No delicate hunks"))
+    (let ((idx nil) (next nil) (i 0))
+      (dolist (tg targets)
+        (when (and (null idx)
+                   (>= (point) (oref (nth 2 tg) start))
+                   (<= (point) (oref (nth 2 tg) end)))
+          (setq idx i))
+        (cl-incf i))
+      (cond
+       (idx
+        (setq next (nth (mod (1+ idx) (length targets)) targets)))
+       (t
+        ;; first target below point, else wrap to the hottest one
+        (dolist (tg targets)
+          (when (and (null next)
+                     (> (oref (nth 2 tg) start) (point)))
+            (setq next tg)))
+        (unless next (setq next (car targets)))))
+      (code-review-section--goto-hunk-section
+       (nth 0 next) (nth 1 next)))))
 (defun code-review--update-header-line (&rest _)
   "Pin the file of the hunk at point in the header line.
 In plain terms: when you scroll deep into a long hunk, the file

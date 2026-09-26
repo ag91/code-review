@@ -32,6 +32,15 @@
 ;;    the head tree -> "possibly dead"; (b) symbols deleted by the
 ;;    diff but still referenced elsewhere -> "dangling reference".
 ;;
+;;  Phase 15: hunk delicacy.  Per hunk: blast radius (callers of the
+;;  defs the hunk touches, reusing the batched phase 5 grep), line
+;;  age and ownership (one bounded `git blame --porcelain' per
+;;  changed file, -L ranges), complexity delta (branch keywords
+;;  added vs removed), dead-on-arrival.  Scored, cached with the
+;;  rest; the wash paints a badge on delicate hunk headings and the
+;;  Analysis section lists the top-K (jump links) for
+;;  `code-review-next-delicate-hunk' (C-c C-d).
+;;
 ;;  Everything here is heuristic and labeled as such in the UI: it
 ;;  never blocks the review, it only adds a section with jump links.
 ;;
@@ -179,6 +188,74 @@ match group 1 captures the defined symbol name.  Used by the
 dead-code and dangling-reference heuristics."
   :group 'code-review-analysis
   :type '(alist :key-type regexp :value-type (repeat regexp)))
+
+;;; Phase 15: hunk delicacy score
+
+(defcustom code-review-analysis-branch-keyword-regexp
+  (concat "\\<\\(?:if\\|else\\|elif\\|elsif\\|for\\|foreach\\|"
+          "while\\|switch\\|case\\|catch\\|except\\|finally\\|"
+          "when\\|match\\|loop\\|unless\\|guard\\)\\>"
+          "\\|&&\\|||")
+  "Regexp of branch keywords/operators for the hunk complexity
+delta (one match = one branch).  A deliberate language-agnostic
+approximation of the phase 10 treesitter branch nodes: diff text
+has no treesit buffer, and keyword counting carries the same
+signal for the complexity-delta purpose (added vs removed
+branches).  Ternary `?` is excluded: elisp character literals
+and string contents make it noise.  Set to nil to disable the
+complexity ingredient."
+  :group 'code-review-analysis
+  :type '(choice regexp (const nil)))
+
+(defcustom code-review-analysis-delicacy-threshold 0.5
+  "Score at which a hunk counts as DELICATE (badge on the hunk
+heading, entry in the Delicate hunks jump list, target of
+`code-review-next-delicate-hunk')."
+  :group 'code-review-analysis
+  :type 'number)
+
+(defcustom code-review-analysis-delicacy-report-min 0.3
+  "Score floor for STORING a hunk entry at all.  Kept below
+`code-review-analysis-delicacy-threshold' so lowering the
+threshold does not invalidate the cache."
+  :group 'code-review-analysis
+  :type 'number)
+
+(defcustom code-review-analysis-delicacy-top-k 8
+  "Hunks shown in the Delicate hunks jump list (and cycled by
+`code-review-next-delicate-hunk'), hottest first."
+  :group 'code-review-analysis
+  :type 'integer)
+
+(defcustom code-review-analysis-delicacy-blast-saturation 40
+  "Caller count at which the blast-radius ingredient saturates
+(the phase's example signal: 40 callers)."
+  :group 'code-review-analysis
+  :type 'integer)
+
+(defcustom code-review-analysis-delicacy-age-saturation 1095
+  "Old-line age in DAYS at which the age ingredient saturates
+(three years: stable code edited is the classic delicacy)."
+  :group 'code-review-analysis
+  :type 'integer)
+
+(defcustom code-review-analysis-max-blame-files 10
+  "Files given a `git blame' pass for hunk delicacy.  One
+subprocess per changed file WITH an old side; files over the
+budget are skipped (logged), first in diff order."
+  :group 'code-review-analysis
+  :type 'integer)
+
+(defcustom code-review-analysis-max-blame-lines 400
+  "Total old-side lines blamed per file (`-L' ranges): bounds the
+blame output bytes and the touched history."
+  :group 'code-review-analysis
+  :type 'integer)
+
+(defcustom code-review-analysis-max-hunk-entries 200
+  "Hunk delicacy entries stored per (PR, diff)."
+  :group 'code-review-analysis
+  :type 'integer)
 
 ;;; Normalization (pure)
 
@@ -571,6 +648,334 @@ indexing them would burn the byte budget real code needs."
 (defvar code-review-analysis--cache (make-hash-table :test #'equal)
   "Analysis results keyed by (pullreq-id, diff md5).")
 
+;;; Phase 15: hunk delicacy (pure parts)
+
+(defun code-review-analysis--split-hunks (block)
+  "Split one diff file BLOCK into its hunks.
+Return a list of plists (:ranges RANGES :old OL :added AD :deleted DL):
+RANGES is the raw ranges text between the @@ markers — the hunk
+KEY, byte-identical to what the wash reads, and stable across
+renders (phase 13 read-tracking reuses it); OL is ((OLD-LINE .
+TEXT)...) of the CONTEXT and DELETED lines (the `git blame'
+side); AD/DL are ((LINE . TEXT)...) like
+`code-review-analysis--block-lines'.  Pure."
+  (let ((hunks nil)
+        (ranges nil) (old nil) (added nil) (deleted nil)
+        (old-ln nil) (new-ln nil))
+    (dolist (line (split-string block "\n"))
+      (let ((hdr (code-review-analysis--parse-hunk-header line)))
+        (cond
+         (hdr
+          (when ranges
+            (push (list :ranges ranges
+                        :old (nreverse old)
+                        :added (nreverse added)
+                        :deleted (nreverse deleted))
+                  hunks))
+          (let ((capped (code-review-analysis--cap-line line)))
+            (setq old nil added nil deleted nil
+                  old-ln (car hdr) new-ln (cdr hdr)
+                  ranges (and (string-match "^@@ \\(.+?\\) @@" capped)
+                              (match-string-no-properties 1 capped)))))
+         ;; before the first hunk header (file headers): not code
+         ((not old-ln) nil)
+         ((string-prefix-p "\\" line) nil) ; "\ No newline"
+         ((string-empty-p line) nil) ; trailing newline artifact
+         ((string-prefix-p "+" line)
+          (push (cons new-ln (substring line 1)) added)
+          (cl-incf new-ln))
+         ((string-prefix-p "-" line)
+          (push (cons old-ln (substring line 1)) deleted)
+          (push (cons old-ln (substring line 1)) old)
+          (cl-incf old-ln))
+         (t
+          (push (cons old-ln (substring line 1)) old)
+          (cl-incf old-ln)
+          (cl-incf new-ln)))))
+    (when ranges
+      (push (list :ranges ranges
+                  :old (nreverse old)
+                  :added (nreverse added)
+                  :deleted (nreverse deleted))
+            hunks))
+    (nreverse hunks)))
+
+(defun code-review-analysis--old-rev (base-ref-name)
+  "Rev holding the reviewed diff's OLD side, for `git blame'.
+Forge PRs carry the base BRANCH in `base-ref-name' (the diff's
+old side is at the merge base — close enough for a heuristic age
+signal).  LOCAL reviews carry the git diff args: \"A..B\" /
+\"A^..B\" (old side A / A^), \"REV^..REV\" (old side REV^),
+\"HEAD\" (old side HEAD).  A ROOT commit review (\"REV^!\") has
+no old side: nil.  Staged reviews (\"--cached\") diff against
+HEAD.  nil when nothing can be derived.  Pure."
+  (cond
+   ((not (stringp base-ref-name)) nil)
+   ((string= base-ref-name "--cached") "HEAD")
+   ((string-match "\\`\\(.+\\)\\.\\.\\(.+\\)\\'" base-ref-name)
+    (match-string-no-properties 1 base-ref-name))
+   ((string-match "\\`\\(.+\\)\\^!\\'" base-ref-name) nil)
+   (t base-ref-name)))
+
+(defun code-review-analysis--slice-blame-ranges (ranges)
+  "Keep RANGES ((START . END)...) under the blame line budget.
+`code-review-analysis-max-blame-lines' bounds the blame output
+and the history a partial clone would lazy-fetch."
+  (let ((res nil)
+        (budget code-review-analysis-max-blame-lines))
+    (dolist (r (cl-sort (copy-sequence ranges) #'< :key #'car))
+      (let ((n (1+ (- (cdr r) (car r)))))
+        (when (<= n budget)
+          (push r res)
+          (cl-decf budget n))))
+    (nreverse res)))
+
+(defun code-review-analysis--parse-blame (out table)
+  "Parse `git blame --porcelain' output OUT into TABLE.
+TABLE: OLD-LINE -> (AUTHOR . AUTHOR-TIME).  With -L ranges the
+output carries only the blamed lines, so TABLE covers exactly
+the requested ranges.  Pure."
+  (let ((author nil) (author-time nil) (orig-line nil))
+    (dolist (line (split-string out "\n"))
+      (let ((capped (code-review-analysis--cap-line line)))
+        (cond
+         ((string-match
+           "\\`[0-9a-f]\\{40\\} \\([0-9]+\\) [0-9]+\\(?: [0-9]+\\)?"
+           capped)
+          (setq orig-line (string-to-number (match-string 1 capped))
+                author nil author-time nil))
+         ((string-match "\\`author \\(.+\\)" capped)
+          (setq author (match-string-no-properties 1 capped)))
+         ((string-match "\\`author-time \\([0-9]+\\)" capped)
+          (setq author-time (string-to-number (match-string 1 capped))))
+         (t
+          ;; the content line ("\t...") closes the entry
+          (when (and orig-line author author-time)
+            (puthash orig-line (cons author author-time) table)
+            (setq orig-line nil))))))
+    table))
+
+(defun code-review-analysis--blame (worktree rev path ranges)
+  "One bounded `git blame --porcelain' for PATH at REV, RANGES.
+RANGES is ((OLD-START . OLD-END)...): all ranges ride ONE
+subprocess as -L args.  Return a hash OLD-LINE -> (AUTHOR .
+AUTHOR-TIME), nil when blame is impossible (no REV, no ranges,
+git error: rev missing in a partial clone, ...).  This runs
+inside the cached analysis compute — once per (PR, diff) — never
+silently per render."
+  (when (and rev ranges)
+    (let ((buf (generate-new-buffer " *code-review-analysis-blame*"))
+          (h (make-hash-table :test #'eql)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq default-directory worktree)
+            (apply #'call-process "git" nil (list (current-buffer) nil) nil
+                   "blame" "--porcelain"
+                   (append
+                    (apply #'append
+                           (mapcar (lambda (r)
+                                     (list "-L" (format "%d,%d"
+                                                        (car r) (cdr r))))
+                                   ranges))
+                    (list rev "--" path)))
+            (code-review-analysis--parse-blame
+             (buffer-substring-no-properties (point-min) (point-max))
+             h))
+        (kill-buffer buf))
+      h)))
+
+(defun code-review-analysis--branch-count (text)
+  "Branch keyword/operator occurrences in TEXT (capped first)."
+  (let ((n 0) (start 0) m)
+    (when code-review-analysis-branch-keyword-regexp
+      (setq m (code-review-analysis--cap-line text))
+      (while (setq start (string-match code-review-analysis-branch-keyword-regexp
+                                       m start))
+        (setq n (1+ n)
+              start (match-end 0))))
+    n))
+
+(defun code-review-analysis--age-string (days)
+  "Compact age for DAYS: \"3y\" or \"14m\"."
+  (if (>= days 365)
+      (format "%.0fy" (/ days 365.0))
+    (format "%.0fm" (max 1 (/ days 30.0)))))
+
+(defun code-review-analysis--hunk-entry (path hunk refs-hash blame)
+  "Delicacy entry plist for HUNK of PATH.  Pure.
+REFS-HASH: definition name -> occurrences (phase 5 batched
+grep) for blast radius and dead-on-arrival.  BLAME: hash
+OLD-LINE -> (AUTHOR . AUTHOR-TIME), nil when blame was skipped:
+age and ownership ingredients are simply absent then.  Entry:
+(:path :ranges :score :callers :dead :median-age :authors
+:cplx)."
+  (let* ((added (plist-get hunk :added))
+         (deleted (plist-get hunk :deleted))
+         (old-lines (plist-get hunk :old))
+         (now (float-time))
+         (defs (delete-dups
+                (append (mapcar #'car
+                                (code-review-analysis--definitions-in
+                                 path added))
+                        (mapcar #'car
+                                (code-review-analysis--definitions-in
+                                 path deleted)))))
+         (callers (cl-loop for d in defs
+                           for n = (length (gethash d refs-hash))
+                           maximize n))
+         (dead (cl-loop for d in defs
+                        unless (or (gethash d refs-hash)
+                                   (and code-review-analysis-dead-test-name-regexp
+                                        (string-match-p
+                                         code-review-analysis-dead-test-name-regexp
+                                         d)))
+                        collect d))
+         ;; blame author-time is EPOCH SECONDS: age is in DAYS here
+         (ages (when blame
+                 (cl-loop for (ln . _) in old-lines
+                          for hit = (gethash ln blame)
+                          when hit collect (max 0.0
+                                                (/ (- now (cdr hit))
+                                                   86400.0)))))
+         (median-age (when ages
+                       (nth (floor (/ (length ages) 2))
+                            (sort (copy-sequence ages) #'<))))
+         (authors (when blame
+                    (delete-dups
+                     (cl-loop for (ln . _) in old-lines
+                              for hit = (gethash ln blame)
+                              when (car hit) collect (car hit)))))
+         (cplx (- (cl-loop for (_ . txt) in added
+                           sum (code-review-analysis--branch-count txt))
+                  (cl-loop for (_ . txt) in deleted
+                           sum (code-review-analysis--branch-count txt))))
+         (authors-n (length authors))
+         (score (+ (if callers
+                       (min 1.0 (/ (float callers)
+                                   (max 1 code-review-analysis-delicacy-blast-saturation)))
+                     0.0)
+                   (if median-age
+                       (min 1.0 (/ (float median-age)
+                                   (max 1 code-review-analysis-delicacy-age-saturation)))
+                     0.0)
+                   (if (>= authors-n 3) 0.25 0.0)
+                   (min 0.5 (/ (float (max 0 cplx)) 20.0))
+                   (if dead (min 1.0 (* 0.5 (length dead))) 0.0))))
+    (list :path path
+          :ranges (plist-get hunk :ranges)
+          :score score
+          :callers callers
+          :dead dead
+          :median-age median-age
+          :authors authors-n
+          :cplx cplx)))
+
+(defun code-review-analysis--hunk-reasons (entry)
+  "Compact risk reasons for ENTRY, nil when nothing stands out."
+  (let* ((callers (or (plist-get entry :callers) 0))
+         (age (plist-get entry :median-age))
+         (authors (plist-get entry :authors))
+         (cplx (plist-get entry :cplx))
+         (dead (plist-get entry :dead)))
+    (delq nil
+          (list (when (>= callers 5)
+                  (format "%d callers" callers))
+                (when (and age (>= age 365))
+                  (format "lines %s old"
+                          (code-review-analysis--age-string age)))
+                (when (>= authors 3)
+                  (format "%d authors" authors))
+                (when (>= cplx 3)
+                  (format "+%d branches" cplx))
+                (when dead
+                  (format "%d dead def%s" (length dead)
+                          (if (cdr dead) "s" "")))))))
+
+(defun code-review-analysis--hunk-badge (entry)
+  "Badge string for ENTRY (nil below the delicacy threshold)."
+  (when (>= (plist-get entry :score)
+            code-review-analysis-delicacy-threshold)
+    (let ((reasons (code-review-analysis--hunk-reasons entry)))
+      (when reasons
+        (concat "  (risk: " (string-join reasons "; ") ")")))))
+
+(defun code-review-analysis--hunks (worktree blocks refs-hash pr)
+  "Delicacy entries for all hunks of BLOCKS, hottest first.
+One `git blame' per changed file with an old side (capped by
+`code-review-analysis-max-blame-files'), the shared phase 5
+refs hash for blast radius and dead-on-arrival.  Entries below
+`code-review-analysis-delicacy-report-min' are not stored, and
+at most `code-review-analysis-max-hunk-entries' are."
+  (let* ((old-rev (code-review-analysis--old-rev (oref pr base-ref-name)))
+         (blame-left code-review-analysis-max-blame-files)
+         (entries nil))
+    (pcase-dolist (`(,path . ,block) blocks)
+      (unless (or (string-match-p "^Binary files" block)
+                  (string-match-p "^GIT binary patch" block))
+        (let* ((hunks (code-review-analysis--split-hunks block))
+               (old-hunks (cl-remove-if-not
+                           (lambda (hu) (plist-get hu :old)) hunks))
+               (blame
+                (cond
+                 ((not (and old-rev old-hunks)) nil)
+                 ((<= blame-left 0)
+                  (code-review-utils--log
+                   "code-review-analysis"
+                   (format "blame budget spent: skipping hunk age for %s"
+                           path))
+                  nil)
+                 (t
+                  (cl-decf blame-left)
+                  (let* ((raw (mapcar
+                               (lambda (hu)
+                                 (let ((lines (mapcar #'car (plist-get hu :old))))
+                                   (cons (apply #'min lines)
+                                         (apply #'max lines))))
+                               old-hunks))
+                         (ranges (code-review-analysis--slice-blame-ranges raw)))
+                    (when ranges
+                      (code-review-analysis--blame
+                       worktree old-rev path ranges)))))))
+          (dolist (hu hunks)
+            (let ((entry (code-review-analysis--hunk-entry
+                          path hu refs-hash blame)))
+              (when (>= (plist-get entry :score)
+                        code-review-analysis-delicacy-report-min)
+                (push entry entries)))))))
+    (cl-subseq (nreverse
+                (cl-sort entries #'> :key (lambda (e) (plist-get e :score))))
+               0 (min (length entries)
+                      code-review-analysis-max-hunk-entries))))
+
+(defun code-review-analysis--hunk-badge-for (path ranges)
+  "Badge string for hunk RANGES of PATH in the current render.
+nil when there is no entry over the threshold (analysis
+disabled, no worktree, or nothing delicate).  Called from the
+hunk wash: `code-review-analysis-run' is a cache hit there (the
+Analysis section runs before the diff wash in
+`code-review-sections-hook')."
+  (let ((res (code-review-analysis-run)))
+    (cl-loop for e in (and res (plist-get res :hunks))
+             thereis (when (and (equal (plist-get e :path) path)
+                                (equal (plist-get e :ranges) ranges))
+                       (code-review-analysis--hunk-badge e)))))
+
+(defun code-review-analysis--delicate-hunks ()
+  "The top-K delicate hunk entries of the current render.
+Score order (hottest first), the same list the Analysis section
+shows; entries under `code-review-analysis-delicacy-threshold'
+are filtered out and the list is capped at
+`code-review-analysis-delicacy-top-k'."
+  (let* ((res (code-review-analysis-run))
+         (entries (when res
+                    (cl-remove-if
+                     (lambda (e)
+                       (< (plist-get e :score)
+                          code-review-analysis-delicacy-threshold))
+                     (or (plist-get res :hunks) nil)))))
+    (cl-subseq entries 0 (min (length entries)
+                              code-review-analysis-delicacy-top-k))))
+
 (defun code-review-analysis--analyze-one-file (index refs path block)
   "Analyze one diff file BLOCK at PATH against INDEX.
 REFS is the batched references hash (all definitions at once),
@@ -635,7 +1040,8 @@ Return (SIMILAR DEAD DANGLING) findings for this file."
 
 (defun code-review-analysis--compute (worktree diff pr)
   "Compute all findings for DIFF of PR against WORKTREE.
-Return (:similar SIMS :dead DEAD :dangling DANGLINGS), or nil."
+Return (:similar SIMS :dead DEAD :dangling DANGLINGS :hunks
+HUNKS — phase 15 delicacy entries, hottest first), or nil."
   (let* ((blocks (code-review--diff--split-by-files diff))
          (added-all
           (cl-loop for (_path . block) in blocks
@@ -682,8 +1088,13 @@ Return (:similar SIMS :dead DEAD :dangling DANGLINGS), or nil."
     ;; only interesting dangling references: keep the first few
     (setq dangling (when dangling
                      (cl-subseq dangling 0 (min (length dangling) 10))))
-    (when (or similar dead dangling)
-      (list :similar similar :dead dead :dangling dangling))))
+    ;; phase 15: hunk delicacy entries (blast radius, blame age and
+    ;; ownership, complexity delta, dead-on-arrival), hottest first
+    (let ((hunks (code-review-analysis--hunks
+                  worktree blocks refs-hash pr)))
+      (when (or similar dead dangling hunks)
+        (list :similar similar :dead dead :dangling dangling
+              :hunks hunks)))))
 
 (defun code-review-analysis-run ()
   "Run the heuristic analysis for the review in the current buffer.

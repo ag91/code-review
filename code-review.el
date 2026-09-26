@@ -172,6 +172,8 @@ OUTDATED."
    ("w" "Open worktree in Dired" code-review-repo-open-worktree)
    ("d" "Popup: PR description (toggle; refer to the intent while reviewing)"
     code-review-popup-pr-description)
+   ("C-c C-d" "Next delicate hunk (cycle: risk-ranked hunks, hottest first)"
+    code-review-next-delicate-hunk)
    ("N" "Focus: hide auto-flagged noise files (lockfiles, docs, whitespace-only)"
     code-review-toggle-focus-mode)
    ("D" "Difftastic: zoom into the file's real changes (C-u: whole PR)"
@@ -199,6 +201,8 @@ OUTDATED."
     ;; hunk navigation: get to the code fast, skip comments
     (define-key map (kbd "C-c C-n") 'code-review-next-hunk)
     (define-key map (kbd "C-c C-p") 'code-review-previous-hunk)
+    ;; phase 15: cycle the delicate hunks (hottest first)
+    (define-key map (kbd "C-c C-d") 'code-review-next-delicate-hunk)
     (define-key map (kbd "G") 'code-review-reload)
     ;; Repository context: xref and worktree access from the diff
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)

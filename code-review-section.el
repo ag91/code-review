@@ -1042,8 +1042,10 @@ Local diff reviews are read-only: no feedback section."
                            (forward-line (1- line)))))
 
 (defun code-review-section-insert-analysis ()
-  "Insert the heuristic Analysis section (phase 5).
-Duplicate and dead code findings; toggle it with TAB like any
+  "Insert the heuristic Analysis section (phase 5, 15).
+Duplicate and dead code findings, and (phase 15) the Delicate
+hunks jump list (risk: blast radius, line age and ownership,
+complexity delta, dead definitions).  Toggle it with TAB like any
 other section.  Nothing is inserted when the analysis found
 nothing (or is disabled, or there is no worktree)."
   (let ((res (code-review-analysis-run)))
@@ -1091,6 +1093,35 @@ nothing (or is disabled, or there is no worktree)."
                 (code-review-section--insert-analysis-jump
                  worktree rpath rline)))
             (insert ")\n"))
+          ;; phase 15: delicate hunks (top-K, hottest first).  The
+          ;; buttons jump inside the review buffer: the section is
+          ;; inserted there, so the button action runs there.
+          (let ((entries (cl-remove-if
+                          (lambda (e)
+                            (< (plist-get e :score)
+                               code-review-analysis-delicacy-threshold))
+                          (or (plist-get res :hunks) nil))))
+            (setq entries (cl-subseq
+                           entries 0 (min (length entries)
+                                          code-review-analysis-delicacy-top-k)))
+            (dolist (e entries)
+              (let* ((path (plist-get e :path))
+                     (ranges (plist-get e :ranges))
+                     (reasons (string-join
+                               (code-review-analysis--hunk-reasons e)
+                               "; ")))
+                (insert "  ")
+                (insert (propertize "delicate: "
+                                    'font-lock-face 'magit-dimmed))
+                (insert-button (format "%s %s" path ranges)
+                               'face 'code-review-url-header-face
+                               'follow-link t
+                               'help-echo "Jump to this hunk in the review"
+                               'action (lambda (&rest _)
+                                         (code-review-section--goto-hunk-section
+                                          path ranges)))
+                (insert (format "  %.2f (%s)\n"
+                                (plist-get e :score) reasons)))))
           (insert ?\n))))))
 
 (defclass code-review-review-order-section (magit-section)
@@ -1115,6 +1146,39 @@ such file."
       (code-review-browse--reveal target)
       (magit-section-goto target)
       (recenter))))
+
+(defun code-review-section--find-hunk-section (path ranges)
+  "The hunk section for PATH RANGES (nil when the diff has none).
+RANGES is the raw ranges text of the @@ header (the hunk key, see
+`code-review-analysis--split-hunks')."
+  (let ((target nil))
+    (magit-map-sections
+     (lambda (sec)
+       (when (and (null target)
+                  (eq (eieio-object-class sec) 'magit-hunk-section)
+                  (slot-boundp sec 'value)
+                  (let ((v (oref sec value)))
+                    (and (equal (cdr (assq 'path v)) path)
+                         (equal (cdr (assq 'ranges v)) ranges))))
+         (setq target sec))))
+    target))
+
+(defun code-review-section--goto-hunk-section (path ranges)
+  "Move point to the review buffer's hunk section for PATH RANGES.
+RANGES is the raw ranges text of the @@ header (the hunk key, see
+`code-review-analysis--split-hunks').  Reveals the hunk's
+ancestors (a collapsed file does not hide its delicate hunks);
+no-op when the buffer carries no such hunk."
+  (let ((target (code-review-section--find-hunk-section path ranges)))
+    (when target
+      (code-review-browse--reveal target)
+      (magit-section-goto target)
+      ;; `recenter' acts on the SELECTED window: only recenter when
+      ;; that window actually displays this buffer (batch/async
+      ;; callers run elsewhere — a bare `get-buffer-window' guard
+      ;; still errors, the phase 15 daemon verification caught this)
+      (when (eq (window-buffer (selected-window)) (current-buffer))
+        (recenter)))))
 
 (defun code-review-section-insert-review-order ()
   "Insert the phase 14 Review order section (heuristic).
@@ -2060,14 +2124,26 @@ Please Report this Bug" path-name))
             ( hunk
               `((value . ,value) ;; TODO not sure if this has to diverge as well
                 (path . ,path-name)
+                ;; the hunk KEY: byte-identical to the delicacy
+                ;; entry's :ranges (phase 15 badge/jump list; the
+                ;; phase 13 read-tracking key too)
+                (ranges . ,raw-ranges)
                 (head-pos . ,head-pos))
               nil
               :combined combined
               :from-range (if combined (butlast ranges) (car ranges))
               :to-range (car (last ranges))
               :about about)
-          (insert (propertize (concat heading "\n")
-                              'font-lock-face 'magit-diff-hunk-heading))
+          (insert (propertize heading 'font-lock-face 'magit-diff-hunk-heading))
+          ;; phase 15: the delicacy badge (cache hit: the Analysis
+          ;; section runs before the diff wash in the sections hook)
+          (let ((badge (code-review-analysis--hunk-badge-for
+                        path-name raw-ranges)))
+            (when badge
+              (insert (propertize badge
+                                  'font-lock-face
+                                  'code-review-delicate-hunk-face))))
+          (insert ?\n)
           (magit-insert-heading)
           ;; Keep track of old/new line numbers from the hunk header so we
           ;; can anchor local comments keyed by SIDE/LINE inline.

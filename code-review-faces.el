@@ -215,5 +215,16 @@
   "Face for fringe markers flagging diff lines with review threads."
   :group 'code-review)
 
+;; Phase 15: delicacy badge on hunk headings.  A warning-family
+;; foreground, no background, so it never obscures the diff colors
+;; (the hunk heading line itself carries no +/- faces).
+(defface code-review-delicate-hunk-face
+  '((((class color) (background light))
+     :inherit font-lock-warning-face)
+    (((class color) (background dark))
+     :inherit font-lock-warning-face))
+  "Face for the risk badge on delicate hunk headings (phase 15)."
+  :group 'code-review)
+
 (provide 'code-review-faces)
 ;;; code-review-faces.el ends here
