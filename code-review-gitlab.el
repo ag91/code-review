@@ -51,7 +51,8 @@
   :type 'string)
 
 (defclass code-review-gitlab-repo (code-review-db-pullreq)
-  ((callback :initform nil)))
+  ()
+  "A Gitlab pull request.")
 
  (defvar code-review-gitlab-line-diff-mapping nil
   "Hold structure to convert Line number position into diff positions.

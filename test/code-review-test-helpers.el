@@ -32,6 +32,7 @@ FILE nil means: just drop the singleton."
   (let ((db (ignore-errors (oref-default 'code-review-db-database singleton))))
     (when (and (eieio-object-p db)
                (slot-boundp db 'connection)
+               (oref db connection)
                (emacsql-live-p (oref db connection)))
       (emacsql-close db))
     (oset-default code-review-db-database singleton eieio--unbound)

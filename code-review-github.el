@@ -35,7 +35,8 @@
 (require 'a)
 
 (defclass code-review-github-repo (code-review-db-pullreq)
-  ((callback            :initform nil)))
+  ()
+  "A GitHub pull request.")
 
 (defgroup code-review-github nil
   "Interact with GitHub REST and GraphQL APIs."

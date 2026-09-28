@@ -91,7 +91,6 @@
    (owner               :initarg :owner)
    (repo                :initarg :repo)
    (number              :initarg :number)
-   (url                 :initarg :url)
    (description         :initform nil)
    (title               :initform nil)
    (host                :initform nil)
@@ -107,6 +106,12 @@
    (reviewers           :initform nil)
    (assignees           :initform nil)
    (linked-issues       :initform nil)
+   ;; KEEP THIS ORDER IN SYNC with the schema column order: closql
+   ;; serializes slots POSITIONALLY (a bare INSERT INTO ... VALUES
+   ;; with no column list), so a slot sitting where no same-named
+   ;; column sits silently writes into the neighbor's column (the
+   ;; v9 url bug this comment guards against).
+   (url                 :initarg :url)
    (buffer              :closql-class code-review-db-buffer))
   :abstract t)
 
@@ -115,7 +120,7 @@
    (object-class :initform 'code-review-db-pullreq)
    (file         :initform 'code-review-db-database-file)
    (schemata     :initform 'code-review-db-table-schema)
-   (version      :initform 9)))
+   (version      :initform 10)))
 
 (defvar code-review-db--override-connection-class nil)
 
@@ -188,8 +193,7 @@
       assignees
       linked-issues
       url
-      (buffer :default eieio-unbound)
-      callback])
+      (buffer :default eieio-unbound)])
 
     (buffer
      [(class :not-null)
@@ -223,6 +227,97 @@
       [path] :references path [id]
       :on-delete :cascade))))
 
+(defconst code-review-db--v10-canonical-columns
+  '(class id base_ref_name head_ref_name finished finished_at
+    saved saved_at raw_infos raw_diff raw_comments owner repo
+    number description title host sha feedback state replies
+    review labels merge milestones projects reviewers assignees
+    linked_issues url buffer)
+  "The canonical (v10) pullreq column order: the schema's order.
+Also the insert-value order of the `code-review-db-pullreq'
+class (plus its `closql-database' slot), since closql
+serializes slots positionally.")
+
+(defun code-review-db--migrate-v10 (db)
+  "Migrate the pullreq table of DB to the canonical v10 layout.
+
+The v9 migration added the url COLUMN with ALTER TABLE (sqlite
+appends it at the END of the table) while the class serialized
+the url SLOT right after number: closql writes slots
+positionally, so every slot from url through the tail landed one
+column LEFT of its name.  Writes and reads permute identically
+(the in-memory roundtrip is self-consistent), but every
+NAMED-column SQL predicate read the wrong column: the phase 12
+local-row cleanup (WHERE state = LOCAL) silently stopped
+matching anything the day phase 7 shipped.
+
+v10 moves the url slot after linked-issues (where the schema
+always had the column) and unshifts the VALUES of existing rows,
+per row: phase-7+ rows are recognizable by the state-slot values
+sitting in the replies column (OPEN/MERGED/...; pre-phase-7
+rows have NULL there and their state in the state column) or
+the url-slot values in the description column (https URLs).
+All-NULL rows are identical under both layouts, so the cycle
+leaves them alone.  Two v9 table shapes exist and need
+different cycles: migrated tables carry url after callback
+(the 18-column cycle runs through the tail), fresh-schema
+tables already have it after linked_issues (the cycle stops at
+url).  Finally the table is rebuilt in the canonical column
+order, which also drops the dead callback column the v9-era
+classes carried a slot for."
+  (let* ((columns (closql--table-columns db 'pullreq))
+         (url-last-p (= 1 (length (member 'url columns))))
+         (tail (if url-last-p
+                   ;; migrated shape: the buffer and callback
+                   ;; columns carry linked-issues/buffer values
+                   "linked_issues = buffer, buffer = callback, callback = url, url = description"
+                 ;; fresh-schema shape: url already holds
+                 ;; linked-issues values; buffer/callback are fine
+                 "linked_issues = url, url = description"))
+         (cycle (concat "description = title, title = host, "
+                       "host = sha, sha = feedback, feedback = state, "
+                       "state = replies, replies = review, review = labels, "
+                       "labels = merge, merge = milestones, "
+                       "milestones = projects, projects = reviewers, "
+                       "reviewers = assignees, assignees = linked_issues, "
+                       tail)))
+    ;; sqlite reads every RHS from the pre-statement row, so this
+    ;; single cyclic UPDATE unshifts every classified row.  Literals
+    ;; carry the embedded quotes closql stores strings with (prin1
+    ;; escaping: symbols are stored bare, strings quoted).  The LIKE
+    ;; wildcard must be a RAW literal with a doubled %%: emacsql
+    ;; formats prepared raw strings through `format', so %% collapses
+    ;; to the % wildcard at execution.  A PARAMETER cannot carry this
+    ;; pattern at all: `emacsql-escape-scalar' prin1-escapes args for
+    ;; STORAGE, so the arg "https://% becomes the pattern
+    ;; "https://% with a literal backslash and never matches; and
+    ;; `concat' (not `format') builds the statement so nothing
+    ;; collapses the %% before emacsql sees it.
+    (emacsql db (concat "UPDATE pullreq SET " cycle
+                       " WHERE replies IN ('\"OPEN\"', '\"MERGED\"', '\"CLOSED\"', '\"DRAFT\"', '\"LOCAL\"')"
+                       " OR description LIKE '\"https://%%'"))
+    ;; rebuild the table in the canonical column order.  PRAGMA
+    ;; foreign_keys is a NO-OP inside a transaction, so toggle it
+    ;; outside and do the swap in one transaction below.
+    (emacsql db [:pragma (= foreign-keys off)])
+    (closql-with-transaction db
+      (emacsql db [:create-table $i1 $S2]
+               'pullreq_v10
+               (cdr (assq 'pullreq code-review-db-table-schema)))
+      (emacsql db (concat "INSERT INTO pullreq_v10 ("
+                          (mapconcat #'symbol-name
+                                     code-review-db--v10-canonical-columns
+                                     ", ")
+                          ") SELECT "
+                          (mapconcat #'symbol-name
+                                     code-review-db--v10-canonical-columns
+                                     ", ")
+                          " FROM pullreq"))
+      (emacsql db "DROP TABLE pullreq")
+      (emacsql db "ALTER TABLE pullreq_v10 RENAME TO pullreq")
+      (closql--db-set-version db 10))
+    (emacsql db [:pragma (= foreign-keys on)])))
+
 (cl-defmethod closql--db-update-schema ((db code-review-db-database))
   (let ((code-version (oref-default 'code-review-db-database version))
         (version (closql--db-get-version db)))
@@ -237,14 +332,29 @@
         (message "Upgrading Code Review database from version 8 to 9...")
         (emacsql db [:alter-table pullreq :add-column url :default nil])
         (closql--db-set-version db (setq version 9))
-        (message "Upgrading Code Review database from version 8 to 9...done"))
-      (cl-call-next-method))))
+        (message "Upgrading Code Review database from version 8 to 9...done")))
+    ;; v10 runs OUTSIDE the transaction above: the migration toggles
+    ;; PRAGMA foreign_keys, which is a no-op inside a transaction.
+    (when (= version 9)
+      (message "Upgrading Code Review database from version 9 to 10...")
+      (code-review-db--migrate-v10 db)
+      (message "Upgrading Code Review database from version 9 to 10...done"))
+    (cl-call-next-method)))
 
 ;;; Core
 
 (defvar code-review-db--pullreq-id nil)
 
 ;; Helper
+
+(defun code-review-db--delete-pullreq-tree (db id)
+  "Delete the pullreq row ID and its buffer/path/comment children.
+FK enforcement is off on emacsql connections (nothing cascades),
+so the children are deleted explicitly, child-most first."
+  (emacsql db "DELETE FROM comment WHERE path IN (SELECT id FROM path WHERE buffer IN (SELECT id FROM buffer WHERE pullreq = $s1))" id)
+  (emacsql db "DELETE FROM path WHERE buffer IN (SELECT id FROM buffer WHERE pullreq = $s1)" id)
+  (emacsql db "DELETE FROM buffer WHERE pullreq = $s1" id)
+  (emacsql db "DELETE FROM pullreq WHERE id = $s1" id))
 
 (defun code-review-db-update (obj)
   "Update whole OBJ in datatabase."
@@ -280,6 +390,61 @@
          (mapcar
           (lambda (row) (closql--remake-instance class db row))))))
 
+;;;###autoload
+(defun code-review-db-cleanup (&optional purge-unsaved-p)
+  "Clean up the review database.
+Runs a pending schema migration first (the daemon's live
+singleton connection may predate the migration code), then
+dedupes rows: for every (OWNER REPO NUMBER) only the NEWEST row
+(rowid is insertion order), with its buffer/path/comment
+children, is kept.  Finished rows are purged; with a prefix
+argument PURGE-UNSAVED-P every saved=nil row except the current
+review's is purged too (nothing reads them back: unfinished
+unsaved rows are pure render cache, the forge is the record).
+VACUUMs the file at the end."
+  (interactive "P")
+  (let ((db (code-review-db))
+        (deleted 0))
+    ;; a pending migration: the singleton's live connection may
+    ;; have been opened by pre-migration code
+    (when (/= (closql--db-get-version db)
+              (oref-default 'code-review-db-database version))
+      (emacsql-close db)
+      (oset-default code-review-db-database singleton eieio--unbound)
+      (setq db (code-review-db)))
+    (let* ((rows (emacsql db [:select [id owner repo number] :from pullreq
+                                      :order-by [(asc rowid)]]))
+           (newest (make-hash-table :test 'equal))
+           (current code-review-db--pullreq-id))
+      ;; dedupe per PR, keeping the newest row and the current
+      ;; review's row (the current PR may not be the newest one
+      ;; for its key in a pre-dedupe database)
+      (dolist (row rows)
+        (puthash (list (nth 1 row) (nth 2 row) (nth 3 row)) (nth 0 row) newest))
+      (dolist (row rows)
+        (let ((id (nth 0 row))
+              (key (list (nth 1 row) (nth 2 row) (nth 3 row))))
+          (unless (or (equal id (gethash key newest))
+                      (equal id current))
+            (code-review-db--delete-pullreq-tree db id)
+            (setq deleted (1+ deleted)))))
+      ;; purge finished rows; with the prefix also every saved=nil
+      ;; row except the current review's
+      (let ((rows (if purge-unsaved-p
+                      (emacsql db [:select [id] :from pullreq
+                                          :where (or (= finished 't)
+                                                     (is saved nil))])
+                    (emacsql db [:select [id] :from pullreq
+                                        :where (= finished 't)]))))
+        (dolist (row rows)
+          (unless (equal (car row) current)
+            (code-review-db--delete-pullreq-tree db (car row))
+            (setq deleted (1+ deleted)))))
+      (emacsql db "VACUUM")
+      (message "code-review db cleanup: deleted %d rows, %d remain"
+               deleted
+               (length (emacsql db [:select [id] :from pullreq]))))))
+
 ;;; Domain
 
 ;; Simplified getters
@@ -306,10 +471,23 @@
 ;; ...
 
 (defun code-review-db--pullreq-create (obj)
-  "Create a pullreq db object from OBJ."
-  (let* ((pr-id (uuidgen-4)))
+  "Create a pullreq db object from OBJ.
+One row per (OWNER REPO NUMBER) exists at any time: rows for the
+same PR left over from earlier opens (and their
+buffer/path/comment children) are deleted first, so opening a PR
+always starts from fresh path bookkeeping."
+  (let* ((db (code-review-db))
+         (pr-id (uuidgen-4)))
+    (dolist (row (emacsql db [:select [id] :from pullreq
+                                    :where (and (= owner $s1)
+                                                (= repo $s2)
+                                                (= number $s3))]
+                          (oref obj owner)
+                          (oref obj repo)
+                          (oref obj number)))
+      (code-review-db--delete-pullreq-tree db (car row)))
     (oset obj id pr-id)
-    (closql-insert (code-review-db) obj t)
+    (closql-insert db obj t)
     (setq code-review-db--pullreq-id pr-id)))
 
 (defun code-review-db--pullreq-sha-update (sha-value)

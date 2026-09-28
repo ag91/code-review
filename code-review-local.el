@@ -22,9 +22,9 @@
 ;;  are read-only because there is no forge to send them to.
 ;;
 ;;  The pullreq row uses state "LOCAL" as its marker.  It has NO
-;;  extra slots: the closql schema is fixed, so the git diff args
-;;  ride the existing `base-ref-name' column and the worktree is
-;;  derived from `magit-toplevel' at render time.
+;;  extra slots: the git diff args ride the existing
+;;  `base-ref-name' column and the worktree is derived from
+;;  `magit-toplevel' at render time.
 ;;
 ;;; Code:
 
@@ -187,14 +187,13 @@ stops responding to G (full reload)."
           (closql-insert (code-review-db) pr t))
         (code-review--build-buffer)))))
 
-;;; The row class.  NO extra slots: every slot must map to a pullreq
-;;; schema column or closql-insert fails with a column count error.
+;;; The row class.  Every slot maps to a pullreq schema column:
+;;; the base class's slot order is the schema column order, and
+;;; closql-insert fails loudly on any count mismatch.
 
 (defclass code-review-local-diff (code-review-db-pullreq)
-  ((callback :initform nil))
-  "A local diff treated as a PR.  `state' is \"LOCAL\".
-The `callback' slot exists only to match the pullreq schema column
-layout shared with the forge classes; it is never used.")
+  ()
+  "A local diff treated as a PR.  `state' is \"LOCAL\".")
 
 ;;; Render machinery: mirror the forge classes so the standard
 ;;; build-buffer path (including full reload, G) works unchanged.

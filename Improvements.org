@@ -2681,7 +2681,7 @@ the two answer different questions on different availability
   first security vocabulary WILL over- or under-shoot.
 
 
-* Phase 21 — DB hygiene: pullreq column shift, distinct rows, cleanup :STATUS:todo:
+* Phase 21 — DB hygiene: pullreq column shift, distinct rows, cleanup :STATUS:done:
 
 Triage (2026-09-28): a raw =[:select :* :from pullreq]= showed
 ~105 rows with many identical titles.  Diagnosis found one BUG
@@ -2798,6 +2798,64 @@ Expected on the current db: 105 rows -> ~12 forge + <= 1 local,
   die, and sanity-check =[:select [state url] :from pullreq]=.
 - Order: this phase lands BEFORE phase 13 (read tracking) and
   before anything else that stores per-PR state in the db.
+
+** Done (2026-09-28)
+
+- Shipped: =url= slot moved after =linked-issues= (schema order,
+  with a keep-in-sync warning), the dead =callback= column and
+  slot dropped everywhere, schema v10 with a per-row classifier
+  (replies IN state literals OR description LIKE url) + shape-
+  detected cycles (both v9 table shapes) + canonical rebuild,
+  dedupe in =--pullreq-create=, children-first
+  =--delete-pullreq-tree=, and the =code-review-db-cleanup=
+  interactive GC (prefix purges saved=nil render cache; keeps
+  finished, saved, and the current review).  8 new ERT tests
+  incl. the day-one schema/slot-order assertion, both v9-shape
+  migrations, a v8 chain test, and a LIKE-only straggler row.
+- TRIAGE CORRECTION: the db held a MIX, not 105 shifted rows:
+  64 IN-branch shifted rows, 4 LIKE-only stragglers (url in
+  description, replies NULL), ~124 pre-phase-7 correct rows and
+  43 all-NULL rows.  The classifier leaves correct and NULL
+  rows alone; the LIKE branch exists precisely for the 4.
+- The LIKE branch shipped BROKEN and nothing caught it: the
+  suite seeded rows that matched the IN branch too, so both
+  migrations tests stayed green while the pattern matched zero
+  rows on the real db (the 4 stragglers stayed unshifted after
+  the daemon's session restore ran the migration).  Root cause
+  chain: emacsql formats prepared raw strings through
+  =format=, so a literal % must be doubled (%%); a PARAMETER or
+  vector CONSTANT can never carry a trailing-% pattern at all
+  (=emacsql-escape-scalar= prin1-wraps it: "https://% becomes
+  \"https://% with a literal backslash, which matches
+  nothing); and wrapping the statement in elisp =format=
+  collapses the %% BEFORE emacsql ever sees it.  Correct form:
+  build with =concat= and keep the raw literal =LIKE
+  '"https://%%'=.  Fixed live with an idempotent re-run after
+  adding the LIKE-only regression row (straggler urls verified,
+  60 url-populated rows).
+- Marker bridge discovery: closql 2026 stores the eieio
+  unbound marker as the plain text =eieio-unbound=
+  (=closql--intern-unbound=) and post-processes every decoded
+  row with =closql--extern-unbound=, which returns the LIVE
+  marker (=eieio--unbound= after the Emacs 31 rename; always the
+  value of =eieio-unbound=).  Tests must assert decoded markers
+  against the EVALUATED =eieio-unbound=, never a quoted literal.
+- Live results: the daemon's session restore ran the migration
+  automatically (defense in depth); the fix-up re-run was
+  idempotent as designed; =code-review-db-cleanup= (prefix) on
+  the real db deleted 228 rows keeping only the current local
+  review, and VACUUM shrank the file 94MB -> 64KB.  Backups:
+  =code-review-db-file.sqlite.bak-v9-20260928= (post-IN-branch
+  migration) and =.bak-v10-likefix-20260928= (pre-cleanup).
+- Side quest: two daemon crashes mid-phase turned out to be
+  Emacs 31 GC bugs (tree-sitter parser finalizer running
+  kill-buffer-hook/tramp code inside =garbage_collect=; a
+  separate eln-load SEGV under helm-M-x), proven unrelated to
+  the batch =make test=/probe runs (crash reports parsed; zero
+  eln writes from batch runs; one crash fired with no batch
+  run in flight).  New protocol: batch probes set
+  =native-comp-jit-compilation nil= and never touch the
+  daemon.
 
 
 * Future ideas

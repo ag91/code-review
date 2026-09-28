@@ -574,3 +574,48 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   decided by line order, not authorship: give fixture commits
   deterministic `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` via
   `process-environment` bound around `call-process`.
+- emacsql `%` escaping (phase 21, cost a broken migration
+  branch): a RAW SQL string is a format string at execution
+  (`emacsql-format` runs `format` over the prepared statement),
+  so every literal `%` must be written `%%`.  A `$s1` PARAMETER
+  or a vector string CONSTANT can never carry a pattern that
+  ends in `%` at all: `emacsql-escape-scalar` prin1-wraps values
+  for STORAGE, so the arg `"https://%` reaches sqlite as the
+  pattern `"\"https://%"` (a literal backslash) and matches
+  nothing.  And do not build the raw string with elisp `format`
+  (it collapses the `%%` before emacsql ever sees it) — build
+  with `concat` and keep the raw `%%` literal (see
+  `code-review-db--migrate-v10`).  Assert wildcards against
+  real rows: a broken pattern silently matches ZERO rows and
+  every test that also matches another branch stays green.
+- closql's marker bridge (phase 21): closql stores the eieio
+  unbound marker as the plain TEXT `eieio-unbound`
+  (`closql--intern-unbound` on write) and post-processes every
+  decoded row with `closql--extern-unbound`, which returns the
+  LIVE marker (`eieio--unbound` after the Emacs 31 rename;
+  always the value of `eieio-unbound`).  A decoded buffer
+  column therefore eq's the EVALUATED `eieio-unbound`, never
+  the quoted literal `'eieio-unbound` — assert with
+  `(should (eq (nth N row) eieio-unbound))`.
+- `substr(col, 1, N)` on stored prin1 text CUTS a string
+  literal mid-quote (the leading `"` with no closing `"`), and
+  emacsql's `read` then dies on the row ("EmacSQL had an
+  unhandled condition", data nil).  Verify stored strings with
+  `length(col)` (a number, reads back cleanly) or read the file
+  with the sqlite3 CLI.
+- Makefile recipes MANGLE `$s1` (make expands `$s`, then the
+  shell expands the rest): keep `$`-free SQL in makefile probes
+  and put probe code in a real `.el` file that the recipe just
+  `load`s — never emacsql params inside `--eval` strings.
+- Batch emacs probes must set `native-comp-jit-compilation nil`
+  as their FIRST eval: a batch process JIT-compiling the
+  package `.elc`s writes the shared `~/.emacs.d/eln-cache` and
+  races the live daemon (crash-correlation during phase 21 was
+  traced to daemon-side Emacs 31 GC bugs, but the guard removes
+  the shared surface entirely).  Loading probe `.el` files via
+  a makefile recipe needs the FULL elpa load path (the project
+  Makefile's `$(wildcard $(PKG_DIR)/*)` form), not a hand-
+  picked `-L` list (test files `(require 'a)`, `uuidgen`, ...).
+- Test files have NO `provide` form: `require` fails with
+  "failed to provide feature".  `load` them (as `run-tests.el`
+  does) — in probes, `load` the `.el` directly.

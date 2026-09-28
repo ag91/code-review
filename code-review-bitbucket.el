@@ -37,7 +37,8 @@
   :group 'code-review)
 
 (defclass code-review-bitbucket-repo (code-review-db-pullreq)
-  ((callback            :initform nil)))
+  ()
+  "A Bitbucket pull request.")
 
 (defun code-review-bitbucket-errback (&rest m)
   "Error callback, displays the error message M."
