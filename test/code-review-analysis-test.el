@@ -434,7 +434,10 @@ names as-is, local git diff args special-cased."
 
 (ert-deftest code-review-analysis/parse-blame-porcelain ()
   "Porcelain blame: header line sets the original line, author
-metadata lines fill the entry, the tab-content line closes it."
+metadata lines fill the entry, the tab-content line closes it.
+A commit REAPPEARING later gets only a bare header (no stanza):
+its remembered metadata must be reused (phase 16 found the
+phase 15 parse silently dropping those lines)."
   (let ((table (make-hash-table :test #'eql))
         (out "1111111111111111111111111111111111111111 1 1 1
 author Alice
@@ -447,11 +450,21 @@ author-time 1600000000
 \tsecond line
 summary x
 filename a.py
+3333333333333333333333333333333333333333 3 3 2
+author Carol
+author-time 1500000000
+\tthird line
+1111111111111111111111111111111111111111 4 4
+\tfourth line (Alice again: bare header, no stanza)
 "))
     (code-review-analysis--parse-blame out table)
     (should (equal (gethash 1 table) '("Alice" . 1700000000)))
     (should (equal (gethash 2 table) '("Bob" . 1600000000)))
-    (should (null (gethash 3 table)))))
+    ;; Carol's group header carries the count; her content closes it
+    (should (equal (gethash 3 table) '("Carol" . 1500000000)))
+    ;; Alice's commit REAPPEARS with a bare header: metadata reused
+    (should (equal (gethash 4 table) '("Alice" . 1700000000)))
+    (should (null (gethash 5 table)))))
 
 (ert-deftest code-review-analysis/slice-blame-ranges-budget ()
   "Ranges over the line budget are dropped whole; the budget only

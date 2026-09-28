@@ -746,22 +746,46 @@ and the history a partial clone would lazy-fetch."
   "Parse `git blame --porcelain' output OUT into TABLE.
 TABLE: OLD-LINE -> (AUTHOR . AUTHOR-TIME).  With -L ranges the
 output carries only the blamed lines, so TABLE covers exactly
-the requested ranges.  Pure."
-  (let ((author nil) (author-time nil) (orig-line nil))
+the requested ranges.  Pure.
+
+PORCELAIN GOTCHA (found by phase 16): the full author stanza is
+printed only the FIRST time a commit appears in the output — a
+later group of the same commit gets a bare `SHA ORIG FINAL'
+header with no metadata.  A parse that waits for a stanza before
+storing drops those lines silently (the phase 15 age/ownership
+ingredients undercounted exactly them).  Commit metadata is
+therefore remembered per SHA and seeded onto the bare headers."
+  (let ((sha-meta (make-hash-table :test #'equal))
+        (sha nil) (author nil) (author-time nil) (orig-line nil))
     (dolist (line (split-string out "\n"))
       (let ((capped (code-review-analysis--cap-line line)))
         (cond
          ((string-match
-           "\\`[0-9a-f]\\{40\\} \\([0-9]+\\) [0-9]+\\(?: [0-9]+\\)?"
+           "\\`\\([0-9a-f]\\{40\\}\\) \\([0-9]+\\) [0-9]+\\(?: [0-9]+\\)?"
            capped)
-          (setq orig-line (string-to-number (match-string 1 capped))
-                author nil author-time nil))
+          ;; bind BEFORE any call that could match (match data is
+          ;; GLOBAL), and reuse the metadata of a known commit
+          (let ((m (match-string-no-properties 1 capped))
+                (meta nil))
+            (setq sha m
+                  orig-line (string-to-number
+                             (match-string-no-properties 2 capped))
+                  author nil author-time nil)
+            (when (setq meta (gethash m sha-meta))
+              (setq author (car meta)
+                    author-time (cdr meta)))))
          ((string-match "\\`author \\(.+\\)" capped)
           (setq author (match-string-no-properties 1 capped)))
          ((string-match "\\`author-time \\([0-9]+\\)" capped)
-          (setq author-time (string-to-number (match-string 1 capped))))
+          (setq author-time (string-to-number
+                             (match-string-no-properties 1 capped))))
          (t
-          ;; the content line ("\t...") closes the entry
+          ;; any non-header, non-author line closes the current
+          ;; entry: the content line ("\t...") and the rest of the
+          ;; stanza (committer/summary/filename) — by then author
+          ;; and author-time are already final
+          (when (and sha author author-time)
+            (puthash sha (cons author author-time) sha-meta))
           (when (and orig-line author author-time)
             (puthash orig-line (cons author author-time) table)
             (setq orig-line nil))))))

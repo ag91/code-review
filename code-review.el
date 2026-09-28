@@ -45,6 +45,7 @@
 (require 'code-review-faces)
 (require 'code-review-actions)
 (require 'code-review-browse)
+(require 'code-review-dossier)
 (require 'code-review-local)
 (require 's)
 
@@ -174,6 +175,8 @@ OUTDATED."
     code-review-popup-pr-description)
    ("C-c C-d" "Next delicate hunk (cycle: risk-ranked hunks, hottest first)"
     code-review-next-delicate-hunk)
+   ("C-c C-h" "Hunk dossier: insert the on-demand change context of this hunk"
+    code-review-dossier-hunk)
    ("N" "Focus: hide auto-flagged noise files (lockfiles, docs, whitespace-only)"
     code-review-toggle-focus-mode)
    ("D" "Difftastic: zoom into the file's real changes (C-u: whole PR)"
@@ -203,6 +206,8 @@ OUTDATED."
     (define-key map (kbd "C-c C-p") 'code-review-previous-hunk)
     ;; phase 15: cycle the delicate hunks (hottest first)
     (define-key map (kbd "C-c C-d") 'code-review-next-delicate-hunk)
+    ;; phase 16: on-demand change context of the hunk at point
+    (define-key map (kbd "C-c C-h") 'code-review-dossier-hunk)
     (define-key map (kbd "G") 'code-review-reload)
     ;; Repository context: xref and worktree access from the diff
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)

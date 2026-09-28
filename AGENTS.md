@@ -32,6 +32,7 @@ discovered.
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
 | `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps, byte-capped, cached per PR+diff) |
 | `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (git log --name-only via code-compass parse, async child emacs, TTL), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
+| `code-review-dossier.el` | phase 16 hunk dossier: `C-c C-h` inserts an on-demand, cached, collapsible "Context (dossier)" section after a hunk (`git log -L` history of exactly those lines at the base rev, blame authors/last-touch, touched-def call sites with jump buttons, tests split, file heat, hunk risk); `C-u` appends the OFF-by-default LLM garnish |
 | `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
@@ -543,3 +544,33 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   reason after code-compass's primitives were restored to the
   `.el` without recompiling).  Verify child-visible
   dependencies from a FRESH batch emacs, never from the daemon.
+- A form can be BALANCED but MIS-NESTED: one missing closer
+  mid-function is absorbed by a surplus closer at the end, and
+  `check-parens` stays green while the code means something
+  else.  This shipped a phase 16 command whose whole body sat
+  inside `(when (equal arg '(4)))` — a no-prefix keypress was a
+  complete no-op while every artifact looked fresh.  When a
+  function "runs but does nothing", `(disassemble 'fn BUF)`
+  FIRST (output goes to BUF or `*Disassembly*`, NOT
+  `standard-output`): the `goto-if-nil` targets show the real
+  control flow, and they cannot be lied to by stale artifacts
+  once you have proven the `.elc` is fresh.
+- `make compile` exits 0 even when a byte-compile FAILS (an
+  `--eval`'d `byte-compile-file` never fails make), and the
+  stale `.elc` serves the old code while the source looks
+  fixed.  After EVERY compile: `grep -c Error` the log AND
+  check the `.elc` mtime is newer than the `.el`.  Exit 0
+  alone proves nothing (bit twice in phase 16).
+- Elisp `\x1f` in a string literal greedily reads up to FOUR
+  hex digits: `"\x1falice"` reads as U+01FA + `"lice"`.  Build
+  \x1f-joined fixture strings with `concat` and a standalone
+  `"\x1f"`.
+- Piping probe output through `grep` without `-a`: one
+  `prin1` of byte-code (control characters) makes grep declare
+  the WHOLE stream binary and print only "binary file matches",
+  silently swallowing exactly the lines you grepped for.  Use
+  `grep -a` on emacs probe output.
+- Same-second fixture commits make "most recent commit" a tie
+  decided by line order, not authorship: give fixture commits
+  deterministic `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` via
+  `process-environment` bound around `call-process`.

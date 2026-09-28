@@ -2199,7 +2199,7 @@ The FACADE keeps the original Wanderson header: it IS his file,
 heavily modified (same as every other modified original in the
 fork).
 
-* Phase 16 — Hunk dossier: on-demand change context           :STATUS:todo:
+* Phase 16 — Hunk dossier: on-demand change context          :STATUS:done:
 
 Problem: ranking says WHERE the delicate spots are; it does not
 say WHY they are delicate, so you cannot judge whether the
@@ -2250,6 +2250,81 @@ Use case — what this catches in review:
   preconditions the agent guessed wrong).
 - "Why is this here at all": old lines with lore stop being
   rubber-stampable; plausible rewrites get challenged.
+
+DONE (implementation notes, 2026-09-28):
+
+- New =code-review-dossier.el= (~690 lines): =C-c C-h= on a
+  hunk inserts a collapsible =code-review-dossier-section=
+  right AFTER the hunk (a real magit child of the file section,
+  children reordered to match buffer order so navigation is
+  consistent), replacing any existing dossier for that hunk.
+  Rendered: =git log -L= history of exactly the old-side lines
+  at the diff's base rev (pre-PR commits only, capped by
+  =code-review-dossier-history-limit=), the last touch and
+  blame authors of those lines (one bounded
+  =code-review-analysis--blame=), all call sites of the touched
+  defs as jump buttons (=code-review-analysis--references=,
+  tests split out by =code-review-dossier-test-path-regexp=,
+  capped by =-max-callsites= / =-max-defs=), plus the phase-14
+  file heat and the phase-15 hunk risk reasons when the caches
+  have them.  =C-u C-c C-h= additionally appends the LLM garnish
+  (=-llm-summarizer=, OFF by default, every fact traceable to
+  the dossier text via =--text=, rendered italic and marked
+  "(machine summary)").
+- On-demand only, zero render cost; cached per (PR id, diff
+  md5, path, ranges).  Partial-clone detection reuses
+  =code-review-analysis--partial-clone-p=: =git log -L= is
+  skipped (message once per worktree) unless
+  =-partial-clone-history=; blame follows
+  =code-review-analysis-blame-partial-clones=.
+- =C-c C-h= bound in =code-review-mode-map= + the transient.
+  Point inside a dossier resolves to its hunk, so a re-press
+  (or C-u) keeps working where the command leaves point.
+- BUG FIX found by the new tests:
+  =code-review-analysis--parse-blame= dropped the
+  repeated-commit case — =git blame --porcelain= prints the
+  full author stanza only the FIRST time a commit appears;
+  later groups of the same commit get bare =SHA ORIG FINAL=
+  headers.  A per-SHA metadata cache now fills them in (age and
+  authorship were silently undercounted before).  Test
+  extended with the repeated-commit case.
+- Verified: 16 new tests (suite 158/158 in a fresh batch
+  emacs), clean compile, eln purge, and the live daemon: local
+  review of this repo renders, =C-c C-h= on a hunk inserts the
+  section (history + blame + heat), a re-press REPLACES it,
+  C-u works from inside the section, TAB hides/shows.
+
+New gotchas this phase (also AGENTS.md):
+
+- Elisp =\x1f= in a string literal greedily reads up to FOUR
+  hex digits: ="\x1falice"= reads as U+01FA +=lice=.  Build
+  \x1f-joined fixture strings with =concat= and a standalone
+  ="\x1f"=.
+- A form can be BALANCED but MIS-NESTED: one missing closer
+  mid-function is silently absorbed by a surplus closer at the
+  end, and =check-parens= stays green while the code means
+  something else.  This phase it put the command's whole body
+  inside =(when (equal arg '(4)))= — a no-prefix press was a
+  complete no-op while every artifact looked fresh and
+  correct.  Proof tool: =(disassemble 'fn BUF)= (NOTE: the
+  output goes to the BUF argument or =*Disassembly*=, not
+  =standard-output=) — the =goto-if-nil= targets show the real
+  control flow.  When a function "runs but does nothing",
+  disassemble it before anything else.
+- =make compile= exits 0 even when a byte-compile FAILS (an
+  =--eval'd= =byte-compile-file= never fails make), and the
+  stale =.elc= serves the old code: ALWAYS =grep -c Error= the
+  compile log AND check the =.elc= mtime.  This bit twice this
+  phase (both times my own one-closer-short edits).
+- Piping probe output through =grep= without =-a=: one
+  =prin1= of byte-code (control characters) makes grep declare
+  the WHOLE stream binary and print only "binary file
+  matches", silently swallowing the lines you grepped for.
+  Use =grep -a= on emacs probe output.
+- Same-second fixture commits make "last touch" a tie decided
+  by line order, not authorship: give fixture commits
+  deterministic =GIT_AUTHOR_DATE= / =GIT_COMMITTER_DATE= via
+  =process-environment= around =call-process=.
 
 * Phase 17 — Test-impact verification and CI-gaming detector  :STATUS:todo:
 
@@ -2430,6 +2505,301 @@ non-deterministic flavor we avoid.  Sources in the References
 section.
 
 
+* Phase 20 — Defect-oriented hunk highlighting (phase 10 refinement) :STATUS:todo:
+
+NOTE (research 2026-09-28): phase 10 answered "what is this
+code?" (definitions, names, literals).  This phase re-aims the
+same machinery at the reviewer's actual question, "where could
+this be wrong?", and at the reading-resolution question, "what
+actually changed in this line?".  Three sub-features: 20a
+security sinks/sources, 20b beacon retargeting, 20c intra-line
+changed-token marking.  Full sources in the References
+section; short version:
+
+- WHERE EXPERTS LOOK: beacons.  Experienced programmers anchor
+  on beacon lines (conditions, loop headers, key assignments)
+  far more than other lines (Wiedenbeck 1986; plan-knowledge
+  origin: Soloway, Ehrlich & Bonar 1982), and eye-tracking of
+  defect finding shows reviewers scan broadly, then LOCK
+  fixations onto the conditions and loops where the seeded
+  defects lived (Sharif, Falcone & Maletic, ETRA 2012,
+  replicating Uwano et al. 2006).  Our current queries
+  highlight definitions and names; the defect-relevant
+  constructs carry NO face, while EVERY literal does: on
+  scalafmt#5264, 691 of 959 overlays (72%) were constant-face
+  literals — the loudest face points at the least
+  defect-relevant tokens.
+- SECURITY PRIMING BEATS CHECKLISTS: merely asking reviewers to
+  focus on security made vulnerability detection 8x more
+  likely, and a TAILORED security checklist added nothing
+  further (Braz, Aeberhard, Çalikli & Bacchelli, ICSE 2022;
+  150 participants).  A persistent face on sink tokens is
+  priming that never needs to be read; the phase 10 SQL
+  cross-join red face already proves the mechanism in this
+  codebase.
+- MOST EDITS ARE TOKEN-LEVEL: tree-differencing research
+  (ChangeDistiller, TSE 2007; GumTree, ASE 2014) shows the
+  typical code change is a small token edit INSIDE a line —
+  whole-line green treatment leaves the reviewer scanning the
+  line by hand for the delta (20c marks it; the
+  scan-then-fixate eye-tracking pattern wants the fixation
+  target as small as possible).
+- NOISE BUDGET: syntax highlighting improves comprehension but
+  the effect DECREASES with expertise (Sarkar, PPIG 2015).
+  Hence this phase RETARGETS faces instead of adding volume,
+  and the 20a vocabulary must stay sparse.
+
+** 20a — Security source/sink face layer
+
+- New defcustom =code-review-hunkhighlight-security-queries=,
+  shaped exactly like
+  =code-review-hunkhighlight-test-queries= (per language,
+  merged whenever present).  No engine change:
+  =code-review-hunkhighlight--ranges= already appends the test
+  query list and isolates per-query capture failures — the
+  security list rides the same mechanism.
+- Two faces:
+  - SINKS: dangerous calls and risky patterns, in
+    =font-lock-warning-face= (the SQL =@danger= precedent).
+    Vocabulary from MEASURED rule corpora (bandit, Semgrep
+    registry, Brakeman, Gosec — the practical descendants of
+    taint analysis's sources/sinks model), not invented:
+    =eval= / =exec=, =pickle.loads=, =os.system=, =subprocess=
+    with =shell=True=, =yaml.load= without a Loader,
+    =hashlib.md5= / =sha1=, =Math.random= for auth material,
+    =innerHTML= / =dangerouslySetInnerHTML=, =verify=False=,
+    bare =except: pass= (swallowing), string-concatenated SQL.
+  - SOURCES: untrusted-input entry points (=request.*=,
+    =sys.argv=, =os.environ=, =input()=) in a DIMMER
+    dedicated face (=code-review-source-face=): marking where
+    taint ENTERS completes the picture the sinks open.
+- SPARSENESS RULE: only tokens dangerous in themselves or
+  unambiguous input boundaries.  Priming stops working when
+  everything is marked (the Braz et al. mechanism + Sarkar's
+  expertise decay + the user's own two noise-tuning rounds).
+- CACHE: the ranges cache key in
+  =code-review-hunkhighlight-region= must hash the new
+  defcustom too — toggling it must invalidate cached ranges,
+  the cache flaw learned twice already (the phase 10
+  face-swap incident and the fragment-languages incident).
+
+** 20b — Beacon retargeting: conditions, comparisons, mutations
+
+Re-target the existing literal emphasis; add no new keyword
+volume:
+
+- Numeric literals and comparison operators INSIDE conditions
+  (=if= / =while= / =case= / loop clauses) KEEP the strong
+  =code-review-constant-face=: boundary values and the =<= vs
+  =<= distinction are the classic off-by-one habitat and the
+  eye-tracking fixation target.
+- Literals OUTSIDE conditions (log strings, ordinary args,
+  config values) drop to a DIMMER variant or stay plain; a
+  defcustom picks.  Expected effect: the scalafmt 691-overlay
+  constant wall shrinks hard, and the survivors are the ones
+  worth reading.
+- EXCEPTION: test files keep the strong literal face
+  everywhere — expected values ARE the payload there (the
+  existing =-test-queries= distinction already covers it).
+- OPTIONAL, tune after the first live render: assignments that
+  REBIND a parameter or loop variable get a subtle face —
+  state-flow changes are a classic functional-bug class and
+  are invisible in the current face set.
+- Implementation: pure per-language query additions (python
+  =if_statement= / =comparison_operator= territory).  Standing
+  treesit rules apply verbatim: PROBE node names against the
+  installed grammar (compile success means nothing), author
+  predicates in the =#match?= spelling (the 30/31 rewrite
+  handles Emacs 30), never place a predicate inside a =[...] =
+  alternation, capture-exercise every query before shipping.
+
+** 20c — Intra-line changed-token marking (rich diff in surface)
+
+The same research session initially REJECTED this as redundant
+with =D= (difftastic drill-down, phase 3); reversed 2026-09-28:
+the two answer different questions on different availability
+(see the RELATION bullet).  Design:
+
+- RELATION TO =D=: complementary, not redundant.  =D= is
+  on-demand, per-file, STRUCTURAL — and needs =difftastic= and
+  =difft= installed (both absent on this machine, the phase 3
+  soft-dependency).  20c is always-on, works with zero
+  external tools, and answers the in-surface question "which
+  tokens did this line actually change" without a round trip;
+  =D= stays the tool for judging a whole file's shape.
+- The OLD side is already in the hunk: extend
+  =code-review-hunkhighlight--reconstruct= to also return the
+  old side (=-= and context lines) and pair -/+ lines by hunk
+  line numbers.  No git call, no worktree dependency — local
+  diff reviews (phase 12 constraint) inherit it for free.
+- Tokenize paired lines (identifiers / numbers / strings /
+  operators; plain regexp fallback when no grammar — treesit
+  optional) and align with a simple token LCS; mark only the
+  changed tokens of ADDED lines.
+- FACE: must not fight the semantic foregrounds.  The semantic
+  faces set no background, so use an UNDERLINE or background
+  tint on a dedicated face
+  (=code-review-changed-token-face=), carrying its own
+  =cr-hh-face= marker so it stacks and stays idempotent.
+  Verify by what the DISPLAY resolves to (overlay stacking
+  precedence), never by text properties alone — the phase 10
+  post-mortem rule.
+- GUARDS: pure-add lines (no old counterpart) get no marking
+  (the whole line is the delta); whitespace-only differences
+  mark nothing; CAP the line length before tokenizing
+  (megabyte-line regexp stack overflow — the litellm phase 5
+  incident; tokenizing is per line and cheap once capped).
+- Defcustom gate (=code-review-hunkhighlight-intra-line=);
+  the ranges cache key must include it.
+
+** Verification plan (when implemented)
+
+- ERT: per-language security captures; condition-literal
+  retargeting (strong inside conditions, dim outside); a
+  cache-invalidation regression (toggle the new defcustom and
+  assert ranges recompute).  Daemon rebind trap:
+  =(setq VAR (eval (car (get 'VAR 'standard-value))))=.
+- Live: repaint a real buffer via
+  =code-review-hunkhighlight-magit-buffer= (walks existing
+  sections, no rebuild, no comment loss), count overlays per
+  face before/after.  Acceptance signal: constant-face
+  overlays drop sharply outside conditions while condition
+  literals gain the strong face; security faces sparse and
+  accurate.
+- 20c specifics: face stacking on shared text (semantic face
+  and changed-token face BOTH resolve on screen — overlay
+  precedence, the phase 10 post-mortem rule), the line-cap
+  guard against a monster line, pure-add lines unmarked,
+  whitespace-only pairs unmarked, and the cache-invalidation
+  toggle for =code-review-hunkhighlight-intra-line=.
+- Phase 12 constraint: local diff reviews inherit everything
+  (same wash path) — verify with a local buffer as usual.
+- File size: =hunkhighlight.el= is already 872 lines (AGENTS.md
+  offender); extracting the per-language query defcustoms
+  into their own file is likely part of the work.
+- Expect one tuning round (phase 5 scalafmt precedent): the
+  first security vocabulary WILL over- or under-shoot.
+
+
+* Phase 21 — DB hygiene: pullreq column shift, distinct rows, cleanup :STATUS:todo:
+
+Triage (2026-09-28): a raw =[:select :* :from pullreq]= showed
+~105 rows with many identical titles.  Diagnosis found one BUG
+and two missing mechanisms; the bug alone explains most of the
+bloat.
+
+** The bug: pullreq slot/column SHIFT since the v9 url migration
+
+- ROOT CAUSE: the v9 migration added the =url= column with
+  =ALTER TABLE ADD COLUMN= (appending it at position 30 of the
+  table), but the =code-review-db-pullreq= class defines the
+  =url= slot right after =number= (position 14 of 30).  closql
+  serializes POSITIONALLY:
+  =closql--coerce= writes the slot vector into the columns in
+  class order, =closql--remake-instance= maps columns back by
+  position — so every slot from =url= through =linked-issues=
+  lands ONE COLUMN LEFT of its name, and reads apply the same
+  permutation.  Write and read cancel each other: the IN-MEMORY
+  roundtrip is self-consistent (why every live verification
+  passed), while every NAMED-column SQL predicate reads the
+  wrong column.
+- EVIDENCE (the real db, read-only): the =replies= column holds
+  the state values (OPEN x36, LOCAL x57, MERGED x5, CLOSED x1);
+  the =state= column holds feedback (never set: 0/105 non-null);
+  =description= holds the url strings (37/105); =title= holds
+  bodyHTML; =host= holds the titles (99/105); =sha= holds the
+  local worktree path on local rows; =url= holds linked-issues
+  (never set: 0/105).  The pandoc#10850 row literally reads:
+  description = "https://github.com/jgm/pandoc/pull/10850",
+  title = "<p dir=...bodyHTML...", host = "Preserve attributes
+  on HTML paragraphs", replies = "OPEN".
+- CONSEQUENCES:
+  - =code-review-local--cleanup-rows= deletes
+    =WHERE state = "LOCAL"= — matched ZERO rows since the url
+    change, because the LOCAL marker lives in the =replies=
+    column (=WHERE replies = "LOCAL"= matches 57).  The 57
+    accumulated local-diff rows (the design keeps <= 1 at a
+    time) are the direct symptom: the phase 12 cleanup silently
+    died the day phase 7 added the url slot.
+  - The "same title" observation: the =title= column holds
+    bodyHTML (github) or NULL (local rows); the real titles sit
+    in =host= until the repair.
+  - Phase 13 (read tracking) and any future named-column query
+    on url..linked-issues would read garbage — this fix lands
+    FIRST.
+- SCOPE: only the pullreq table is misaligned.  The
+  buffer/path/comment child tables have slot order == column
+  order (verified against the schema; no ALTER ever touched
+  them), so =closql-dref= child loads are fine.
+- FIX: move the =url= slot in the class to where the column is
+  (after =linked-issues=, before =buffer=), bump the schema
+  version to 10, and migrate existing rows with ONE UPDATE —
+  SQLite reads every RHS from the OLD row, so a single
+  statement unshifts: =description=title, title=host, host=sha,
+  sha=feedback, feedback=state, state=replies, replies=review,
+  review=labels, labels=merge, merge=milestones,
+  milestones=projects, projects=reviewers, reviewers=assignees,
+  assignees=linked_issues, linked_issues=url, url=description=.
+  All 105 current rows are provably in the SHIFTED layout (the
+  state column being 100% NULL rules out surviving pre-v9
+  rows), so the unconditional unshift is safe — still BACK UP
+  the file first (phase 7 precedent).
+
+** Missing mechanism 1: DISTINCT rows per PR
+
+=code-review-utils-build-obj= -> =code-review-db--pullreq-create=
+mints a fresh uuid row on EVERY open; reuse exists only for
+saved-unfinished rows (resume), and the saved pool is empty.
+The 48 github rows are 11 distinct PRs; 37 rows are redundant,
+and of the ~11MB db, ~10MB is render-cache dead weight
+(pandoc's 400KB diff is stored 6 times).
+
+Fix: opening a forge PR deletes the existing rows for the same
+=(owner repo number)= — plus their buffer/path/comment children
+(emacsql connections have FKs OFF: nothing cascades, delete
+the children explicitly) — before creating the fresh row.
+Fresh path bookkeeping per open, one row per PR at any time.
+Local rows need nothing new: the phase 12 cleanup works again
+once the shift is fixed.
+
+** Missing mechanism 2: GC
+
+=saved=nil= rows can never be resumed (resume requires
+=saved=t=), finished rows are never purged, and no created-at
+timestamp exists to age them (rowid order IS insertion order in
+sqlite — enough for "keep newest").  Nothing reads these rows:
+they are pure render cache, the forge is the record.
+
+Fix: =code-review-db-cleanup= interactive: (a) run the v10
+unshift if pending, (b) dedupe per PR keeping the newest rowid
+(with its children), (c) purge finished rows and — with a
+prefix — all saved=nil rows except the current PR, (d) VACUUM.
+Expected on the current db: 105 rows -> ~12 forge + <= 1 local,
+11MB -> well under 1MB.
+
+** Verification plan (when implemented)
+
+- ERT in a FRESH batch emacs (the only proof that cannot be
+  fooled by daemon staleness):
+  - THE ASSERTION THAT WOULD HAVE CAUGHT THIS ON DAY ONE:
+    schema column order == class slot order, compared directly
+    (PRAGMA table_info names vs the class slot list) — the test
+    fails on any divergence, for the pullreq table AND the
+    child tables.
+  - Insert + NAMED-column select roundtrip: url lands in url,
+    state in state.
+  - The local cleanup predicate actually deletes a LOCAL row.
+  - Migration test: seed a raw shifted-layout row via emacsql,
+    run the v10 migration, assert every column holds its own
+    slot's value afterwards.
+- Live daemon: BACK UP first; the singleton connection runs
+  the migration at next connect — then re-open a PR twice and
+  see ONE row, start a local review and see old LOCAL rows
+  die, and sanity-check =[:select [state url] :from pullreq]=.
+- Order: this phase lands BEFORE phase 13 (read tracking) and
+  before anything else that stores per-PR state in the db.
+
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N
@@ -2454,7 +2824,7 @@ review/worktree locals are =permanent-local= so the
 =(code-review-mode)= activation that follows rendering does not
 wipe them.
 
-* References — phases 14-19 research (2026-09-24)
+* References — phase research (phases 14-19: 2026-09-24; phase 20: 2026-09-28)
 
 Sources consulted in the 2026-09-24 research sessions that
 shaped phases 14-19; each entry notes the claim it grounds.
@@ -2640,3 +3010,77 @@ shaped phases 14-19; each entry notes the claim it grounds.
   scenarios".  Grounds phase 19's hint-grade treatment of
   history mining (and cautions phase 18's thresholds).
   https://doi.org/10.3390/software5010011
+
+** Defect-oriented hunk highlighting (phase 20, researched 2026-09-28)
+
+- Wiedenbeck, "Beacons in computer program comprehension",
+  International Journal of Man-Machine Studies 25(6), 1986,
+  pp. 697-709.  https://doi.org/10.1016/S0020-7373(86)80083-9
+  Phase 20b's core evidence: beacons (conditions, loop
+  headers, key assignments) are the lines experienced
+  programmers recall and anchor on; novices show no such
+  effect.
+
+- Soloway, Ehrlich & Bonar, "Tapping into tacit programming
+  knowledge", Human Factors in Computing Systems (CHI '83),
+  pp. 52-57.  The plan-knowledge line beacons originate from.
+
+- Sharif, Falcone & Maletic, "An Eye-tracking Study on the
+  Role of Scan Time in Finding Source Code Defects", ETRA
+  2012.  https://doi.org/10.1145/2168556.2168642
+  (PDF: https://www.cs.kent.edu/~jmaletic/papers/ETRA12.pdf)
+  Reviewers scan broadly, then lock fixations onto the
+  conditions/loops where the seeded defects were (replicates
+  and extends Uwano et al. 2006, "Analyzing eye movements for
+  reading code").  Grounds 20b's face budget: spend marks
+  where defect-hunting fixations land.
+
+- Braz, Aeberhard, Çalikli & Bacchelli, "Less is More:
+  Supporting Developers in Vulnerability Detection during Code
+  Review", ICSE 2022.
+  https://doi.org/10.1145/3510003.3511560
+  https://arxiv.org/abs/2202.04586
+  150 participants (71% with 3+ years professional
+  experience): security-focused priming made vulnerability
+  detection 8x more likely; a checklist tailored to the
+  change and its vulnerabilities added NOTHING further.
+  Grounds 20a (a persistent sink face is priming, not a
+  checklist) and its sparseness rule.
+
+- Davis et al., "Eye tracking technologies to visualize secure
+  coding behavior", Array 15, 100241, 2022.
+  https://doi.org/10.1016/j.array.2022.100241
+  and "Tracking the Gaze of Secure Coders: Behavioral Insights
+  into Secure Coding", Journal of Cybersecurity and Privacy
+  6(2):75, 2026.  https://doi.org/10.3390/jcp6020075
+  Expert secure coders' visual scan strategies: which
+  security-relevant spots attract gaze and which are missed.
+
+- Sarkar, "The impact of syntax colouring on program
+  comprehension", PPIG 2015.
+  https://ppig.org/files/2015-PPIG-26th-Sarkar1.pdf
+  Highlighting significantly improves comprehension time, but
+  the effect weakens as programming experience grows.  Grounds
+  phase 20's retarget-not-add stance and the noise budget of
+  both sub-phases (and, retroactively, phase 10's
+  minimal-faces tuning).
+
+- Vocabulary sources for 20a (measured keyword lists — the
+  practical descendants of taint analysis's
+  sources/sinks/sanitizers model; take keywords from rules
+  with real-world precision data, do not invent them):
+  bandit https://github.com/PyCQA/bandit,
+  the Semgrep registry https://semgrep.dev/r,
+  Brakeman https://brakemanscanner.org/,
+  Gosec https://github.com/securego/gosec.
+
+- Fluri, Würsch, Placzek & Gall, "Change Distilling: Tree
+  Differencing for Fine-Grained Source Code Change Extraction",
+  IEEE TSE 33(11), 2007; and Falleri et al., "Fine-grained and
+  Accurate Source Code Differencing" (GumTree), ASE 2014.
+  https://www.labri.fr/perso/xblanc/data/papers/ASE14.pdf
+  Most code edits are small token updates within a line.
+  Grounds 20c: whole-line diff faces hide exactly the delta
+  the reviewer needs to judge.  (We borrow the finding, not
+  the machinery — a plain token LCS over the hunk's own -/+
+  lines is enough; no AST differencing engine needed.)
