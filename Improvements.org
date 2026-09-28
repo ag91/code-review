@@ -2936,6 +2936,454 @@ Expected on the current db: 105 rows -> ~12 forge + <= 1 local,
   daemon.
 
 
+* Phases 22-26 — Review as the verification cockpit        :STATUS:todo:
+
+(Designed 2026-09-29, out of the 2026-09-28/29 research
+sessions on reviewing AI-generated code at volume.)
+
+THE SCENARIO THESE PHASES ANSWER: AI code generation has
+outrun human review capacity.  Industry data says so (DORA
+2025: ~90% AI adoption with throughput gains coexisting with
+delivery instability; GitClear 2025/26: duplicated blocks up
+4x, moved lines and refactoring down, churn doubling; the EASE
+2026 study already in the References: 61% of agent PRs get no
+recorded review), and the user's work environment says so:
+more code production than anyone can review, AI bots
+reviewing AI code, and personnel losing a consistent
+understanding of the systems customers pay for.  Exhaustive
+line-review as the quality gate is economically dead at
+generation volume — a rubber stamp is not understanding.
+
+THE ADAPTATION — what keeps this mode RELEVANT in that
+scenario.  We stop optimizing for "help a human read every
+diff" and start optimizing the economy of scarce attention:
+
+1. LIFT THE CONSTRAINT by delegating conformance to AUTOMATED
+   CI CHECKS: deterministic gates (tests, types, properties)
+   enforce what humans used to eyeball.  LLM generation is
+   non-deterministic, so we never TRUST it — we bind
+   REQUIREMENTS to EXECUTABLE checks and let CI enforce them
+   forever.
+2. MAXIMIZE THE VALUE OF REVIEW TIME: explicit budgets,
+   risk-ranked admission (composition of the phase 14/15/22
+   signals), and honest accounting of what was gate-approved
+   vs human-reviewed.
+3. MAINTAIN A CLEAR BINDING between spec/requirements and the
+   CI checks enforcing them: requirement IDs traceable into
+   tests, checked mechanically at review time and in CI.
+
+UNIFYING PRINCIPLE: every artifact in the loop must either be
+REVIEWED BY A HUMAN ONCE (spec, criteria, verdicts) or CHECKED
+BY A MACHINE FOREVER (gates, runtime, telemetry).  The one
+thing the system can no longer afford is human attention
+spent on artifacts that EVAPORATE — which is what ordinary
+review comments and ordinary postmortem wiki pages are today.
+Each phase below states which side it builds.
+
+DESIGN CONSTRAINT FOR ALL FIVE PHASES (the capability ladder):
+every feature must work at LEVEL 0 = plain git on a bare repo
+(personal projects), and light up progressively: L1 = forge
+extras when present (GitHub Deployments, labels, PR-attached
+agents), L2 = observability when configured (OpenTelemetry
+CI/CD semantic conventions — Release Candidate as of 2026 —
+plus PromQL/Grafana links).  The probe-and-degrade pattern
+this package already uses for difftastic/treesit/code-compass
+applies to every integration here: no feature may
+hard-require non-standard infrastructure, or the mode becomes
+a tool for one work context instead of one mode for both
+personal and work repos.
+
+Order: 22 (pure git, viral) -> 23 (solo loop) -> 24 (surface
++ binding + capture) -> 25 (budget; consumes 22+24 signals)
+-> 26 (outcome telemetry; consumes infra, degrades to L0).
+
+* Phase 22 — Incident registry and agent conventions       :STATUS:todo:
+
+RELEVANCE (preamble): implements the CHECKED-BY-A-MACHINE-
+FOREVER side for incidents.  Today a postmortem produces a
+document nobody rereads until the NEXT incident in the same
+file — attention spent on an artifact that evaporates.  One
+incident must leave TWO durable artifacts behind: a PRIORITY
+SIGNAL (permanent review heat) and a REGRESSION TEST
+reference.  Pure git (L0): commit trailers are the source of
+truth, the markdown registry is generated.
+
+- New file =code-review-registry.el= (one coherent concern,
+  within the 500-800 line guideline).
+- COMMIT TRAILERS on the fix commit (git-native,
+  machine-greppable via
+  =git log --format="%(trailers:key=Incident)"=) are the
+  SOURCE OF TRUTH:
+
+  =Incident: 2026-047=, =Invariant-Ref: req-14=,
+  =Regression-Test: test_export_is_atomic=, =Paths: ...=
+
+- The =incidents/= markdown files (YAML front matter + short
+  human body: id, date, title, invariant, req refs, tests, PR
+  link) are GENERATED from the trailers by a make target or
+  CI job — never hand-curated, so they cannot drift (the
+  CASE/UML lesson: generated, never curated).
+- DETECTION: building/reviewing a PR whose title or
+  description matches =code-review-incident-keywords=
+  (incident, outage, regression, hotfix, sev1/2/3, CVE,
+  rollback) prompts ONCE: "Looks incident-related — tag this
+  review with a registry entry?"
+- =code-review-incident-tag=: create =incidents/<date-slug>.md=
+  from a template with the PATHS PREFILLED FROM THE PR'S
+  CHANGED FILES (a thing this mode can do that generic review
+  tooling cannot).  Submission strategy chain, shared with
+  phase 24: (1) PR-attached agent if available, (2) push a
+  commit to the PR branch, (3) single suggestion block,
+  (4) local working tree for phase 12 reviews.  Trailers are
+  added whenever the tool participates in the fix commit.
+- CONSUMPTION (existing machinery, just fed):
+  - phase 14 harvest: trailers first, =incidents/*.md= front
+    matter as fallback — byte-capped and cached per the
+    existing engine rules (AGENTS.md: never unbounded compute
+    in the daemon);
+  - phase 15 delicacy badge: incident count on file/hunk
+    headings;
+  - phase 16 dossier: incident entries with jump buttons;
+  - phase 5 dead-code analysis: NEVER flag incident-touched
+    paths as possibly dead;
+  - phase 25 (later): incident paths are NEVER sampleable —
+    auto-elevated to mandatory human review.
+- VIRALITY — =code-review-install-conventions=: idempotent
+  command appending a CONVENTIONS block to =AGENTS.md= (and
+  optionally =CONTRIBUTING.md=): criteria file locations and
+  format (phases 23/24), the req-ID <-> test-tag rule, the
+  incident registry + trailer conventions, and the review-risk
+  behavior ("changes touching incident paths get elevated
+  review").  Every AI agent working in the repo reads
+  =AGENTS.md= before touching anything — so Copilot/Cursor/
+  Claude Code author registry entries, spec files and test
+  tags THEMSELVES, correctly formatted, with zero new tooling
+  on their side.  Conventions spread the way agents already
+  work, not by converting colleagues.
+- VERIFICATION: ERT for the pure parts (trailer parse, front
+  matter parse, template generation, keyword detection,
+  idempotent conventions append); batch emacs; live daemon on
+  a real incident-shaped PR; the usual compile + eln-cache +
+  reload protocol.
+
+* Phase 23 — Solo criteria loop (local diff enforcement)    :STATUS:todo:
+
+RELEVANCE (preamble): implements the REVIEWED-BY-A-HUMAN-
+ONCE side at the place every user controls end-to-end:
+reviewing your OWN AI-generated changes before pushing, on
+any repo, with no forge.  The local review (phase 12) becomes
+the enforcement point that a change's REQUIREMENTS exist and
+are visible NEXT TO THE DIFF, so the solo reviewer judges
+CONFORMANCE TO INTENT, not just the shape of the code.  This
+is also the bootstrap when colleagues do not use criteria:
+the ratchet works alone, before any org buy-in.
+
+- =code-review-criteria-file-regexp=: files recognized as
+  criteria (default: paths under =specs?/= or
+  =requirements?=/ ending =.md= or =.feature=).
+- =code-review-criteria-required=: =nil= (off) / =warn=
+  (banner: "no criteria cover the files in this change") /
+  =require= (the local review refuses to open until at least
+  one criteria file covers the touched area).  Default
+  =warn=.
+- TEMPLATE INSERTER: =code-review-criteria-dir= plus a
+  markdown skeleton in EARS/Gherkin shape with a stable
+  =req-ID= (date-numbered), so the phase 24 traceability
+  binding exists from day one.
+- =code-review-criteria-generate-function=: a defcustom hook
+  the mode CALLS but never implements — wire to gptel/ellama/
+  llm.el or a shell call to the user's agent.  The mode ships
+  the template + ID discipline; the LLM drafts the
+  requirement text; the human reviews it.  Soft dependency
+  only (the difftastic/code-compass pattern), so the mode
+  stays usable on personal repos with no agent wired.
+- CRITERIA CHECKLIST SECTION in the phase 12 local review
+  buffer: every requirement covering the touched files, each
+  with a "does this diff satisfy it?" state, rendered next to
+  the diff, jump buttons to the criteria files.  A new
+  section class in the section-render family.
+- AGENT HANDOFF: with the phase 22 conventions block
+  installed, the GENERATING agent drafts the criteria file as
+  part of the change, so this phase only CHECKS.  Without it,
+  the template inserter + AI hook do the authoring.
+- DOGFOOD DELIVERABLE — code-review becomes the EXAMPLE of the
+  whole phases 22-26 approach, on itself:
+  - Improvements.org is turned into CRITERIA: one =req-ID=
+    markdown file per requirement under this repo's =specs/=
+    (the dogfood instance of =code-review-criteria-dir=), in
+    EARS/Gherkin shape ("WHEN the entry regex drops magit's
+    backref group THE WASHER SHALL still match diff --git
+    lines" — the BEHAVIOR contract, not the engineering
+    narrative; Improvements.org REMAINS the roadmap and
+    engineering log, the criteria carry only the what-shall-
+    hold part).
+  - BINDING TO ERT: each implemented requirement is referenced
+    by the ERT test(s) that guard it — the req-ID appears in
+    the test NAME (the existing =file-name/description= slash
+    convention grows a =req-<id>-= segment) or docstring,
+    whichever the phase 24 traceability pass greps.  Existing
+    regression tests are the natural first bindings (the
+    wash-rename-block test IS req for phase 11b's entry-regex
+    contract; the jump-to-file-anchor test IS req for the
+    wash-hunk match-data binding, etc.).
+  - RETROSPECTIVE EXTRACTION for the done phases 1-21: the
+    DONE notes are already structured, so the criteria are
+    AI-DRAFTED (the first real exercise of
+    =code-review-criteria-generate-function=) and
+    human-reviewed one phase at a time — this is the
+    SANCTIONED EXCEPTION to the no-backfilling rule below:
+    backfilling is forbidden for codebases nobody understands,
+    but Improvements.org IS the understanding.
+  - GOING FORWARD: a phase moving to STATUS:done must land its
+    criteria files and req-ID-tagged ERT tests TOGETHER — the
+    phase 24 traceability pass on code-review's own PRs
+    becomes the enforcement, and phase 12 local reviews of
+    this repo render the criteria checklist next to the diff
+    (the full loop: the mode reviewing its own changes against
+    its own requirements).
+  - PAYOFF: the conventions block phase 22 installs into
+    this repo's AGENTS.md then documents a discipline this
+    repo actually lives — which is what makes the approach
+    credible and viral instead of aspirational.
+- WHY CONSTRAINED LANGUAGE, NOT FREE PROSE: EARS/Gherkin
+  requirements are DIFFABLE (one sentence per requirement,
+  one requirement per file — git diffs work like code diffs),
+  UNAMBIGUOUS (fixed WHEN/IF/WHILE/THEN templates kill
+  should/could/may — half of review comments today are two
+  humans discovering they read the requirement differently),
+  and BINDABLE (a test is mechanically derivable from the
+  sentence; the agent writes the binding, the human approves
+  the test — BDD's contract without BDD's step-definition
+  ceremony, which is what killed BDD adoption last time).
+- SCOPE: criteria are written only for behavior a change
+  touches (plus incident areas, phase 22) — coverage grows at
+  the rate of change, like test coverage; NO backfilling specs
+  for a codebase nobody fully understands (the dogfood
+  retrospective above is the one sanctioned exception, and
+  only because the roadmap log is the understanding).
+- VERIFICATION: ERT on the pure parts (requirement extraction
+  from criteria files, criteria-to-diff-file matching,
+  template generation with stable IDs, =warn= / =require=
+  modes incl. the refusal path); end-to-end on the demo repo
+  via =code-review-review-local-diff=; DOGFOOD acceptance:
+  the phase 24 traceability pass runs GREEN on this repo's
+  own criteria and req-ID-tagged ERT binding (every extracted
+  requirement for a first sample phase references at least one
+  existing test, and a seeded criteria edit with no test edit
+  is FLAGGED); daemon reload per protocol.
+
+* Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:todo:
+
+RELEVANCE (preamble): brings the spec/CI BINDING into the
+shared review surface (preamble goal 3).  Specs render as
+first-class review artifacts above the code, the spec <->
+test linkage is checked mechanically at review time, and
+human review verdicts stop evaporating: every substantive
+comment can leave a durable, machine-checkable criterion
+behind.  The reviewed-once artifact gets the top of the
+buffer; the code diff renders as supporting evidence — the
+visual hierarchy IS the methodology.
+
+- PHASE 3 CLASSIFIER: files matching the criteria regexp
+  classify as =[SPEC]=; they render in a dedicated section
+  ABOVE "Files changed", fontified EARS/Gherkin, and are
+  NEVER hidden by focus mode.  Narrative generated docs
+  (READMEs, ADRs, agent summaries) stay =DOC=-classified and
+  budget-free (phase 25): generated docs can DESCRIBE
+  behavior that does not exist — treat them as untrusted
+  narrative, spot-check only.  The spec is the human-vetted
+  claim about intent; the gate suite is the machine-checked
+  claim about behavior; everything else is marketing.
+- TRACEABILITY PASS (pure analysis, the phase 5 engine
+  shape): collect req-IDs from the criteria files in the
+  diff; grep the diff's test hunks for those IDs; emit
+  findings rendered in the analysis section with jump
+  buttons, marked "(traceability)":
+  - "req-N modified; no test in this PR references it" — the
+    STRONG direction (a spec change with no test change is
+    almost always a real gap);
+  - "test tagged req-N changed; req-N's file not touched" —
+    weaker, hint-grade.
+  Same performance discipline as phase 5: capped, cached per
+  (PR id, diff md5), condition-cased so a failure reads as no
+  findings and never takes the render down.
+- THE CI SIDE (documented for adopters, not implemented in
+  this mode): the same check as a CI linter (~50 lines, runs
+  forever): a PR that modifies a requirement must also modify
+  a test referencing its ID.  The mode renders the
+  review-time version; CI makes it permanent.  This answers
+  "nothing prevents a dev changing the suite and forgetting
+  the spec": it stops being a social failure and becomes a
+  red pipeline.  Cross-ref phase 17 (CI-gaming detector):
+  the criteria suite is the counterweight the gaming detector
+  watches.
+- =C-c C-t= COMMENT-TO-CRITERION (comment buffer, next to the
+  phase 6 write path): mark the just-written comment
+  =@criterion=; the agent drafts the regression test from the
+  comment text (the draft goes to the AUTHOR, never directly
+  to main).  SUBMISSION STRATEGY CHAIN, first match wins:
+  (1) PR-ATTACHED AGENT when available
+  (=code-review-criteria-agent-function= defcustom plus a
+  forge probe; e.g. Copilot coding agent accepts review
+  comments as work items), (2) PUSH A COMMIT TO THE PR BRANCH
+  (works on any GitHub/GitLab PR today), (3) SUGGESTION BLOCK
+  (GitHub suggested changes) for single-file additions.  The
+  reviewer authors CRITERIA, never code: authorship
+  boundaries and four-eyes are preserved — the criteria are
+  themselves visible artifacts, reviewed like code, and the
+  gate executes them forever.  A PR that merges with an
+  unresolved substantive comment and no artifact is the new
+  "unreviewable".
+- VERDICT SIDECAR: for repos with no gate infrastructure yet,
+  =C-c C-t= still records a structured sidecar (verdict text,
+  file, line, req-ID) — greppable, nothing evaporates.
+- The ratchet, stated plainly: today a reviewer's insight
+  ("this will break if the session expires mid-upload") gates
+  ONE diff and evaporates.  Captured as a criterion, it
+  checks every future change forever.  Each review hour
+  raises the floor permanently instead of policing the same
+  mistakes again.
+- VERIFICATION: ERT for the pure parts (req-ID extraction in
+  both directions, traceability findings, strategy-chain
+  selection with probes faked via =fset= + =unwind-protect=
+  — the =cl-letf= trap, AGENTS.md — sidecar capture); a
+  traceability regression on a synthetic PR with a criteria
+  file; live on a real PR through the suggestion path.
+
+* Phase 25 — Review budget: risk-ranked attention, honest accounting :STATUS:todo:
+
+RELEVANCE (preamble): maximizes the value of review time
+(preamble goal 2) by making the already-existing implicit
+rationing EXPLICIT.  Today every open PR demands senior
+attention, attention is fixed, and the only outcomes are
+rubber stamps or latency — the rationing happens already,
+hidden and performed badly by fatigue.  The budget converts
+it into an explicit allocation problem and gives the mode its
+most important new verb: choosing WHERE the scarce minutes
+go.
+
+- New file =code-review-budget.el=.  Defcustoms:
+  - =code-review-review-budget-minutes=: global capacity per
+    team-day (default 90; =nil= disables the machinery);
+  - =code-review-review-per-pr-minutes=: ideal deep-review
+    allocation (default 15) — also a diagnostic: a PR whose
+    realistic estimate exceeds it is over-budget by
+    construction;
+  - bounce threshold: a PR estimated above it is bounced with
+    a one-key "unreviewable, please split" template comment —
+    size discipline matters MORE with AI generation, not
+    less.
+- RISK MODEL (composition of existing signals, no new
+  harvest): heat (phase 14) x delicacy (phase 15) x incident
+  annotations (phase 22) x size/complexity.  Cost estimation
+  from hunk count/size: deterministic pre-ranking is not
+  guesswork (see "Early-Stage Prediction of Review Effort in
+  AI-Generated Pull Requests", already in the References).
+  Pure function, cached per (PR id, diff md5) like the
+  phase 5 analysis.
+- ADMISSION MECHANICS — a RATE with continuous admission, NOT
+  a day-start batch (PRs arrive all day): spent minutes are
+  sunk (no clawback, ever); every open PR continuously
+  carries (cost, risk); when the reviewer sits down, the tool
+  offers the current risk-ranked top item within the remaining
+  balance and the per-PR cap; a later-arriving high-risk PR
+  JUMPS THE QUEUE for the remaining balance.  Low-risk-tier
+  PRs never wait for a human at all: they merge on gate
+  evidence; only the risky tier waits, and that latency is
+  honest pricing — the signal that risk creation is
+  outpacing verification capacity.
+- TWO OUTPUT LISTS (queue view over
+  =code-review-db-all-unfinished=, on phase 21's
+  one-row-per-PR guarantee):
+  - ADMIT: the ranked slice that fits the remaining balance
+    (deep review);
+  - SAFE / APPROVE-ON-GATES: low heat, low blast radius,
+    traceability green (phase 24) — flagged in buffer and
+    queue ("gate-covered; your 15 minutes are better spent on
+    the HOT queue"), with a ONE-KEY APPROVE-ON-GATES that
+    leaves an explicit audit-trail comment ("approved on
+    gates, no human deep review").  Honest accounting:
+    today's process claims to review everything and reviews
+    nothing; this reviews 20% for real and labels the other
+    80% correctly.
+  - RANDOM AUDIT SLICE: a small random sample of
+    gate-approved PRs still gets human minutes — what
+    financial auditors do; it calibrates whether the risk
+    model is lying (catches the boring-looking hunk with a
+    subtle flaw).
+- SIGNALLING: the queue view reports risk backlog / review
+  capacity (e.g. "2.3x this week") — the honest version of
+  "nobody has time to review", addressed to management
+  instead of hidden in rubber stamps.  Team-level, never
+  per-developer (Goodhart).
+- VERIFICATION: ERT on the pure allocation logic (ranking,
+  caps, admission against a synthetic queue with mid-cycle
+  arrivals, SAFE classification from faked
+  traceability+heat outputs, audit-trail comment body); queue
+  view render test; live daemon on the real unfinished-PR
+  pool.
+
+* Phase 26 — Outcome telemetry ladder (production as the truth source) :STATUS:todo:
+
+RELEVANCE (preamble): closes the loop with EXECUTED BEHAVIOR
+— code ships as a hypothesis, telemetry is the experiment
+result, revert is cheap, and the mode surfaces outcomes next
+to the reviews that admitted them.  Gates before, telemetry
+after: both machine-checked-forever; human attention goes to
+adjudicating discrepancies.  Capability ladder per the
+preamble constraint — every level optional, L0 works on a
+bare personal repo.
+
+- L0 — PURE GIT:
+  - REVERT DETECTION: a revert of the merge commit in the
+    base branch => a =REVERTED= badge on the PR in the review
+    buffer plus a permanent heat feed.  A reverted PR is the
+    highest-value study material in the system — its criteria
+    were wrong or incomplete, exactly the raw material for
+    new criteria (phase 24's =C-c C-t= is the capture path).
+  - DEPLOY MARKERS AS GIT TAGS (GitOps-native: Argo/Flux
+    reconcile from git; =git describe= works everywhere).
+- L1 — FORGE, when present: GitHub Deployments API ties
+  deploy events to SHAs (rendered in an OUTCOME section:
+  deployed at, current state, correlated incident links); PR
+  labels as extra incident signal; PR-attached agents (the
+  phase 24 strategy chain).
+- L2 — OBSERVABILITY, when configured: links via
+  =code-review-telemetry-url-template= (PromQL/Grafana
+  dashboards keyed on repo/service); data shaped by the
+  OpenTelemetry CI/CD semantic conventions (Release Candidate
+  as of 2026: the =cicd.*= pipeline/deploy attributes) so the
+  mode never couples to one vendor — OTel is the standard
+  every vendor ingests, PromQL the standard query language.
+- NEW DB FIELDS (the phase 21 migration pattern: bump schema,
+  one-shot UPDATE, back up first): deploy marker, outcome
+  (pending/clean/anomalous/reverted), incident links.
+  Per-PR; explicit =closql-insert= writes (the memory-only
+  =oset= trap, AGENTS.md).
+- DARK HUNKS: hunks inside a feature-flag region
+  (=code-review-flag-gating-regexp= defcustom; OpenFeature
+  adoption makes one regexp portable across SDKs) get a
+  =[DARK]= tag and reduced risk weight while unexposed; the
+  FLAG-FLIP PR — tiny, high-leverage — gets elevated risk.
+  The flip becomes the true behavioral review surface; the
+  900-line code PR was its supporting evidence.
+- CLEAN-WINDOW VALIDATION: after N days of clean telemetry, a
+  PR's criteria are marked PRODUCTION-VALIDATED (they gate
+  harder); anomalies elevate the files' heat permanently and
+  link the incident (the 26 -> 22 loop: outcomes feed the
+  registry, the registry feeds heat).
+- CONFIRMATION QUEUE: "deeply review the successful ones" is
+  itself a bounded, budgeted queue (phase 25) populated ONLY
+  by anomalous deploys and high-risk PRs after their window —
+  a trickle, not a firehose.
+- VERIFICATION: ERT on the pure parts (revert detection
+  against a synthetic git history with deterministic fixture
+  dates — the GIT_AUTHOR_DATE trap, AGENTS.md; tag parsing;
+  DARK-region matching; the outcome state machine); a db
+  migration test per the phase 21 pattern; live L0 on a
+  personal repo, L2 links on a work PR.
+
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N
@@ -2960,7 +3408,7 @@ review/worktree locals are =permanent-local= so the
 =(code-review-mode)= activation that follows rendering does not
 wipe them.
 
-* References — phase research (phases 14-19: 2026-09-24; phase 20: 2026-09-28)
+* References — phase research (phases 14-19: 2026-09-24; phase 20: 2026-09-28; phases 22-26: 2026-09-29)
 
 Sources consulted in the 2026-09-24 research sessions that
 shaped phases 14-19; each entry notes the claim it grounds.
@@ -3220,3 +3668,141 @@ shaped phases 14-19; each entry notes the claim it grounds.
   the reviewer needs to judge.  (We borrow the finding, not
   the machinery — a plain token LCS over the hunk's own -/+
   lines is enough; no AST differencing engine needed.)
+
+** Codegen-vs-review economics (phases 22-26 motivation; researched 2026-09-29)
+
+- METR, "Measuring the Impact of Early-2025 AI on Experienced
+  Open-Source Developer Productivity" (randomized controlled
+  trial, July 2025): experienced developers 19% SLOWER with
+  early-2025 AI tools while believing they were 20% faster —
+  the model-carrying humans are the bottleneck and the asset,
+  not the beneficiaries.  Grounds the budget's premise that
+  senior attention is the scarce resource to economize.
+  https://arxiv.org/abs/2507.09089
+- GitClear, "AI Copilot Code Quality: 2025 Data Suggests 4x
+  Growth in Code Clones" (211M changed lines 2020-2024:
+  duplicated blocks up, moved lines and refactoring down,
+  churn projected to double), and the 2026 follow-up "The
+  Maintainability Gap": the industry-wide shape of "generated
+  code hides meaning behind volume" — the economics phases
+  22-26 adapt to instead of fighting.
+  https://www.gitclear.com/ai_assistant_code_quality_2025_research
+  https://www.gitclear.com/the_ai_code_quality_maintainability_gap
+- DORA, "State of AI-assisted Software Development 2025":
+  ~90% AI adoption, throughput gains coexisting with delivery
+  instability and a trust gap — AI as amplifier, not panacea.
+  https://dora.dev/dora-report-2025/
+- Huang et al., "Large Language Models Cannot Self-Correct
+  Reasoning Yet", ICLR 2024: intrinsic self-review DEGRADES
+  accuracy without external feedback — "AI reviews AI" with
+  the same model family is correlated blind spots, not
+  verification.  Grounds the delegation to deterministic gates
+  and independently authored criteria (phase 24) instead of
+  self-review.
+  https://arxiv.org/abs/2310.01798
+- Linux kernel as the canary for the whole scenario: Greg
+  Kroah-Hartman's ban on LLM-generated patches from
+  drivers/staging (staging exists to teach kernel newcomers;
+  agent slop defeats that), disclosure rules for AI-assisted
+  code, and maintainers "completely overwhelmed" by
+  AI-assisted CVE triage — the review commons collapsing under
+  generated volume.
+  https://itsfoss.com/news/linux-drivers-staging-ai-rejection/
+  (The EASE 2026 review study, the GitHub agent-PR review
+  guide and "More Code, Less Reuse" — all cited under
+  phases 14-19 above — are the primary motivation for
+  phases 22-26 as well.)
+
+** Spec-driven development, requirements syntax, the spec-test binding (phases 23-24)
+
+- Thoughtworkers, "Understanding Spec-Driven-Development:
+  Kiro, spec-kit, and Tessl" (martinfowler.com, 2025): the
+  reviewed artifact moves ABOVE code — requirements as
+  source, code as derived material.  Field reports are mixed
+  where specs are prose: it works where the acceptance
+  criteria are executable/checkable, degenerates into
+  waterfall paperwork where they are not.
+  https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html
+- GitHub Spec Kit documentation: "keep intent and evidence
+  ahead of implementation"; EARS-structured requirements, one
+  per file (so spec diffs read like code diffs);
+  requirement-to-task linkage.
+  https://github.github.com/spec-kit/
+- Mavin, Wilkinson, Harwood & Novak, "Easy Approach to
+  Requirements Syntax (EARS)", RE 2009, plus the Requirements
+  Engineering journal follow-up (2016): the five fixed
+  WHEN/IF/WHILE/WHERE/THEN templates that make requirements
+  diffable, unambiguous and bindable.  (No stable open URL;
+  cited by name.)
+- Gherkin language reference (Cucumber): Given/When/Then
+  executable acceptance criteria with parsers in every
+  ecosystem — the de facto standard the criteria templates
+  build on.
+  https://cucumber.io/docs/gherkin/
+- "Grammar Prompting for Domain-Specific Language Generation",
+  NeurIPS 2023, and the grammar-constrained-decoding line it
+  opened (Outlines, GBNF): LLMs generate structured languages
+  reliably when the grammar is in the loop, and syntax errors
+  can be eliminated entirely — generation already drifts
+  toward pinned-semantic declarative targets, which is the
+  phase 23/24 direction (bind requirements to executable
+  checks; never trust generation, always execute).
+  https://arxiv.org/abs/2305.19234
+- "A Survey on LLM-based Code Generation for Low-Resource and
+  Domain-Specific Programming Languages" (2024): LLM
+  performance tracks training-data volume; bespoke/macro-heavy
+  languages degrade sharply.  Grounds ADOPTING standard
+  declarative formats (Gherkin, markdown, SQL, config)
+  instead of inventing house DSLs the models cannot write
+  and colleagues cannot read.
+  https://arxiv.org/abs/2410.03981
+
+** Progressive delivery and observability standards (phase 26)
+
+- Humble & Farley, "Continuous Delivery" (2010): deployment
+  pipelines, blue-green/canary; release != deploy.  The
+  foundation phase 26's hypothesis model stands on.
+- Forsgren, Humble & Kim, "Accelerate" (2018): the org
+  evidence that small batches plus progressive practices
+  correlate with throughput AND stability — the book to hand
+  management, and the health-check metrics (change-failure
+  rate, MTTR) for adopting this gradually.
+- Beyer, Jones, Petoff & Murphy (eds.), "Site Reliability
+  Engineering" (2016, free online): error budgets and SLOs —
+  "healthy" must be defined before anything can automate
+  promote/rollback.  https://sre.google/books/
+- Majors, Fong-Jones & Miranda, "Observability Engineering:
+  Achieving Production Excellence" (O'Reilly 2022):
+  observability-driven development — ship small, watch
+  immediately; the closest published form of "production as
+  hypothesis".
+  https://www.oreilly.com/library/view/observability-engineering/9781492076438/
+- Hodgson, "Feature Toggles" (martinfowler.com): the flag
+  taxonomy and the TOGGLE-DEBT warning — every flag is a loan
+  with interest; expiry dates or rot.  The #1 health hazard of
+  gradual adoption.
+  https://martinfowler.com/articles/feature-toggles.html
+- Governor (RedMonk), "Towards Progressive Delivery" (2019):
+  where the term was coined.
+  https://redmonk.com/jgovernor/towards-progressive-delivery/
+- OpenTelemetry CI/CD semantic conventions (Release Candidate
+  as of 2026) and the OTel CI/CD SIG: the vendor-neutral shape
+  for pipeline/deploy telemetry that every vendor ingests —
+  phase 26's L2 standard, chosen so the mode never couples to
+  one observability vendor.
+  https://opentelemetry.io/docs/specs/semconv/cicd/
+  https://opentelemetry.io/blog/2025/otel-cicd-sig/
+- OpenFeature (CNCF): the vendor-neutral feature-flag API —
+  one flag-gating regexp stays portable across SDKs.
+  https://openfeature.dev/
+- Successful applications, documented across the
+  SRE/Accelerate/Velocity corpus: Google (SRE error budgets,
+  canary at Borg scale), Facebook (staged rollouts at
+  billions of users), Etsy (quarterly-deploy fear culture ->
+  continuous deployment behind flags plus "graph everything"),
+  Netflix (regional red/black pushes, instant rollback);
+  Kubernetes-era automation via Flagger / Argo Rollouts
+  (canary analysis from Prometheus, promote-or-rollback
+  without a human).  Etsy is the canonical healthy-adoption
+  arc: deploy often first, instrument before flagging, one
+  low-stakes service at a time.
