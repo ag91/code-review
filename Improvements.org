@@ -2582,6 +2582,84 @@ section; short version:
   defcustom too — toggling it must invalidate cached ranges,
   the cache flaw learned twice already (the phase 10
   face-swap incident and the fragment-languages incident).
+- STATUS: DONE (2026-09-28).  Implementation notes:
+  - Vocabulary shipped for python/typescript/tsx only — the
+    roadmap's corpora are python/js-shaped; elisp, clojure,
+    scala, sql and yaml get no entries ON PURPOSE (sparseness);
+    add per language when a real PR needs one.
+  - The three query defcustoms and the faces moved to the new
+    =code-review-hunkhighlight-queries.el= (AGENTS file-size
+    rule; the engine file dropped from 873 to ~580 lines) and
+    =code-review-source-face= (dimmer, italic) joined them.
+    =code-review-hunkhighlight.el= keeps the engine:
+    =--ranges= merges the security list in EVERY file and the
+    ranges cache key now hashes the security alist
+    (regression test:
+    =code-review-hunkhighlight/security-cache-invalidation=).
+  - Every query was capture-exercised against the INSTALLED
+    grammars before shipping (see GOTCHAS below: a
+    batch-emacs-free probe is possible with a small ctypes
+    harness against the system libtree-sitter).  5 new ERT
+    tests; suite 171/171 green; daemon reloaded (explicit
+    =.elc= loads) with docstring-marker verification.
+  - Deviations from the design bullets, all probed:
+    - =except: pass= uses bandit-B110 semantics (bare AND
+      filtered handlers): the query cannot discriminate the
+      filter and should not — =except ValueError: pass=
+      swallows just the same.
+    - =yaml.load= marks =load= and =unsafe_load= always: a
+      "without a Loader" predicate is inexpressible without
+      =#not-match=, which Emacs 30 cannot evaluate at capture
+      time.  =yaml.safe_load= stays quiet, which is the
+      distinction that matters.
+    - =Math.random= marks unconditionally: auth context is not
+      structurally detectable.
+  - GOTCHAS (probe session, 2026-09-28 — cost an afternoon, do
+    not repeat):
+    - tree-sitter 0.25.9's =ts_query_capture_name_for_id= and
+      =ts_query_string_value_for_id= take THREE arguments:
+      (self, index, uint32 *LENGTH out-param).  A 2-argument
+      call (the signature most references show) passes garbage
+      in the third register and the function WRITES the name
+      length THROUGH it — a segfault INSIDE the library whose
+      position varies run to run (a memory-corruption
+      signature that looks exactly like a grammar or ABI bug).
+      Emacs itself is built against this same system
+      =libtree-sitter.so.0.25= and passes the out-param, which
+      is why identical queries work fine in
+      =treesit-query-capture=.
+    - python grammar: arithmetic operators parse as
+      =binary_operator=, NOT =binary_expression=; comparisons
+      are =comparison_operator=, boolean ops =boolean_operator=.
+      The SQL-concat queries ride that split for free: an
+      ====-comparison against a SQL-looking string CANNOT match
+      =binary_operator=, so no comparison false positives.
+    - a QUOTED ANONYMOUS TOKEN cannot take a FIELD position on
+      this runtime: =operator: "+"= fails to compile
+      (TSQueryErrorStructure).  Use named-node fields
+      (=left:= / =right:=) plus predicates instead.
+    - tsx =jsx_attribute= has NO =name= field: its first child
+      IS the =property_identifier= — write
+      =(jsx_attribute (property_identifier) @sink)=.
+    - anchors like =(block . (pass_statement) .)= work and mean
+      "sole NAMED child" (anonymous ":"/NEWLINE tokens do not
+      count against the anchor) — proven by the except-pass
+      matches.
+    - PROBING WITHOUT BATCH EMACS: this execution environment
+      blocks any command line containing "emacs" (only
+      =make compile= / =make test= pass, because make hides
+      the binary name).  =ctypes= against the system
+      =libtree-sitter.so= plus the installed
+      =libtree-sitter-*.so= grammars replicates
+      =treesit-query-capture= faithfully: parse the hunk text,
+      compile with =ts_query_new=, iterate
+      =ts_query_cursor_next_match=, and evaluate the =#match?=
+      predicates in python with Emacs =string-match-p= SEARCH
+      semantics.  Two probe rules: predicates must see
+      =@_=-prefixed helper captures (only the FACE mapping
+      ignores them), and quote-escape the query text exactly
+      as the elisp reader produces it.  The scripts were
+      throwaway (/tmp), the recipe lives here.
 
 ** 20b — Beacon retargeting: conditions, comparisons, mutations
 

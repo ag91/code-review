@@ -43,6 +43,18 @@
 ;;  semantic faces (context is parse input, not signal; deleted
 ;;  lines are not part of the new side).
 ;;
+;;  Phase 20a adds the SECURITY layer on top: SINK tokens
+;;  (eval/exec, pickle.loads, os.system, shell=True,
+;;  verify=False, except-pass, string-concatenated SQL,
+;;  innerHTML, Math.random, dangerouslySetInnerHTML, ...) in
+;;  warning red, and untrusted-input SOURCES (request.*,
+;;  sys.argv, os.environ, input(), process.env) in the dimmer
+;;  `code-review-source-face' — marking where taint enters and
+;;  where it is used.  The vocabulary lives in
+;;  `code-review-hunkhighlight-security-queries' (in
+;;  code-review-hunkhighlight-queries.el) and stays SPARSE on
+;;  purpose: priming stops working when everything is marked.
+;;
 ;;  How it works, per hunk:
 ;;   1. strip the +/-/space prefixes and reconstruct the NEW side
 ;;      of the hunk (added + context lines);
@@ -73,10 +85,7 @@
 (require 'treesit nil t)          ; optional: Emacs 29+
 (require 'magit-section)
 (require 'cl-lib)
-
-(defgroup code-review-hunkhighlight nil
-  "Tree-sitter semantic highlighting of diff hunks."
-  :group 'code-review)
+(require 'code-review-hunkhighlight-queries)
 
 (defcustom code-review-semantic-highlight t
   "When non-nil, highlight hunks semantically with tree-sitter.
@@ -111,320 +120,6 @@ Matched against the DOWNCASED path.  In test files the
 `code-review-hunkhighlight-test-queries' run on top of the
 general ones."
   :type 'regexp
-  :group 'code-review-hunkhighlight)
-
-(defface code-review-test-face
-  '((t :inherit font-lock-function-name-face :weight bold :slant italic))
-  "Face for test definition names and assertion lines.
-Used by the tree-sitter hunk highlighting in test files."
-  :group 'code-review-hunkhighlight)
-
-(defface code-review-constant-face
-  '((((class color) (background light))
-     :foreground "tomato" :weight bold)
-    (((class color) (background dark))
-     :foreground "MediumPurple1" :weight bold)
-    (t :weight bold))
-  "Face for literal constant values (strings, numbers) in hunks.
-Theme `font-lock-constant-face's are often low-contrast over the
-green/red diff backgrounds (the one in use renders as a murky
-dark cyan there); this face is tuned to stay clearly readable on
-top of `magit-diff-added' while staying distinct from the keyword
-purple and the function-name blue."
-  :group 'code-review-hunkhighlight)
-
-(defcustom code-review-hunkhighlight-queries
-  '((python
-     ;; Deliberately MINIMAL (user request): definition names,
-     ;; parameters, assignment targets, UPPER_CASE constants and
-     ;; the `return' keyword — the reviewer's eyes should go to
-     ;; the important identifiers, not to every keyword.  Also
-     ;; note `--apply' only paints ADDED (+) lines.
-     ("\"return\" @kw"
-      . ((kw . font-lock-keyword-face)))
-     ("(function_definition name: (identifier) @fn)"
-      . ((fn . font-lock-function-name-face)))
-     ("(class_definition name: (identifier) @cls)"
-      . ((cls . font-lock-type-face)))
-     ("(parameters (identifier) @param)"
-      . ((param . font-lock-variable-name-face)))
-     ("((assignment left: (identifier) @const)
-       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
-      . ((const . code-review-constant-face)))
-     ("((assignment left: (identifier) @var)
-       (#match? @var \"\\\\`[a-z_]\"))"
-      . ((var . font-lock-variable-name-face)))
-     ;; literal CONSTANT VALUES (strings, numbers) stand out in
-     ;; every language: in test code they are the test case names
-     ;; and expected values — the stuff the reviewer wants to see
-     ("[(string) (integer) (float)] @cval"
-      . ((cval . code-review-constant-face))))
-    (scala
-     ("\"return\" @kw"
-      . ((kw . font-lock-keyword-face)))
-     ("(function_definition name: (identifier) @fn)"
-      . ((fn . font-lock-function-name-face)))
-     ("(class_definition name: (identifier) @cls)"
-      . ((cls . font-lock-type-face)))
-     ("(object_definition name: (identifier) @obj)"
-      . ((obj . font-lock-type-face)))
-     ("(trait_definition name: (identifier) @trait)"
-      . ((trait . font-lock-type-face)))
-     ("(parameters (parameter name: (identifier) @param))"
-      . ((param . font-lock-variable-name-face)))
-     ("((val_definition pattern: (identifier) @const)
-       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
-      . ((const . code-review-constant-face)))
-     ("((val_definition pattern: (identifier) @var)
-       (#match? @var \"\\\\`[a-z_]\"))"
-      . ((var . font-lock-variable-name-face)))
-     ("((var_definition pattern: (identifier) @const)
-       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
-      . ((const . code-review-constant-face)))
-     ("((var_definition pattern: (identifier) @var)
-       (#match? @var \"\\\\`[a-z_]\"))"
-      . ((var . font-lock-variable-name-face)))
-     ;; for-comprehension: both `<-' generators and `=' bindings;
-     ;; the leading `.' anchors to the first child (the bound
-     ;; pattern), not the iterable/value expression
-     ("(enumerators (enumerator . (identifier) @for))"
-      . ((for . font-lock-variable-name-face)))
-     ;; match arms: the `case' keyword plus the whole pattern
-     ("(case_clause pattern: (_) @case)
-       (case_clause \"case\" @kw)"
-      . ((case . font-lock-type-face)
-         (kw . font-lock-keyword-face)))
-     ("(string) @cval"
-      . ((cval . code-review-constant-face)))
-     ("[(integer_literal) (floating_point_literal)] @cval"
-      . ((cval . code-review-constant-face))))
-    (elisp
-     ;; grammar nodes (probed): defun forms are
-     ;; `function_definition' with a named "defun" token child;
-     ;; defvar/defconst/let are `special_form'.  defmacro/defsubst
-     ;; are NOT special nodes here (defmacro: structure error,
-     ;; defsubst: params leak into the name capture) — left out.
-     ("(function_definition \"defun\" (symbol) @fn (list (symbol) @param))"
-      . ((fn . font-lock-function-name-face)
-         (param . font-lock-variable-name-face)))
-     ("(special_form \"defvar\" (symbol) @var)"
-      . ((var . font-lock-variable-name-face)))
-     ("(special_form \"defconst\" (symbol) @const)"
-      . ((const . code-review-constant-face)))
-     ("(special_form \"let\" (list (list (symbol) @v)))"
-      . ((v . font-lock-variable-name-face)))
-     ("[(string) (integer)] @cval"
-      . ((cval . code-review-constant-face))))
-    (clojure
-     ;; grammar nodes (probed): everything is list_lit of sym_lits,
-     ;; so definitions are matched by the head symbol with #match?
-     ;; (#eq is NOT supported at capture time in Emacs 30.2).
-     ;; defn-family name-only pattern first (defprotocol etc lack a
-     ;; name-adjacent vector), then name+params for defn shapes.
-     ("((list_lit . (sym_lit) @_h . (sym_lit) @name)
-       (#match? @_h \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\|defmulti\\\\|defprotocol\\\\|defrecord\\\\|deftype\\\\)\\\\'\"))"
-      . ((name . font-lock-function-name-face)))
-     ("((list_lit . (sym_lit) @_h . (sym_lit) @name . (vec_lit (sym_lit) @param))
-       (#match? @_h \"\\\\`\\\\(defn-\\\\|defn\\\\|defmacro\\\\|defonce\\\\)\\\\'\"))"
-      . ((name . font-lock-function-name-face)
-         (param . font-lock-variable-name-face)))
-     ("((list_lit . (sym_lit) @_h . (sym_lit) @name)
-       (#match? @_h \"\\\\`def\\\\'\"))"
-      . ((name . font-lock-variable-name-face)))
-     ("((list_lit . (sym_lit) @_h . (vec_lit (sym_lit) @param))
-       (#match? @_h \"\\\\`\\\\(fn\\\\|let\\\\|loop\\\\)\\\\'\"))"
-      . ((param . font-lock-variable-name-face)))
-     ("[(str_lit) (num_lit)] @cval"
-      . ((cval . code-review-constant-face))))
-    (typescript
-     ;; grammar nodes (probed against
-     ;; libtree-sitter-typescript): enum names are plain
-     ;; `identifier' (NOT type_identifier); `for (const x of ys)'
-     ;; is FLATTENED — the binding is the `left:' identifier,
-     ;; not a variable_declaration child.
-     ("\"return\" @kw"
-      . ((kw . font-lock-keyword-face)))
-     ("(function_declaration name: (identifier) @fn)"
-      . ((fn . font-lock-function-name-face)))
-     ("(method_definition name: (property_identifier) @m)"
-      . ((m . font-lock-function-name-face)))
-     ("(class_declaration name: (type_identifier) @cls)"
-      . ((cls . font-lock-type-face)))
-     ("(interface_declaration name: (type_identifier) @iface)"
-      . ((iface . font-lock-type-face)))
-     ("(type_alias_declaration name: (type_identifier) @alias)"
-      . ((alias . font-lock-type-face)))
-     ("(enum_declaration name: (identifier) @en)"
-      . ((en . font-lock-type-face)))
-     ("(formal_parameters (required_parameter pattern: (identifier) @param))"
-      . ((param . font-lock-variable-name-face)))
-     ("(formal_parameters (optional_parameter pattern: (identifier) @param))"
-      . ((param . font-lock-variable-name-face)))
-     ("((lexical_declaration (variable_declarator name: (identifier) @const))
-       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
-      . ((const . code-review-constant-face)))
-     ("((lexical_declaration (variable_declarator name: (identifier) @var))
-       (#match? @var \"\\\\`[a-z_]\"))"
-      . ((var . font-lock-variable-name-face)))
-     ("(variable_declaration (variable_declarator name: (identifier) @var))"
-      . ((var . font-lock-variable-name-face)))
-     ;; for-of/for-in bindings (const/let/bare all take the
-     ;; `left:' identifier slot)
-     ("(for_in_statement left: (identifier) @for)"
-      . ((for . font-lock-variable-name-face)))
-     ;; switch arms: the `case' keyword plus the matched value
-     ("(switch_case value: (_) @case)
-       (switch_case \"case\" @kw)"
-      . ((case . font-lock-type-face)
-         (kw . font-lock-keyword-face)))
-     ("[(string) (template_string) (number)] @cval"
-      . ((cval . code-review-constant-face))))
-    (tsx
-     ;; the tsx grammar shares the typescript node names for
-     ;; every query above (validated: identical captures), so
-     ;; this block repeats them verbatim
-     ("\"return\" @kw"
-      . ((kw . font-lock-keyword-face)))
-     ("(function_declaration name: (identifier) @fn)"
-      . ((fn . font-lock-function-name-face)))
-     ("(method_definition name: (property_identifier) @m)"
-      . ((m . font-lock-function-name-face)))
-     ("(class_declaration name: (type_identifier) @cls)"
-      . ((cls . font-lock-type-face)))
-     ("(interface_declaration name: (type_identifier) @iface)"
-      . ((iface . font-lock-type-face)))
-     ("(type_alias_declaration name: (type_identifier) @alias)"
-      . ((alias . font-lock-type-face)))
-     ("(enum_declaration name: (identifier) @en)"
-      . ((en . font-lock-type-face)))
-     ("(formal_parameters (required_parameter pattern: (identifier) @param))"
-      . ((param . font-lock-variable-name-face)))
-     ("(formal_parameters (optional_parameter pattern: (identifier) @param))"
-      . ((param . font-lock-variable-name-face)))
-     ("((lexical_declaration (variable_declarator name: (identifier) @const))
-       (#match? @const \"\\\\`[A-Z_][A-Z0-9_]*\\\\'\"))"
-      . ((const . code-review-constant-face)))
-     ("((lexical_declaration (variable_declarator name: (identifier) @var))
-       (#match? @var \"\\\\`[a-z_]\"))"
-      . ((var . font-lock-variable-name-face)))
-     ("(variable_declaration (variable_declarator name: (identifier) @var))"
-      . ((var . font-lock-variable-name-face)))
-     ("(for_in_statement left: (identifier) @for)"
-      . ((for . font-lock-variable-name-face)))
-     ("(switch_case value: (_) @case)
-       (switch_case \"case\" @kw)"
-      . ((case . font-lock-type-face)
-         (kw . font-lock-keyword-face)))
-     ("[(string) (template_string) (number)] @cval"
-      . ((cval . code-review-constant-face))))
-    (sql
-     ;; grammar: DerekStride/tree-sitter-sql (installed in
-     ;; ~/.emacs.d/tree-sitter).  Probed against real ClickHouse
-     ;; and dbt shapes: node names are create_table,
-     ;; column_definitions/column_definition, object_reference,
-     ;; select_expression/term/field, relation, invocation,
-     ;; binary_expression, where/join/cross_join/group_by/
-     ;; order_by.  KNOWN LIMIT: jinja {{ ... }} breaks the parse
-     ;; into ERROR nodes, but everything OUTSIDE the soup still
-     ;; captures — and ref()/source() arguments survive as
-     ;; invocation literals, so dbt model names still highlight.
-     ("(create_table (object_reference) @tbl)"
-      . ((tbl . font-lock-type-face)))
-     ("(create_table (column_definitions
-       (column_definition (identifier) @col)))"
-      . ((col . font-lock-variable-name-face)))
-     ("(select_expression (term (field) @sel))"
-      . ((sel . font-lock-variable-name-face)))
-     ("(from (relation (object_reference) @from))"
-      . ((from . font-lock-type-face)))
-     ("(join (relation (object_reference) @jt))"
-      . ((jt . font-lock-type-face)))
-     ("(from (relation (invocation (term (literal) @ref))))"
-      . ((ref . font-lock-type-face)))
-     ("(join (relation (invocation (term (literal) @jref))))"
-      . ((jref . font-lock-type-face)))
-     ;; WHERE / ON columns: two patterns each, because AND/OR
-     ;; compound predicates nest binary_expression one level
-     ;; deeper than simple ones
-     ("(where (binary_expression (field) @wcol))
-       (where (binary_expression
-               (binary_expression (field) @wcol)))"
-      . ((wcol . font-lock-variable-name-face)))
-     ("(join (binary_expression (field) @oncol))
-       (join (binary_expression
-              (binary_expression (field) @oncol)))"
-      . ((oncol . font-lock-variable-name-face)))
-     ("(group_by (field) @gcol)"
-      . ((gcol . font-lock-variable-name-face)))
-     ("(order_by (order_target (field) @ocol))"
-      . ((ocol . font-lock-variable-name-face)))
-     ;; performance markers: the clause keywords
-     ("[(keyword_where) (keyword_group) (keyword_by)
-       (keyword_order) (keyword_limit) (keyword_on)
-       (keyword_from) (keyword_join)] @kw"
-      . ((kw . font-lock-keyword-face)))
-     ;; cartesian products go terrible red: explicit CROSS JOIN,
-     ;; and implicit comma joins (FROM a, b IS a cross join in
-     ;; ClickHouse)
-     ("(cross_join [(keyword_cross) (keyword_join)] @danger)"
-      . ((danger . font-lock-warning-face)))
-     ("(from \",\" @danger)"
-      . ((danger . font-lock-warning-face))))
-    (yaml
-     ;; tree-sitter-yaml: scalars live in flow_node; capture the
-     ;; VALUES of `name:' keys — dbt model/column/test names, the
-     ;; identifiers a reviewer scans for.  #match? not #eq (#eq is
-     ;; not supported at capture time on Emacs 30); @_k is a
-     ;; helper capture with no face mapping.
-     ("((block_mapping_pair
-        key: (flow_node (plain_scalar) @_k)
-        value: (flow_node) @name)
-       (#match? @_k \"\\\\`name\\\\'\"))"
-      . ((name . font-lock-function-name-face)))))
-  "Per-language treesit queries.
-Each entry: (LANGUAGE (QUERY-STRING . ((CAPTURE . FACE) ...)) ...).
-CAPTURE names must match the @captures in QUERY-STRING; a capture
-can map to any face.  Author predicates in the standard
-`#match? @capture \"REGEXP\"' spelling (Emacs 31+): on Emacs 30,
-which only supports `#match \"REGEXP\" @capture' at capture time,
-they are rewritten automatically at compile time (see
-`code-review-hunkhighlight--old-style-query') — the same queries
-work on both versions.  A query that fails to compile against the
-installed grammar disables that entry silently (and capture-time
-predicate errors disable only that query)."
-  :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
-  :group 'code-review-hunkhighlight)
-
-(defcustom code-review-hunkhighlight-test-queries
-  '((python
-     ("((function_definition name: (identifier) @tn) (#match? @tn \"\\\\`test\"))"
-      . ((tn . code-review-test-face)))
-     ("(assert_statement \"assert\" @as)
-       ((call function: (identifier) @af) (#match? @af \"\\\\`assert\"))
-       ((call function: (attribute attribute: (identifier) @am))
-        (#match? @am \"\\\\`assert\"))"
-      . ((as . code-review-test-face)
-         (af . code-review-test-face)
-         (am . code-review-test-face))))
-    (typescript
-     ;; jest/vitest shapes: describe/it/test define the cases,
-     ;; expect/assert are the assertions (probed: plain call
-     ;; expressions, no dedicated grammar nodes)
-     ("((call_expression function: (identifier) @tf)
-       (#match? @tf \"\\\\`\\\\(describe\\\\|it\\\\|test\\\\)\\\\'\"))"
-      . ((tf . code-review-test-face)))
-     ("((call_expression function: (identifier) @af)
-       (#match? @af \"\\\\`\\\\(expect\\\\|assert\\\\)\\\\'\"))"
-      . ((af . code-review-test-face))))
-    (tsx
-     ("((call_expression function: (identifier) @tf)
-       (#match? @tf \"\\\\`\\\\(describe\\\\|it\\\\|test\\\\)\\\\'\"))"
-      . ((tf . code-review-test-face)))
-     ("((call_expression function: (identifier) @af)
-       (#match? @af \"\\\\`\\\\(expect\\\\|assert\\\\)\\\\'\"))"
-      . ((af . code-review-test-face)))))
-  "Like `code-review-hunkhighlight-queries', but test files only."
-  :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
   :group 'code-review-hunkhighlight)
 
 (defcustom code-review-hunkhighlight-fragment-line-languages '(yaml)
@@ -629,8 +324,9 @@ the line layout of the parse buffer."
 (defun code-review-hunkhighlight--ranges (text lang test-p)
   "Return ((LINE BEG END FACE)...) for new-side TEXT of LANG.
 LINE is 1-based, BEG/END are 0-based columns within that line.
-TEST-P adds the test-file queries.  Nil when treesit is unusable
-or nothing was captured.  For languages in
+TEST-P adds the test-file queries; the security queries (phase
+20a) run in every file, like the general ones.  Nil when treesit
+is unusable or nothing was captured.  For languages in
 `code-review-hunkhighlight-fragment-line-languages' every
 non-blank line is ALSO parsed as a one-line document and those
 captures merge (mid-file fragments lose the indentation context
@@ -638,6 +334,8 @@ an indentation-relative grammar needs)."
   (when (fboundp 'treesit-parser-create)
     (let ((entries
            (append (cdr (assq lang code-review-hunkhighlight-queries))
+                   (cdr (assq lang
+                               code-review-hunkhighlight-security-queries))
                    (when test-p
                      (cdr (assq lang
                                  code-review-hunkhighlight-test-queries))))))
@@ -785,9 +483,15 @@ Never signals; returns non-nil when faces were applied."
                                        (cons
                                         (assq lang
                                               code-review-hunkhighlight-queries)
-                                        (when test-p
-                                          (assq lang
-                                                code-review-hunkhighlight-test-queries))))))))))
+                                        (cons
+                                         ;; the security list rides the
+                                         ;; same merge: toggling it must
+                                         ;; invalidate cached ranges
+                                         (assq lang
+                                               code-review-hunkhighlight-security-queries)
+                                         (when test-p
+                                           (assq lang
+                                                 code-review-hunkhighlight-test-queries)))))))))))
                  (cache (or code-review-hunkhighlight--cache
                             (setq code-review-hunkhighlight--cache
                                   (make-hash-table :test #'equal))))

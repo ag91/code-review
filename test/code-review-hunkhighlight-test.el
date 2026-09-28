@@ -513,3 +513,155 @@ overlay face at that position."
       (should (code-review-hunkhighlight-region beg end "foo.py"))
       (should (memq 'font-lock-function-name-face
                     (code-review-hunkhighlight-test--face-at "foo"))))))
+
+;;; Phase 20a: security source/sink layer
+
+(ert-deftest code-review-hunkhighlight/security-sinks-python ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+import os, pickle, hashlib, subprocess, requests, yaml"
+        "+def handle(request, uid):"
+        "+    eval(user_input)"
+        "+    exec(code_str)"
+        "+    os.system(cmd)"
+        "+    pickle.loads(blob)"
+        "+    hashlib.md5(data)"
+        "+    hashlib.sha256(data)"
+        "+    subprocess.run(cmd, shell=True)"
+        "+    subprocess.run(cmd, shell=False)"
+        "+    requests.get(url, verify=False)"
+        "+    yaml.load(raw)"
+        "+    yaml.safe_load(raw)"
+        "+    try:"
+        "+        risky()"
+        "+    except:"
+        "+        pass"
+        "+    q = \"SELECT * FROM t\" + uid")
+    (should (code-review-hunkhighlight-region beg end "src/handler.py"))
+    ;; sinks paint warning red on the dangerous token itself
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "eval")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "exec")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "system")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "loads")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "md5")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "shell")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "verify")))
+    ;; swallowing handler: the `except' keyword itself
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "except")))
+    ;; string-concatenated SQL: the fragment goes red
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "SELECT")))
+    ;; SPARSENESS: the safe twins stay quiet (receiver anchoring
+    ;; and value pinning do the discriminating)
+    (should-not (memq 'font-lock-warning-face
+                      (code-review-hunkhighlight-test--face-at "sha256")))
+    (should-not (memq 'font-lock-warning-face
+                      (code-review-hunkhighlight-test--face-at "shell=False")))
+    (should-not (memq 'font-lock-warning-face
+                      (code-review-hunkhighlight-test--face-at "safe_load")))))
+
+(ert-deftest code-review-hunkhighlight/security-sources-python ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+import sys, os"
+        "+def handle(request):"
+        "+    q = request.args.get(\"q\")"
+        "+    x = sys.argv[1]"
+        "+    y = os.environ[\"HOME\"]"
+        "+    n = input(\"give: \")"
+        "+    plain = local.get(\"x\")")
+    (should (code-review-hunkhighlight-region beg end "src/handler.py"))
+    ;; untrusted-input entry points get the dimmer source face
+    (should (memq 'code-review-source-face
+                  (code-review-hunkhighlight-test--face-at "args")))
+    (should (memq 'code-review-source-face
+                  (code-review-hunkhighlight-test--face-at "argv")))
+    (should (memq 'code-review-source-face
+                  (code-review-hunkhighlight-test--face-at "environ")))
+    (should (memq 'code-review-source-face
+                  (code-review-hunkhighlight-test--face-at "input")))
+    ;; not every attribute access is an input boundary
+    (should-not (memq 'code-review-source-face
+                      (code-review-hunkhighlight-test--face-at "local")))))
+
+(ert-deftest code-review-hunkhighlight/security-sinks-typescript ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'typescript)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+const token = Math.random();"
+        "+el.innerHTML = userInput;"
+        "+el.outerHTML += more;"
+        "+el.textContent = safe;"
+        "+eval(code);"
+        "+const cfg = { dangerouslySetInnerHTML: { __html: html } };"
+        "+const key = process.env.API_KEY;")
+    (should (code-review-hunkhighlight-region beg end "src/handler.ts"))
+    ;; weak randomness, DOM sinks, eval, react escape hatch
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "random")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "innerHTML")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "outerHTML")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "eval")))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "dangerouslySetInnerHTML")))
+    ;; textContent is the safe setter and stays quiet
+    (should-not (memq 'font-lock-warning-face
+                      (code-review-hunkhighlight-test--face-at "textContent")))
+    ;; the untrusted-input source face
+    (should (memq 'code-review-source-face
+                  (code-review-hunkhighlight-test--face-at "env")))))
+
+(ert-deftest code-review-hunkhighlight/security-sinks-tsx ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'tsx)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+const App = () => ("
+        "+  <div dangerouslySetInnerHTML={{ __html: userHtml }} className=\"ok\">"
+        "+    <span>{safe}</span>"
+        "+  </div>"
+        "+);")
+    (should (code-review-hunkhighlight-region beg end "src/widget.tsx"))
+    ;; the JSX sink (a jsx_attribute has NO name field: the first
+    ;; child IS the property_identifier)
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "dangerouslySetInnerHTML")))
+    (should-not (memq 'font-lock-warning-face
+                      (code-review-hunkhighlight-test--face-at "className")))))
+
+(ert-deftest code-review-hunkhighlight/security-cache-invalidation ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+import os"
+        "+def f(x):"
+        "+    eval(x)")
+    ;; first render with the default vocabulary: the sink paints,
+    ;; and `import' paints nothing
+    (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+    (should (memq 'font-lock-warning-face
+                  (code-review-hunkhighlight-test--face-at "eval")))
+    (should-not (memq 'code-review-source-face
+                      (code-review-hunkhighlight-test--face-at "import")))
+    ;; a changed security vocabulary MUST invalidate the cached
+    ;; ranges (the cache key hashes the defcustom): the repaint
+    ;; applies the substitute query's face — a stale cache would
+    ;; serve the old ranges and paint nothing on `import'
+    (let ((code-review-hunkhighlight-security-queries
+           '((python ("\"import\" @sink"
+                      . ((sink . code-review-source-face)))))))
+      (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+      (should (memq 'code-review-source-face
+                    (code-review-hunkhighlight-test--face-at "import"))))))
