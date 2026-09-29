@@ -2518,7 +2518,7 @@ AMENDMENT 2 (same day, user review): two more fixes:
   strings, the comment filter, conventions, fallback order),
   suite 200/200; live re-render verified end to end.
 
-* Phase 18 — Change-coupling completeness cross-check          :STATUS:todo:
+* Phase 18 — Change-coupling completeness cross-check         :STATUS:done:
 
 Problem: the repo's own history knows which files change
 TOGETHER; an agent's patch is often narrower than the
@@ -2560,6 +2560,82 @@ Use case — what this catches in review:
 Caveats: monorepos and renames are noisy (code-maat's git2 log
 format and =--no-renames= guidance applies); threshold tuning
 expected (phase 5 scalafmt precedent).
+
+DONE [2026-09-29]:
+
+- =code-review-coupling.el= (~250 lines): the engine.
+  =--parse-changesets= (code-compass git log format, bot
+  filter) → =--matrix= (:pairs co-change counts + :revisions
+  per-file totals; changesets wider than
+  =code-review-coupling-max-changeset-size= (15, code-maat
+  default) skipped whole; =delete-dups= on a COPY per the
+  AGENTS.md same-changeset gotcha) → =--findings= (one pass,
+  both sides of each pair: degree = co/revisions >=
+  =code-review-coupling-threshold= (0.3), co >=
+  =code-review-coupling-min-cochanges= (3), peer not in the
+  PR file set; the =:test-p= star case carries the
+  "historically coupled tests were left behind" message);
+  strongest-first, capped at =code-review-coupling-max-findings=
+  (20).  =code-review-coupling-run= is the survivability-cased
+  cached entrypoint (phase 5 pattern: cache key PR + diff).
+- Shared harvest, not a second one: phase 14's existing ONE
+  =git log --name-only= per repo is parsed TWICE (code-compass
+  metrics + the coupling matrix) in the SAME
+  =--harvest-sync=; the cache format bumped to v2
+  (=:version= 2 stamp; =:coupling= part added).  OLD (v1)
+  per-repo cache files are rejected once and re-harvested
+  async by the existing child machinery — no second log, no
+  second child type.  =code-review-history-data= is the new
+  public accessor (metrics + coupling together).
+- Both-path cache validation: =--load= validates =:version=,
+  =:window= and TTL on BOTH the memory hash and the disk file,
+  and =--store= stamps the SAME plist into both.  The first
+  daemon verification caught a real migration bug here: the
+  memory path served a versionless v1 entry loaded by
+  pre-phase-18 code, so the migration silently never ran
+  (symptom: coupling findings absent while the v1 cache file
+  sat on disk).  Regression test added
+  (versionless MEMORY entry rejected).
+- Async chain unchanged: one child per repo at a time
+  (=--in-flight= guard; two data consumers in one render ask
+  =--data= twice but kick one child), sentinel validates
+  through =--load= (a failed child leaving an old-format file
+  must not loop) and clears the guard.
+- Render: =code-review-section--insert-coupling= hoists
+  "completeness: PATH changes together with PEER (NN% of
+  PATH's revisions, N co-changes) — untouched in this PR: ..."
+  into the Analysis section (above phase 5/15, below phase
+  17), with jump buttons into the untouched peer.  Test-file
+  peers (the star case) get the positive-coupling message.
+- Tests: =code-review-coupling-test.el= (parse/matrix/cap/
+  findings/both-sides/in-PR-clean + a real-git fixture: 5
+  coupled + 1 source-only commits → the 83% peer found; cold
+  v2 reload) + history round-trip extensions (version stamp,
+  coupling in cache, old-format disk rejected, versionless
+  memory rejected, sync re-harvest, accessor).  205/205.
+- Live daemon: fixture repo (fast-import built) → exactly one
+  completeness finding ("lib.py changes together with
+  tests/test_lib.py (83% of lib.py's revisions, 5 co-changes)
+  — untouched in this PR: its historically coupled tests were
+  left behind"), negative control (both coupled files touched)
+  clean, async child chain + in-flight guard exercised.  This
+  repo (self-review): v1→v2 migration ran (after the fix
+  above), NO findings — correct: the repo's strong pairs
+  (AGENTS.md↔Improvements.org 96%, ↔code-review-section.el
+  52%, ↔code-review.el 37%) all changed together in this PR,
+  and code-review-history.el itself is too new (2 revisions,
+  under min-cochanges).  Positive control on the real matrix
+  (PR = AGENTS.md only) → exactly the 3 expected findings.
+- Gotchas recorded: git fast-import fixtures (=from :mark=
+  AFTER the message; commits without =from= start from the
+  EMPTY tree, not the previous commit; reused blob marks make
+  empty commits; =reset --hard= needed — fast-import writes
+  objects, not the worktree) and the shield wants ONE git
+  invocation per call → one heredoc fast-import;
+  =how-many= counts FROM POINT (probe counted 0 from
+  point-max while the text existed);
+  =slot-boundp= on a nil singleton signals — guard probes
+  with =(and db (slot-boundp db ...))=.
 
 
 * Phase 19 — Cross-repository choreography impact             :STATUS:todo:

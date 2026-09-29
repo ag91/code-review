@@ -31,7 +31,8 @@ discovered.
 | `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
 | `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps, byte-capped, cached per PR+diff) |
-| `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (git log --name-only via code-compass parse, async child emacs, TTL), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
+| `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (ONE `git log --name-only` parsed twice — code-compass metrics + the phase 18 coupling matrix — async child emacs, TTL, format-versioned: old caches re-harvest once), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
+| `code-review-coupling.el` | phase 18 change-coupling completeness: co-change matrix from the history harvest (code-maat style: degree threshold, min co-changes, max changeset size), findings when a changed file's >=threshold peer (star case: its coupled TEST file) is untouched in the PR; cached per PR+diff, rendered in the Analysis section with jump buttons into the peer |
 | `code-review-dossier.el` | phase 16 hunk dossier: `C-c C-h` inserts an on-demand, cached, collapsible "Context (dossier)" section after a hunk (`git log -L` history of exactly those lines at the base rev, blame authors/last-touch, touched-def call sites with jump buttons, tests split, file heat, hunk risk); `C-u` appends the OFF-by-default LLM garnish |
 | `code-review-testimpact.el` | phase 17 test impact: CI-gaming detector (pure diff-text scan: language-scoped skip markers, `\|\| true`, gated/removed CI steps, lowered coverage thresholds → hard `[CI-GAME]` file tags; DOC-classified files and comment-only lines are skipped — they mention the markers legitimately), test mapping (changed defs → covering test files, `[NO-TEST]` hunk tags + Analysis entries), the `T` command running exactly the mapped subset via `compilation-start` (command resolution: user alist → any projectile/project.el test command already loaded and defined → built-in conventions, Makefile `test` target/pytest/jest/go/cargo; C-u: fake-fix check, running the subset at the BASE rev in a detached temp worktree too) |
 | `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) — the ENGINE: reconstruct, parse, cache ranges, lay overlays |
@@ -642,3 +643,33 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
 - Test files have NO `provide` form: `require` fails with
   "failed to provide feature".  `load` them (as `run-tests.el`
   does) — in probes, `load` the `.el` directly.
+- Cached data must be validated on BOTH the memory and the disk
+  path (phase 18 live-daemon bug): a `--load` that checks the
+  format version only on the disk file silently serves
+  VERSIONLESS in-memory entries loaded by pre-migration code,
+  and the migration never runs while everything "works".  Stamp
+  the same `:version`/`:window`/timestamp plist into BOTH
+  `--store` destinations and run one validator over whichever
+  path serves.
+- `how-many` counts matches FROM POINT (phase 18 probe): after
+  a render point can sit at point-max, so a verification count
+  reads 0 while the text exists.  `(goto-char (point-min))`
+  before `how-many`, or collect with an anchored
+  `re-search-forward` — and note a plain `how-many "foo:"`
+  count also matches the LITERAL string inside new source
+  shown in the diff; anchor the pattern
+  (`"^[ \t]*foo: "`) to count actual rendered findings.
+- `slot-boundp` on a NIL object signals wrong-type-argument:
+  the closql singleton can legitimately be nil (mid-reset, in
+  a fresh child).  Guard probes with
+  `(and db (slot-boundp db :connection))`, never a bare
+  `slot-boundp`.
+- git fast-import fixtures (phase 18): `from :mark` must come
+  AFTER the message data (a `from` before `data` starts from
+  the EMPTY tree, not the previous commit), reusing a blob mark
+  across commits makes later commits EMPTY (mark new blobs
+  per commit), and fast-import writes objects only — `git
+  reset --hard` is needed afterwards to materialize the
+  worktree.  The Execute shield wants ONE git invocation per
+  call: build the fixture with a single heredoc fast-import
+  spanning ALL commits.

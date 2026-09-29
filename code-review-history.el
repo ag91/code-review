@@ -39,8 +39,11 @@
 ;;   `--numstat' which lazy-fetches blob contents per changed file.
 ;;   The harvest NEVER runs during the wash (daemon rule): it runs
 ;;   in a child batch emacs on first encounter of a repository, is
-;;   cached on disk per repository with a TTL, and is a hash lookup
-;;   on every later render.
+;;   cached on disk per repository with a TTL (format-versioned:
+;;   `code-review-history--format'), and is a hash lookup
+;;   on every later render.  The same ONE log call is parsed a
+;;   second time into the phase 18 CO-CHANGE MATRIX
+;;   (`code-review-coupling--matrix'), stored beside the metrics.
 ;;
 ;; - HEAT: per changed file, churn percentile (per-repository
 ;;   normalized) x complexity (code-compass indentation stats of the
@@ -62,6 +65,7 @@
 
 (require 'cl-lib)
 (require 'code-review-utils)
+(require 'code-review-coupling)
 
 (defvar code-review-repo-worktree)        ; code-review-repo.el
 (defvar code-review-bot-author-regexp)   ; code-review-section.el
@@ -139,13 +143,23 @@ Noise rules still sink to the bottom (phase 3 ordering unchanged)."
 ;;; Harvest
 
 (defvar code-review-history--cache (make-hash-table :test #'equal)
-  "Repo key -> plist (:metrics HASH :harvested-at FLOAT).")
+  "Repo key -> plist (:metrics HASH :coupling PLIST :harvested-at FLOAT).")
 
 (defvar code-review-history--cache-files nil
   "Repo keys whose cache file we have written (for `code-review-history-reset').")
 
 (defvar code-review-history--failed (make-hash-table :test #'equal)
   "Repo keys whose harvest failed this session (loop protection).")
+
+(defvar code-review-history--in-flight (make-hash-table :test #'equal)
+  "Repo keys whose ASYNC harvest child is running (loop protection:
+several renders of the same repository may ask for the data while
+the first child is still writing the cache — kick ONE child).")
+
+(defconst code-review-history--format 2
+  "Cache file format version.
+Bumped whenever the stored plist gains a part (phase 18 added
+:coupling): caches written by older code are stale and re-harvest.")
 
 ;;;###autoload
 (defun code-review-history-reset ()
@@ -154,6 +168,7 @@ The next render re-harvests every repository (async, once)."
   (interactive)
   (clrhash code-review-history--cache)
   (clrhash code-review-history--failed)
+  (clrhash code-review-history--in-flight)
   (dolist (key code-review-history--cache-files)
     (ignore-errors (delete-file (code-review-history--cache-file key)))))
 
@@ -211,60 +226,82 @@ not count as repository churn.  Bounded by
                        (number-to-string code-review-history-max-commits)))))
     (buffer-string)))
 
-(defun code-review-history--store (key metrics)
-  "Persist METRICS for repo KEY (memory + disk cache file)."
-  (puthash key (list :metrics metrics :harvested-at (float-time))
-           code-review-history--cache)
-  (let ((file (code-review-history--cache-file key)))
-    (make-directory (file-name-directory file) t)
-    (with-temp-file file
-      (prin1 (list :metrics metrics
-                   :window code-review-history-window
-                   :harvested-at (float-time))
-             (current-buffer)))
+(defun code-review-history--store (key metrics coupling)
+  "Persist METRICS and COUPLING for repo KEY (memory + disk cache file).
+The memory plist carries the same :version/:window stamps as the
+disk file: `--load' validates BOTH paths (a versionless MEMORY
+entry — loaded by pre-phase-18 code in a live daemon — must be
+rejected exactly like an old-format disk file)."
+  (let ((data (list :version code-review-history--format
+                    :metrics metrics
+                    :coupling coupling
+                    :window code-review-history-window
+                    :harvested-at (float-time))))
+    (puthash key data code-review-history--cache)
+    (let ((file (code-review-history--cache-file key)))
+      (make-directory (file-name-directory file) t)
+      (with-temp-file file
+        (prin1 data (current-buffer))))
     (push key code-review-history--cache-files)
     (remhash key code-review-history--failed)))
 
 (defun code-review-history--load (key)
-  "Fresh cached metrics for repo KEY, nil when absent or stale.
-Populates the memory cache from the disk cache file."
-  (or (gethash key code-review-history--cache)
-      (let* ((file (code-review-history--cache-file key))
-             (data (and (file-exists-p file)
-                        (ignore-errors
-                          (with-temp-buffer
-                            (insert-file-contents file)
-                            (read (current-buffer)))))))
-        (when (and data
-                   (equal (plist-get data :window) code-review-history-window)
-                   (< (- (float-time) (or (plist-get data :harvested-at) 0))
-                      (* code-review-history-ttl-days 86400)))
-          (puthash key data code-review-history--cache)
-          data))))
+  "Fresh cached data for repo KEY, nil when absent or stale.
+Validates BOTH the memory entry and the disk file (see
+`code-review-history--store'): stale means written for another
+WINDOW, by an older cache format (see
+`code-review-history--format'), or older than the TTL."
+  (let ((valid
+         (lambda (data)
+           (and data
+                (equal (plist-get data :version)
+                       code-review-history--format)
+                (equal (plist-get data :window)
+                       code-review-history-window)
+                (< (- (float-time)
+                      (or (plist-get data :harvested-at) 0))
+                   (* code-review-history-ttl-days 86400))
+                data))))
+    (or (funcall valid (gethash key code-review-history--cache))
+        (let* ((file (code-review-history--cache-file key))
+               (data (and (file-exists-p file)
+                          (ignore-errors
+                            (with-temp-buffer
+                              (insert-file-contents file)
+                              (read (current-buffer)))))))
+          (let ((ok (funcall valid data)))
+            (when ok
+              (puthash key ok code-review-history--cache)
+              ok))))))
 
 (defun code-review-history--harvest-sync (worktree)
   "Synchronously harvest WORKTREE's repository history into the cache.
 One bounded `git log --name-only' (see `code-review-history--log')
-plus a pure elisp parse; run this in batch emacs or in tests, never
-in the live daemon.  Returns the metrics hash, nil when
-code-compass is unavailable."
+plus pure elisp parses (code-compass metrics, phase 18 coupling);
+run this in batch emacs or in tests, never in the live daemon.
+Returns the metrics hash, nil when code-compass is unavailable."
   (when (code-review-history--compass-p)
     (let* ((key (code-review-history--repo-key worktree))
+           (log (code-review-history--log worktree))
            (metrics (code-compass--parse-git-log-metrics
-                     (code-review-history--log worktree)
-                     (code-review-history--bot-regexp))))
-      (code-review-history--store key metrics)
+                     log (code-review-history--bot-regexp)))
+           (coupling (code-review-coupling--matrix
+                      (code-review-coupling--parse-changesets
+                       log (code-review-history--bot-regexp))
+                      code-review-coupling-max-changeset-size)))
+      (code-review-history--store key metrics coupling)
       metrics)))
 
 (defun code-review-history--harvest-async (worktree buffer key)
   "Harvest WORKTREE's repository in a child batch emacs.
 The child writes the disk cache; the sentinel re-renders BUFFER
-when it finishes.  KEY is the repo key (failure marking)."
+when it finishes.  KEY is the repo key (failure/in-flight marking)."
   (message "code-review: harvesting repository history for review \
 heat (first time for this repository; newest %s commits, a few seconds)..."
            (if (> code-review-history-max-commits 0)
                code-review-history-max-commits
              "all"))
+  (puthash key t code-review-history--in-flight)
   (let ((proc (make-process
                :name "code-review-history"
                :buffer " *code-review-history*"
@@ -283,11 +320,13 @@ heat (first time for this repository; newest %s commits, a few seconds)..."
 (setq code-review-history-window %S code-review-history-ttl-days %S \
 code-review-history-max-commits %S) \
 (setq code-review-bot-author-regexp %S) \
+(setq code-review-coupling-max-changeset-size %S) \
 (code-review-history--harvest-sync %S))"
                            code-review-history-window
                            code-review-history-ttl-days
                            code-review-history-max-commits
                            (code-review-history--bot-regexp)
+                           code-review-coupling-max-changeset-size
                            (expand-file-name worktree))))
                :sentinel #'code-review-history--sentinel)))
     (process-put proc 'review-buffer buffer)
@@ -298,7 +337,12 @@ code-review-history-max-commits %S) \
   (when (memq (process-status proc) '(exit signal))
     (let* ((key (process-get proc 'repo-key))
            (buffer (process-get proc 'review-buffer)))
-      (if (not (file-exists-p (code-review-history--cache-file key)))
+      (remhash key code-review-history--in-flight)
+      ;; validate THROUGH `--load' (version + window + TTL): a
+      ;; failed child can leave an OLD-format file behind, and a
+      ;; bare `file-exists-p' would then re-render from cold data
+      ;; forever: each re-render kicks another child (a loop)
+      (if (not (code-review-history--load key))
           (progn
             (puthash key t code-review-history--failed)
             (message "code-review: history harvest failed \
@@ -311,17 +355,27 @@ code-review-history-max-commits %S) \
             (code-review--sync-db-pullreq)
             (code-review--trigger-hooks (buffer-name))))))))
 
-(defun code-review-history-metrics (worktree &optional buffer)
-  "Metrics for WORKTREE's repository: hash path -> facts plist.
-Serves from the cache; when cold, kicks the async harvest (BUFFER
-is re-rendered by the sentinel) and returns nil."
+(defun code-review-history-data (worktree &optional buffer)
+  "Cached harvest data plist for WORKTREE's repository.
+The plist of `code-review-history--store' (:metrics :coupling
+:harvested-at) — phases 14 (heat) and 18 (coupling) read their
+parts from it.  Serves from the cache; when cold, kicks the async
+harvest (BUFFER is re-rendered by the sentinel) and returns nil.
+One child per repository at a time (the in-flight guard): several
+renders may ask while it runs."
   (let* ((key (code-review-history--repo-key worktree))
          (data (or (code-review-history--load key)
                    (unless (or (gethash key code-review-history--failed)
+                               (gethash key code-review-history--in-flight)
                                (not (or (bufferp buffer) (null buffer))))
                      (code-review-history--harvest-async worktree buffer key)
                      nil))))
-    (and data (plist-get data :metrics))))
+    data))
+
+(defun code-review-history-metrics (worktree &optional buffer)
+  "Metrics for WORKTREE's repository: hash path -> facts plist.
+The :metrics part of the data of `code-review-history-data'."
+  (plist-get (code-review-history-data worktree buffer) :metrics))
 
 ;;; Heat
 

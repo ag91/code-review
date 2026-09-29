@@ -299,8 +299,44 @@ window, 16MB of `--name-only' log, a minutes-long child parse."
                                               :metrics))
                                     :revisions)
                          2))
+          ;; phase 18: the SAME harvest stores the co-change matrix,
+          ;; version-stamped so pre-phase-18 cache files are stale
+          (should (equal (plist-get (code-review-history--load key)
+                                    :version)
+                         code-review-history--format))
+          (let ((matrix (plist-get (code-review-history--load key)
+                                   :coupling)))
+            (should matrix)
+            ;; this fixture's commits are all single-file: the
+            ;; matrix revisions mirror the metrics, no pairs
+            (should (= (gethash "a.py" (plist-get matrix :revisions))
+                       2))
+            (should (= (hash-table-count (plist-get matrix :pairs))
+                       0)))
+          ;; an OLD-FORMAT cache file (pre-phase-18: no :version) is
+          ;; stale: the version check rejects it
+          (with-temp-file file
+            (prin1 (list :metrics (make-hash-table)
+                         :window code-review-history-window
+                         :harvested-at (float-time))
+                   (current-buffer)))
+          (clrhash code-review-history--cache)
+          (should (null (code-review-history--load key)))
+          ;; regression (phase 18 live daemon): a versionless MEMORY
+          ;; entry (loaded by pre-phase-18 code) must be rejected
+          ;; TOO, not just old-format disk files — the memory path
+          ;; bypassing the version check silently kept serving v1
+          ;; data while the migration never ran
+          (puthash key (list :metrics (make-hash-table)
+                             :harvested-at (float-time))
+                   code-review-history--cache)
+          (should (null (code-review-history--load key)))
           ;; regression: the public accessor serves the metrics
           ;; HASH, not the (:metrics ...) cache plist around it
+          ;; (re-harvest: the old-format file just rejected above)
+          (let ((metrics (code-review-history--harvest-sync repo)))
+            (should (hash-table-p metrics))
+            (should (equal (hash-table-count metrics) 2)))
           (clrhash code-review-history--cache)
           (let ((m (code-review-history-metrics repo)))
             (should (hash-table-p m))

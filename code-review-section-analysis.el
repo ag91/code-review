@@ -44,6 +44,7 @@
 (require 'code-review-utils)
 (require 'code-review-analysis)
 (require 'code-review-testimpact)
+(require 'code-review-coupling)
 
 (declare-function code-review-browse--reveal "code-review-browse")
 (declare-function code-review-browse--strip-diff-prefix "code-review-browse")
@@ -174,18 +175,48 @@ the delicate-hunk list."
                                 path ranges)))
       (insert (format " — %s\n" (string-join defs ", "))))))
 
+(defun code-review-section--insert-coupling (cres)
+  "Insert the phase 18 change-coupling completeness findings from
+CRES: a changed file whose historical CO-CHANGE PEERS the PR does
+not touch.  The button jumps to the untouched peer in the
+worktree — the thing to go read to decide whether the refactor is
+complete."
+  (let ((worktree code-review-repo-worktree))
+    (dolist (f (plist-get cres :findings))
+      (let ((path (plist-get f :path))
+            (peer (plist-get f :peer))
+            (co (plist-get f :co))
+            (degree (plist-get f :degree)))
+        (insert "  ")
+        (insert (propertize "completeness: "
+                           'font-lock-face 'font-lock-warning-face))
+        (insert (format "%s changes together with " path))
+        (code-review-section--insert-analysis-jump worktree peer 1)
+        (insert (format " (%d%% of %s's revisions, %d co-changes) — \
+untouched in this PR: %s\n"
+                        (round (* 100 degree))
+                        path
+                        co
+                        (if (plist-get f :test-p)
+                            "its historically coupled tests were left \
+behind"
+                          "is the refactor complete?")))))))
+
 (defun code-review-section-insert-analysis ()
-  "Insert the heuristic Analysis section (phase 5, 15, 17).
+  "Insert the heuristic Analysis section (phase 5, 15, 17, 18).
 Phase 17 findings (CI-gaming, no test coverage) are HOISTED
-above the phase 5 duplicate/dead/dangling findings and the phase
-15 delicate-hunk jump list.  Toggle it with TAB like any other
-section.  Nothing is inserted when neither analysis found
-anything (or they are disabled, or there is no worktree)."
+above the phase 18 completeness findings, the phase 5
+duplicate/dead/dangling findings and the phase 15 delicate-hunk
+jump list.  Toggle it with TAB like any other section.  Nothing
+is inserted when no analysis found anything (or they are
+disabled, or there is no worktree)."
   (let* ((res (code-review-analysis-run))
          (tres (code-review-testimpact-run))
          (tres-findings (and tres (or (plist-get tres :ci)
-                                      (plist-get tres :notest)))))
-    (when (or res tres-findings)
+                                      (plist-get tres :notest))))
+         (cres (code-review-coupling-run))
+         (cfindings (and cres (plist-get cres :findings))))
+    (when (or res tres-findings cfindings)
       (let ((similar (and res (plist-get res :similar)))
             (dead (and res (plist-get res :dead)))
             (dangling (and res (plist-get res :dangling)))
@@ -198,6 +229,9 @@ anything (or they are disabled, or there is no worktree)."
           (when tres-findings
             (code-review-section--insert-testimpact-ci tres)
             (code-review-section--insert-testimpact-notest tres))
+          ;; phase 18: change-coupling completeness
+          (when cfindings
+            (code-review-section--insert-coupling cres))
           (when res
             (code-review-section--insert-analysis-similar worktree similar)
             (code-review-section--insert-analysis-dead dead)
