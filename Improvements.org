@@ -2326,7 +2326,7 @@ New gotchas this phase (also AGENTS.md):
   deterministic =GIT_AUTHOR_DATE= / =GIT_COMMITTER_DATE= via
   =process-environment= around =call-process=.
 
-* Phase 17 — Test-impact verification and CI-gaming detector  :STATUS:todo:
+* Phase 17 — Test-impact verification and CI-gaming detector  :STATUS:done:
 
 Problem: when agents fail CI they have an obvious path to green
 (remove tests, add skip markers, lower thresholds, gate steps).
@@ -2375,6 +2375,148 @@ Use case — what this catches in review:
 Caveat: the mapping is a heuristic (dynamic dispatch,
 reflection, build-convention entry points are missed) — label
 it as such, phase 5 style.
+
+DONE (implementation notes, 2026-09-29) — everything in the
+design:
+
+- New file =code-review-testimpact.el= (engine + the =T=
+  command, ~560 lines).  CI-gaming scan: PURE regexps over
+  the diff text.  Test mapping: ONE batched worktree grep (the
+  phase 5 =code-review-analysis--definitions-refs=).  Cached
+  per (PR, diff) like the analysis; a failing compute is LOGGED
+  and reported as no findings (the phase 5 survivability rule:
+  it must never take the review buffer down).
+- TEST MAPPING: per hunk, the added-side definitions (phase 5
+  extraction) -> test files referencing them
+  (=code-review-testimpact-test-path-regexp=, a
+  dossier-style copy).  A def is NO-TEST when USED in the
+  worktree but referenced by NO test file; test entry points
+  (the phase 5 =dead-test-name-regexp=) and entirely
+  unreferenced defs (phase 5 already reports those dead) stay
+  out.  = [NO-TEST: def names]= tag on the hunk heading
+  (warning face, up to 3 names + ellipsis), entries in the
+  Analysis section (capped at 30) with in-buffer jump buttons.
+- =T= on a hunk or file: the mapped test subset runs via
+  =compilation-start= in the review worktree (jumpable
+  failures, buffer =*Code Review Tests*=).  The command is
+  the first =code-review-testimpact-test-command-alist= entry
+  whose regexp matches the worktree path; =%f= expands to the
+  mapped test files (shell-quoted), =%n= to the def names; a
+  template without =%f= is allowed (full suite) but says so
+  via a message.  No mapped tests -> user-error naming the
+  defs that lost coverage.  With =C-u=: the same subset also
+  runs at the diff's BASE rev (a detached TEMPORARY
+  =git worktree add=, removed afterwards; forge PRs prefer
+  refs/remotes/code-review/N/base, local reviews the
+  =--old-rev= of the stored diff args; base == HEAD reports
+  the comparison as meaningless instead) and a verdict buffer
+  pops (=*Code Review Test Impact*=): pass at HEAD AND at
+  BASE -> the tests do not cover the change (fake-fix
+  shaped); fail at BASE -> they cover it; fail at both ->
+  pre-existing failure.  Both runs go through ONE async
+  runner (=make-process= + sentinel + a timeout defcustom),
+  so nothing blocks the daemon.  LOCAL reviews work
+  unchanged — their only automated verification.
+- CI-GAMING DETECTOR: skip markers ADDED (=test.skip= /
+  =it.skip= / =xit= / =xdescribe=, =@pytest.mark.skip= /
+  =skipif= / =xfail=, =@unittest.skip=, =pytest.skip=,
+  =skipTest=, =t.Skip=, =#[ignore]=, =@Ignore= / =@Disabled= /
+  =@Skip= — a defcustom list, removal is clean); =|| true=
+  and newly-gated steps (=continue-on-error: true=, =if:
+  false=) in CI files (=.github/workflows/=, =.gitlab-ci=,
+  Jenkinsfile, Makefile, ...); REMOVED =run:=/=uses:= steps in
+  CI files (identical moves are deliberately still reported —
+  loud, the reviewer decides); coverage thresholds LOWERED
+  (deleted/added pair of the SAME threshold whose number went
+  down — raising is clean).  Hard =[CI-GAME]= tag on the
+  offending file heading plus HOISTED entries (above the
+  phase 5/15 findings) in the Analysis section with jump
+  buttons into the worktree.  Every line is capped first (the
+  phase 5 megabyte-line rule).
+- Rendering: =code-review-section-analysis.el= (the hoisted
+  section entries), =code-review-section-wash.el= (the two
+  tags), =T= in the keymap and the transient (+ autoload
+  cookie).
+- TESTS: 27 new ERT tests in
+  =test/code-review-testimpact-test.el= (scan for every kind +
+  clean cases + the megabyte line, path/entry classification,
+  the mapping against a temp git repository, tags, subsets,
+  template expansion, verdict, and the async runner: exit
+  codes, output capture, timeout — batch processes consume
+  output during =sleep-for=).  Suite 191/191.
+- LIVE (daemon, Emacs 30.2): local review of a /tmp fixture
+  (uncovered def + skip marker + =|| true= + gated step +
+  removed step + threshold lowered) rendered 5 ci-gaming
+  findings of exactly the 5 expected kinds, 3 =[CI-GAME]= file
+  tags, 1 =[NO-TEST: uncovered]= hunk tag, 5 hoisted Analysis
+  lines + 1 no-test entry; =T= wiring verified end to end in
+  the live buffer (hunk target resolution, the mapped subset,
+  command expansion), keymap patched in place (the defvar
+  no-op gotcha), db swapped to a throwaway sqlite and restored.
+- GOTCHAS (also AGENTS.md): =delete-dups= is DESTRUCTIVE and
+  =(append ...)= shares its LAST list's conses with the
+  cached entry — splicing corrupted the cached plist for later
+  =T= presses (caught by an ERT test); copy first.  check-parens
+  reports where the damage SURFACES (usually the NEXT
+  top-level form), not the missing closer's line, and the
+  hand count was wrong three times in a row — keep probe
+  scripts FLAT (bind results into a plain let, assemble the
+  report at the end) and prefer =how-many= to hand-rolled
+  match-count loops.  A =search-forward= probe must search
+  something UNIQUE to the hunk: the Analysis section's own
+  "no test coverage" line mentions the def name too and
+  shadows it (point landed in the Analysis section, the
+  target resolution correctly refused).  Local review buffer
+  names are =*Code Review: local: REPO*= — NO =@ RANGE= part
+  for HEAD diffs; find review buffers by name regexp, never
+  an exact guess.
+
+AMENDMENT (same day): the first live SELF-review (this very
+diff!) flagged the detector's own release notes — 4 skip
+findings in Improvements.org and 1 in the elisp Commentary.
+Two engine guards added: DOC-classified files are skipped
+whole (=code-review--diff--classify-path=; =.org= is now in
+the built-in DOC noise rule, extending the phase 3 rule), and
+COMMENT-only lines are dropped
+(=code-review-testimpact-comment-prefix-alist=, per-file
+comment prefixes).  What remains is HONEST: the detector's own
+test fixtures (real marker strings added in a test file are
+exactly the pattern it exists to flag; it cannot semantically
+distinguish its own tests — the reviewer can).  4 new ERT
+tests (doc skip, comment skip, map-hunks doc skip, =.org=
+DOC classification), suite 195/195; live re-render of the
+user's own buffer verified: 0 findings on Improvements.org,
+0 on the Commentary, exactly 1 [CI-GAME] file tag.  Daemon
+gotcha CONFIRMED once more: re-loading a =defcustom= does NOT
+update the daemon's bound value — the first re-render still
+used the OLD noise rules until =code-review-diff-noise-rules=
+was =setq='d from its =standard-value=.
+
+AMENDMENT 2 (same day, user review): two more fixes:
+
+- MARKER LANGUAGE SCOPING: a PYTHON marker in an elisp string
+  (the detector's own test fixtures!) is not gaming —
+  =code-review-testimpact-skip-marker-regexps= entries are now
+  =(FILE-REGEXP MARKER-REGEXP...)= (jest/TS, pytest, go, rust,
+  java/kotlin; a bare string entry, the old format, still scans
+  any file).  The self-review now yields ZERO ci-gaming findings
+  and no =[CI-GAME]= tags (the remaining buffer hits are
+  diff-text literals).
+- T COMMAND WITHOUT SETUP: with no
+  =code-review-testimpact-test-command-alist= entry, any test
+  command projectile or project.el define is reused first (ONLY
+  when the package is already loaded — never loading user
+  packages from a render: projectile's resolver for the
+  worktree = last-run command, .dir-locals, per-type default;
+  project.el's =project-test-command=, boundp-guarded — it does
+  not exist in Emacs 30), then built-in conventions: a Makefile
+  with a =test= target (=make test=, covers this repo), pytest,
+  jest config or package.json =test= script, go test, cargo
+  test.  Probed live: projectile's resolver returns nil for both
+  this repo and the fixture, so the Makefile convention wins
+  here.  9 new/updated ERT tests (language scoping, legacy
+  strings, the comment filter, conventions, fallback order),
+  suite 200/200; live re-render verified end to end.
 
 * Phase 18 — Change-coupling completeness cross-check          :STATUS:todo:
 

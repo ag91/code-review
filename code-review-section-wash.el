@@ -45,6 +45,7 @@
 (require 'code-review-analysis)
 (require 'code-review-hunkhighlight)
 (require 'code-review-history)
+(require 'code-review-testimpact)
 
 (declare-function code-review-section-insert-comment "code-review-section-comment")
 (declare-function code-review-comment-insert-reactions "code-review-reactions")
@@ -231,6 +232,11 @@ this is non-nil."
       (when tag
         (insert (propertize (format "  [%s]" tag)
                             'font-lock-face 'code-review-diff-tag-face)))
+      ;; phase 17: hard tag on files with CI-gaming findings (skip
+      ;; markers, gated/removed CI steps, lowered thresholds)
+      (when (code-review-testimpact--file-tag-for clean-path)
+        (insert (propertize "  [CI-GAME]"
+                            'font-lock-face 'font-lock-warning-face)))
       (when long-status
         (insert (format " (%s)" long-status)))
       (magit-insert-heading)
@@ -337,10 +343,14 @@ it on the db (PATH-NAME) when missing so comment positions anchor."
       (let ((adjusted-pos (+ (code-review--line-number-at-pos) 1)))
         (code-review-db--curr-path-head-pos-update path-name adjusted-pos)
         adjusted-pos)))
-(defun code-review-wash-hunk--insert-heading (heading badge)
-  "Insert the hunk HEADING line and, when non-nil, the delicacy
-BADGE (phase 15), then close the heading (`magit-insert-heading')."
+(defun code-review-wash-hunk--insert-heading (heading badge notest)
+  "Insert the hunk HEADING line, the phase 17 NO-TEST tag NOTEST
+and, when non-nil, the delicacy BADGE (phase 15), then close the
+heading (`magit-insert-heading')."
   (insert (propertize heading 'font-lock-face 'magit-diff-hunk-heading))
+  (when notest
+    (insert (propertize (format "  [%s]" notest)
+                        'font-lock-face 'font-lock-warning-face)))
   (when badge
     (insert (propertize badge
                         'font-lock-face
@@ -438,11 +448,13 @@ Please Report this Bug" path-name))
               :from-range (if combined (butlast ranges) (car ranges))
               :to-range (car (last ranges))
               :about about)
-          ;; phase 15: the delicacy badge (cache hit: the Analysis
-          ;; section runs before the diff wash in the sections hook)
+          ;; phase 15: the delicacy badge; phase 17: the NO-TEST tag
+          ;; (cache hits: the Analysis section runs before the diff
+          ;; wash in the sections hook)
           (code-review-wash-hunk--insert-heading
            heading
-           (code-review-analysis--hunk-badge-for path-name raw-ranges))
+           (code-review-analysis--hunk-badge-for path-name raw-ranges)
+           (code-review-testimpact--hunk-tag-for path-name raw-ranges))
           ;; Keep track of old/new line numbers from the hunk header so we
           ;; can anchor local comments keyed by SIDE/LINE inline.
           (code-review-wash-hunk--interleave-comments

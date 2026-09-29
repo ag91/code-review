@@ -177,6 +177,8 @@ OUTDATED."
     code-review-next-delicate-hunk)
    ("C-c C-h" "Hunk dossier: insert the on-demand change context of this hunk"
     code-review-dossier-hunk)
+   ("T" "Test: run the tests mapped to this hunk/file (C-u: fake-fix check at base)"
+    code-review-testimpact-run-tests)
    ("N" "Focus: hide auto-flagged noise files (lockfiles, docs, whitespace-only)"
     code-review-toggle-focus-mode)
    ("D" "Difftastic: zoom into the file's real changes (C-u: whole PR)"
@@ -208,6 +210,8 @@ OUTDATED."
     (define-key map (kbd "C-c C-d") 'code-review-next-delicate-hunk)
     ;; phase 16: on-demand change context of the hunk at point
     (define-key map (kbd "C-c C-h") 'code-review-dossier-hunk)
+    ;; phase 17: run the tests mapped to the hunk/file at point
+    (define-key map (kbd "T") 'code-review-testimpact-run-tests)
     (define-key map (kbd "G") 'code-review-reload)
     ;; Repository context: xref and worktree access from the diff
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)

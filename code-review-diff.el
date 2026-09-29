@@ -76,7 +76,7 @@ Example:
      :tag "GEN" :collapse t)
     (:match "\\`\\(dist\\|build\\|out\\)/\\|\\.min\\.[cm]?js\\'\\|\\.bundle\\.[cm]?js\\'\\|\\.map\\'"
      :tag "GEN" :collapse t)
-    (:match "\\`\\(CHANGELOG\\|CHANGES\\|NEWS\\|HISTORY\\|AUTHORS\\|CREDITS\\)\\(\\.[^/]*\\)?\\'\\|/\\(doc\\|docs\\|documentation\\)/\\|\\.\\(md\\|markdown\\|rst\\)\\'\\|\\(^\\|/\\)README\\(\\.[^/]*\\)?\\'"
+    (:match "\\`\\(CHANGELOG\\|CHANGES\\|NEWS\\|HISTORY\\|AUTHORS\\|CREDITS\\)\\(\\.[^/]*\\)?\\'\\|/\\(doc\\|docs\\|documentation\\)/\\|\\.\\(md\\|markdown\\|rst\\|org\\)\\'\\|\\(^\\|/\\)README\\(\\.[^/]*\\)?\\'"
      :tag "DOC" :collapse t))
   "Built-in rules classifying low-signal files as noise.
 These come enabled by default so you don't have to maintain

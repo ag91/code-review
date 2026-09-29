@@ -33,6 +33,7 @@ discovered.
 | `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps, byte-capped, cached per PR+diff) |
 | `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (git log --name-only via code-compass parse, async child emacs, TTL), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
 | `code-review-dossier.el` | phase 16 hunk dossier: `C-c C-h` inserts an on-demand, cached, collapsible "Context (dossier)" section after a hunk (`git log -L` history of exactly those lines at the base rev, blame authors/last-touch, touched-def call sites with jump buttons, tests split, file heat, hunk risk); `C-u` appends the OFF-by-default LLM garnish |
+| `code-review-testimpact.el` | phase 17 test impact: CI-gaming detector (pure diff-text scan: language-scoped skip markers, `\|\| true`, gated/removed CI steps, lowered coverage thresholds → hard `[CI-GAME]` file tags; DOC-classified files and comment-only lines are skipped — they mention the markers legitimately), test mapping (changed defs → covering test files, `[NO-TEST]` hunk tags + Analysis entries), the `T` command running exactly the mapped subset via `compilation-start` (command resolution: user alist → any projectile/project.el test command already loaded and defined → built-in conventions, Makefile `test` target/pytest/jest/go/cargo; C-u: fake-fix check, running the subset at the BASE rev in a detached temp worktree too) |
 | `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) — the ENGINE: reconstruct, parse, cache ranges, lay overlays |
 | `code-review-hunkhighlight-queries.el` | the per-language treesit query VOCABULARIES + faces: general (phase 10), test-file, and security source/sink lists (phase 20a; sparse by design) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
@@ -617,6 +618,27 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   a makefile recipe needs the FULL elpa load path (the project
   Makefile's `$(wildcard $(PKG_DIR)/*)` form), not a hand-
   picked `-L` list (test files `(require 'a)`, `uuidgen`, ...).
+- `delete-dups` is DESTRUCTIVE and `(append a b)` returns a list
+  whose tail SHARES `b`'s conses: deduping an appended list
+  splices the shared tail — corrupting the cached plist a later
+  reader walks (an ERT test caught this in the phase 17 engine).
+  Always `(delete-dups (copy-sequence ...))` when the source may
+  be cached or shared.
+- check-parens reports where the damage SURFACES (usually the
+  NEXT top-level form), not the line of the missing/extra closer;
+  hand-counting closers was wrong three times in a row on the
+  same line.  Write daemon probe scripts FLAT (bind results into
+  a plain `let`, assemble the report at the very end) — deep
+  nesting is what makes them hard to balance — and prefer
+  `how-many` to a hand-rolled match-count loop.
+- A `search-forward` probe must search something UNIQUE to the
+  target: the Analysis section's own "no test coverage" line
+  mentions def names too, so searching the def name landed point
+  in the Analysis section (and the hunk-target resolution
+  correctly refused).  Search the exact hunk code line instead.
+- Local review buffer names are `*Code Review: local: REPO*` —
+  NO `@ RANGE` part for HEAD diffs; find review buffers by name
+  REGEXP, never an exact guess.
 - Test files have NO `provide` form: `require` fails with
   "failed to provide feature".  `load` them (as `run-tests.el`
   does) — in probes, `load` the `.el` directly.

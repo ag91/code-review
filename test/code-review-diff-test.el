@@ -40,6 +40,17 @@ its trailing newline, like a trimmed stored diff."
     (should (not (plist-get (gethash "src/main.py" table) :tag)))))
 
 
+(ert-deftest code-review-diff/classify-org-as-doc ()
+  ;; org files (plans, release notes, journals) are docs, not code:
+  ;; the phase 17 CI-gaming scan relies on this to skip them whole
+  (should (equal "DOC" (plist-get
+                       (code-review--diff--classify-path "Improvements.org")
+                       :tag)))
+  (should (equal "DOC" (plist-get
+                       (code-review--diff--classify-path "docs/guide.org")
+                       :tag))))
+
+
 (ert-deftest code-review-diff/reorder-never-glues-blocks ()
   "Reordering must never glue two file blocks on one line.
 Regression: a diff trimmed of its trailing newline used to end

@@ -43,6 +43,7 @@
 (require 'code-review-db)
 (require 'code-review-utils)
 (require 'code-review-analysis)
+(require 'code-review-testimpact)
 
 (declare-function code-review-browse--reveal "code-review-browse")
 (declare-function code-review-browse--strip-diff-prefix "code-review-browse")
@@ -135,30 +136,76 @@ hottest first, with in-buffer jump buttons."
                                   path ranges)))
         (insert (format "  %.2f (%s)\n"
                         (plist-get e :score) reasons))))))
+(defun code-review-section--insert-testimpact-ci (tres)
+  "Insert the phase 17 CI-gaming findings from TRES (HOISTED to
+the top of the Analysis section: skip markers, `|| true' in CI
+commands, newly gated/removed workflow steps, lowered coverage
+thresholds), each with a jump button into the worktree."
+  (let ((worktree code-review-repo-worktree))
+    (pcase-dolist (f (plist-get tres :ci))
+      (insert "  ")
+      (insert (propertize
+               (format "ci-gaming: %s in "
+                       (code-review-testimpact--kind-label
+                        (plist-get f :kind)))
+               'font-lock-face 'font-lock-warning-face))
+      (code-review-section--insert-analysis-jump
+       worktree (plist-get f :path) (plist-get f :line))
+      (insert (format " — \"%s\"\n" (plist-get f :text))))))
+
+(defun code-review-section--insert-testimpact-notest (tres)
+  "Insert the phase 17 no-test-coverage findings from TRES: hunks
+whose touched definitions are USED in the worktree but referenced
+by no test file.  The button jumps inside the review buffer, like
+the delicate-hunk list."
+  (dolist (e (plist-get tres :notest))
+    (let ((path (plist-get e :path))
+          (ranges (plist-get e :ranges))
+          (defs (plist-get e :defs)))
+      (insert "  ")
+      (insert (propertize "no test coverage: "
+                          'font-lock-face 'font-lock-warning-face))
+      (insert-button (format "%s %s" path ranges)
+                     'face 'code-review-url-header-face
+                     'follow-link t
+                     'help-echo "Jump to this hunk in the review"
+                     'action (lambda (&rest _)
+                               (code-review-section--goto-hunk-section
+                                path ranges)))
+      (insert (format " — %s\n" (string-join defs ", "))))))
+
 (defun code-review-section-insert-analysis ()
-  "Insert the heuristic Analysis section (phase 5, 15).
-Duplicate and dead code findings, and (phase 15) the Delicate
-hunks jump list (risk: blast radius, line age and ownership,
-complexity delta, dead definitions).  Toggle it with TAB like any
-other section.  Nothing is inserted when the analysis found
-nothing (or is disabled, or there is no worktree)."
-  (let ((res (code-review-analysis-run)))
-    (when res
-      (let ((similar (plist-get res :similar))
-            (dead (plist-get res :dead))
-            (dangling (plist-get res :dangling))
+  "Insert the heuristic Analysis section (phase 5, 15, 17).
+Phase 17 findings (CI-gaming, no test coverage) are HOISTED
+above the phase 5 duplicate/dead/dangling findings and the phase
+15 delicate-hunk jump list.  Toggle it with TAB like any other
+section.  Nothing is inserted when neither analysis found
+anything (or they are disabled, or there is no worktree)."
+  (let* ((res (code-review-analysis-run))
+         (tres (code-review-testimpact-run))
+         (tres-findings (and tres (or (plist-get tres :ci)
+                                      (plist-get tres :notest)))))
+    (when (or res tres-findings)
+      (let ((similar (and res (plist-get res :similar)))
+            (dead (and res (plist-get res :dead)))
+            (dangling (and res (plist-get res :dangling)))
             (worktree code-review-repo-worktree))
         (magit-insert-section (code-review-analysis-section)
           (insert (propertize "Analysis" 'font-lock-face 'magit-section-heading))
           (insert (propertize " (heuristic)" 'font-lock-face 'magit-dimmed))
           (magit-insert-heading)
-          (code-review-section--insert-analysis-similar worktree similar)
-          (code-review-section--insert-analysis-dead dead)
-          (code-review-section--insert-analysis-dangling worktree dangling)
-          ;; phase 15: delicate hunks (top-K, hottest first).  The
-          ;; buttons jump inside the review buffer: the section is
-          ;; inserted there, so the button action runs there.
-          (code-review-section--insert-analysis-delicate res)
+          ;; phase 17 first: the CI-gaming findings are the hard tags
+          (when tres-findings
+            (code-review-section--insert-testimpact-ci tres)
+            (code-review-section--insert-testimpact-notest tres))
+          (when res
+            (code-review-section--insert-analysis-similar worktree similar)
+            (code-review-section--insert-analysis-dead dead)
+            (code-review-section--insert-analysis-dangling worktree dangling)
+            ;; phase 15: delicate hunks (top-K, hottest first).  The
+            ;; buttons jump inside the review buffer: the section is
+            ;; inserted there, so the button action runs there.
+            (code-review-section--insert-analysis-delicate res))
           (insert ?\n))))))
 (defclass code-review-review-order-section (magit-section)
   (()))
