@@ -55,6 +55,24 @@
 ;;  code-review-hunkhighlight-queries.el) and stays SPARSE on
 ;;  purpose: priming stops working when everything is marked.
 ;;
+;;  Phase 20b retargets the literal emphasis at where reviewers
+;;  actually look: conditions and loops (eye-tracking of defect
+;;  finding: fixation locks onto the conditions — Sharif,
+;;  Falcone & Maletic, ETRA 2012).  Beacon entries (in
+;;  `code-review-hunkhighlight-beacon-queries') capture the
+;;  condition subtrees under the helper @_cond; comparison
+;;  operators paint strong only inside conditions; literals
+;;  paint strong inside conditions and in test files, and DIM
+;;  outside (`code-review-constant-dim-face', or plain — see
+;;  `code-review-hunkhighlight-dim-outside-literals').
+;;
+;;  Phase 20c (code-review-hunkhighlight-intraline.el) marks the
+;;  CHANGED TOKENS of modified added lines with an underline
+;;  (`code-review-changed-token-face'): the old side is already
+;;  in the hunk, so the marking is grammar-free and needs no
+;;  external tools — it works for every language, even ones with
+;;  no treesit grammar at all.
+;;
 ;;  How it works, per hunk:
 ;;   1. strip the +/-/space prefixes and reconstruct the NEW side
 ;;      of the hunk (added + context lines);
@@ -86,6 +104,7 @@
 (require 'magit-section)
 (require 'cl-lib)
 (require 'code-review-hunkhighlight-queries)
+(require 'code-review-hunkhighlight-intraline)
 
 (defcustom code-review-semantic-highlight t
   "When non-nil, highlight hunks semantically with tree-sitter.
@@ -159,6 +178,15 @@ old: Emacs 30 only supports `(#match \"REGEXP\" @capture)' at
   capture time — the `#match?' spelling compiles but every
   capture using it fails with \"Invalid predicate\".")
 
+(defun code-review-hunkhighlight--probe-query (parser query)
+  "Non-nil when QUERY captures without error on PARSER.
+The probe is the CAPTURE itself, never the compile: Emacs 30
+happily compiles a `#match?' query whose predicate fails only at
+capture time."
+  (condition-case nil
+      (progn (treesit-query-capture parser query) t)
+    (error nil)))
+
 (defun code-review-hunkhighlight--contract (&optional lang)
   "Return the query-predicate contract of this Emacs: new or old.
 Probed once against LANG's grammar (python when nil) by actually
@@ -174,19 +202,11 @@ when the predicate is evaluated during capture.  Memoized in
                   (insert "x")
                   (let ((parser (treesit-parser-create (or lang 'python))))
                     (cond
-                     ((condition-case nil
-                          (progn (treesit-query-capture
-                                  parser
-                                  "((_) @p (#match? @p \"x\"))")
-                                 t)
-                          (error nil))
+                     ((code-review-hunkhighlight--probe-query
+                       parser "((_) @p (#match? @p \"x\"))")
                       'new)
-                     ((condition-case nil
-                          (progn (treesit-query-capture
-                                  parser
-                                  "((_) @p (#match \"x\" @p))")
-                                 t)
-                          (error nil))
+                     ((code-review-hunkhighlight--probe-query
+                       parser "((_) @p (#match \"x\" @p))")
                       'old)
                      ;; neither spelling works (no grammar?): leave
                      ;; queries alone, entries degrade per-query
@@ -272,6 +292,17 @@ reconstructed line, prefix excluded, in order.  Deleted (-) and
         (forward-line)))
     (list (string-join (nreverse rows) "\n") (nreverse lines))))
 
+(defun code-review-hunkhighlight--lay-line-face (beg end face)
+  "Lay FACE idempotently on the single line segment BEG..END.
+A fresh overlay marked with its own `cr-hh-face' value replaces
+any previous one for that face, so re-running merges instead of
+duplicating."
+  (remove-overlays beg end 'cr-hh-face face)
+  (let ((ov (make-overlay beg end)))
+    (overlay-put ov 'cr-hh-face face)
+    (overlay-put ov 'face face)
+    (overlay-put ov 'evaporate t)))
+
 (defun code-review-hunkhighlight--put-face (beg end face)
   "Lay FACE on BEG..END as an overlay, over the line's diff face.
 OVERLAYS, not text properties, for two reasons found the hard way:
@@ -293,11 +324,7 @@ Different semantic faces stack: each face carries its own
     (while (< (point) end)
       (let ((lend (min end (line-end-position))))
         (when (< (point) lend)
-          (remove-overlays (point) lend 'cr-hh-face face)
-          (let ((ov (make-overlay (point) lend)))
-            (overlay-put ov 'cr-hh-face face)
-            (overlay-put ov 'face face)
-            (overlay-put ov 'evaporate t))))
+          (code-review-hunkhighlight--lay-line-face (point) lend face)))
       (forward-line 1))))
 
 (defun code-review-hunkhighlight--node-to-lines (beg end line-starts line-lens)
@@ -321,102 +348,182 @@ the line layout of the parse buffer."
         (setq k (1+ k))))
     (nreverse res)))
 
+(defun code-review-hunkhighlight--entry-conds (entry captures)
+  "Condition ranges ((BEG . END)...) from an entry's @_cond captures.
+Beacon entries (phase 20b) capture the CONDITION subtrees of
+if/while/case clauses under the helper capture name @_cond
+(leading underscore: no face mapping).  The classification test
+is plain range containment, so tokens at any nesting depth inside
+the condition classify as inside, without ancestor walking.
+Nil for entries that do not use @_cond."
+  (when (string-match-p "@_cond" (car entry))
+    (let (conds)
+      (pcase-dolist (`(,name . ,node) captures)
+        (when (eq name '_cond)
+          (push (cons (treesit-node-start node)
+                      (treesit-node-end node))
+                conds)))
+      conds)))
+
+(defun code-review-hunkhighlight--inside-conds-p (node conds)
+  "Non-nil when NODE's span lies inside one of the COND ranges.
+Plain range containment, no ancestor walking: tokens at any
+nesting depth inside the condition classify as inside."
+  (and conds
+       (cl-some (lambda (c)
+                  (and (<= (car c) (treesit-node-start node))
+                       (>= (cdr c) (treesit-node-end node))))
+                conds)))
+
+(defun code-review-hunkhighlight--entry-face (entry name node conds test-p)
+  "Face for NODE's capture NAME in ENTRY, or nil when not painted.
+A SYMBOL mapping value paints always (the phase 10 mapping).  A
+CONS mapping value is the phase 20b BEACON mapping (STRONG . DIM):
+STRONG when the node lies inside one of CONDS (the entry's @_cond
+condition ranges) or in a TEST file (expected values are the
+payload there); DIM outside — and plain when
+`code-review-hunkhighlight-dim-outside-literals' is nil, or when
+DIM itself is nil (comparison operators paint only inside
+conditions)."
+  (let ((val (cdr (assq name (cdr entry)))))
+    (cond
+     ((null val) nil)
+     ((symbolp val) val)
+     ((or test-p (code-review-hunkhighlight--inside-conds-p node conds))
+      (car val))
+     ((and (cdr val) code-review-hunkhighlight-dim-outside-literals)
+      (cdr val))
+     (t nil))))
+
+(defun code-review-hunkhighlight--entries-for (lang test-p)
+  "The query ENTRIES for LANG (a test file when TEST-P).
+General, security and beacon entries merge in every file; the
+test-file entries ride on top in test files only."
+  (append (cdr (assq lang code-review-hunkhighlight-queries))
+          (cdr (assq lang code-review-hunkhighlight-security-queries))
+          (cdr (assq lang code-review-hunkhighlight-beacon-queries))
+          (when test-p
+            (cdr (assq lang code-review-hunkhighlight-test-queries)))))
+
+(defun code-review-hunkhighlight--line-layout (lines)
+  "The (LINE-STARTS LINE-LENS) layout of the parse buffer for LINES."
+  (let ((starts (list 1))
+        (lens nil))
+    (dolist (len (mapcar #'length lines))
+      (setq lens (cons len lens)
+            starts (cons (+ (car starts) len 1) starts)))
+    (list (nreverse starts) (nreverse lens))))
+
+(defun code-review-hunkhighlight--line-mapper (line-no)
+  "A node-to-positions MAPPER for a one-line document at LINE-NO.
+Buffer columns map directly (bol is 1), so node columns are the
+mapper's columns; the node must be non-empty."
+  (lambda (node)
+    (let ((b (treesit-node-start node))
+          (e (treesit-node-end node)))
+      (when (< b e)
+        (list (list line-no (1- b) (1- e)))))))
+
+(defun code-review-hunkhighlight--node-ranges (entry lang parser test-p mapper quiet-p)
+  "Range rows ((LINE BEG END FACE)...) from one ENTRY on PARSER.
+MAPPER converts a captured node to (LINE BEG END) position lists
+(see `--node-to-lines' and `--line-mapper'); the capture is
+isolated so a broken query disables only its entry (QUIET-P: the
+per-line pass stays quiet — the whole-fragment pass already
+messaged a truly broken query)."
+  (let ((compiled (code-review-hunkhighlight--compiled lang (car entry)))
+        (rows nil))
+    (when compiled
+      (let* ((captures
+              (if quiet-p
+                  (ignore-errors
+                    (treesit-query-capture parser compiled))
+                (condition-case err
+                    (treesit-query-capture parser compiled)
+                  (error
+                   (message "code-review-hunkhighlight: \
+query %S disabled: %S" (car entry) err)
+                   nil))))
+             (conds (code-review-hunkhighlight--entry-conds
+                     entry captures)))
+        (pcase-dolist (`(,name . ,node) captures)
+          (let ((face (code-review-hunkhighlight--entry-face
+                       entry name node conds test-p)))
+            (when face
+              (dolist (pos (funcall mapper node))
+                (push (append pos (list face)) rows)))))))
+    (nreverse rows)))
+
+(defun code-review-hunkhighlight--whole-fragment-rows (entries lang test-p lines)
+  "Range rows from parsing the whole new-side fragment.
+LINES is the fragment's reconstructed lines; node positions map
+through `--node-to-lines'."
+  (let* ((layout (code-review-hunkhighlight--line-layout lines))
+         (line-starts (nth 0 layout))
+         (line-lens (nth 1 layout))
+         (rows nil))
+    (with-temp-buffer
+      (insert (string-join lines "\n"))
+      (let ((parser (treesit-parser-create lang))
+            (mapper (lambda (node)
+                      (code-review-hunkhighlight--node-to-lines
+                       (treesit-node-start node)
+                       (treesit-node-end node)
+                       line-starts line-lens))))
+        (dolist (entry entries)
+          (setq rows (nconc rows
+                           (code-review-hunkhighlight--node-ranges
+                            entry lang parser test-p mapper nil))))))
+    rows))
+
+(defun code-review-hunkhighlight--per-line-rows (entries lang test-p lines)
+  "Range rows from parsing each non-blank line as a ONE-LINE document.
+The fragment strategy for
+`code-review-hunkhighlight-fragment-line-languages' (see the
+defcustom): a one-line document is always well-formed, so this
+recovers the pairs the fragment's error recovery dropped."
+  (when (memq lang code-review-hunkhighlight-fragment-line-languages)
+    (let ((rows nil)
+          (line-no 0))
+      (dolist (line lines)
+        (setq line-no (1+ line-no))
+        (unless (string-blank-p line)
+          (with-temp-buffer
+            (insert line)
+            (let ((parser (treesit-parser-create lang))
+                  (mapper (code-review-hunkhighlight--line-mapper
+                           line-no)))
+              (dolist (entry entries)
+                (setq rows (nconc rows
+                                 (code-review-hunkhighlight--node-ranges
+                                  entry lang parser test-p mapper t))))))))
+      rows)))
+
 (defun code-review-hunkhighlight--ranges (text lang test-p)
   "Return ((LINE BEG END FACE)...) for new-side TEXT of LANG.
 LINE is 1-based, BEG/END are 0-based columns within that line.
 TEST-P adds the test-file queries; the security queries (phase
-20a) run in every file, like the general ones.  Nil when treesit
-is unusable or nothing was captured.  For languages in
+20a) and the beacon queries (phase 20b) run in every file, like
+the general ones.  Nil when treesit is unusable or nothing was
+captured.  For languages in
 `code-review-hunkhighlight-fragment-line-languages' every
 non-blank line is ALSO parsed as a one-line document and those
 captures merge (mid-file fragments lose the indentation context
-an indentation-relative grammar needs)."
+an indentation-relative grammar needs).
+
+Two passes, one shared per-entry runner
+(`code-review-hunkhighlight--node-ranges'): the whole-fragment
+pass (`--whole-fragment-rows') and the per-line fragment pass
+(`--per-line-rows')."
   (when (fboundp 'treesit-parser-create)
-    (let ((entries
-           (append (cdr (assq lang code-review-hunkhighlight-queries))
-                   (cdr (assq lang
-                               code-review-hunkhighlight-security-queries))
-                   (when test-p
-                     (cdr (assq lang
-                                 code-review-hunkhighlight-test-queries))))))
+    (let ((entries (code-review-hunkhighlight--entries-for lang test-p)))
       (when entries
-        (let ((line-starts (list 1))
-              (line-lens nil)
-              (res nil))
-          (dolist (row (split-string text "\n"))
-            (setq line-lens (cons (length row) line-lens)
-                  line-starts
-                  (cons (+ (car line-starts) (length row) 1)
-                        line-starts)))
-          (setq line-lens (nreverse line-lens)
-                line-starts (nreverse line-starts))
-          (with-temp-buffer
-            (insert text)
-            (let ((parser (treesit-parser-create lang)))
-              (dolist (entry entries)
-                (let ((compiled
-                       (code-review-hunkhighlight--compiled
-                        lang (car entry))))
-                  (when compiled
-                    ;; NB: capture-time predicate errors (e.g. a
-                    ;; predicate COMPILES fine but is unsupported at
-                    ;; runtime) disable only THIS entry, not the
-                    ;; whole language.
-                    (pcase-dolist
-                        (`(,name . ,node)
-                         (condition-case err
-                             (treesit-query-capture parser compiled)
-                           (error
-                            (message "code-review-hunkhighlight: \
-query %S disabled: %S" (car entry) err)
-                            nil)))
-                      (let ((face (cdr (assq name (cdr entry)))))
-                        (when face
-                          (dolist
-                              (pos
-                               (code-review-hunkhighlight--node-to-lines
-                                (treesit-node-start node)
-                                (treesit-node-end node)
-                                line-starts line-lens))
-                            (push (append pos (list face)) res))))))))))
-          ;; FRAGMENT STRATEGY (see
-          ;; `code-review-hunkhighlight-fragment-line-languages'):
-          ;; parse every non-blank line as a ONE-LINE document and
-          ;; run the same queries; captures merge with the
-          ;; whole-fragment ones.  A one-line document is always
-          ;; well-formed for these grammars, so this recovers the
-          ;; pairs the fragment's error recovery dropped.
-          (when (memq lang code-review-hunkhighlight-fragment-line-languages)
-            (let ((line-no 0))
-              (dolist (line (split-string text "\n"))
-                (setq line-no (1+ line-no))
-                (unless (string-blank-p line)
-                  (with-temp-buffer
-                    (insert line)
-                    (let ((parser (treesit-parser-create lang)))
-                      (dolist (entry entries)
-                        (let ((compiled
-                               (code-review-hunkhighlight--compiled
-                                lang (car entry))))
-                          (when compiled
-                            (pcase-dolist
-                                (`(,name . ,node)
-                                 ;; per-line failures stay quiet: the
-                                 ;; whole-fragment pass already
-                                 ;; messaged a truly broken query
-                                 (ignore-errors
-                                   (treesit-query-capture parser compiled)))
-                              (let ((face (cdr (assq name (cdr entry)))))
-                                (when face
-                                  ;; one-line doc: buffer columns map
-                                  ;; directly (bol is 1)
-                                  (let ((b (treesit-node-start node))
-                                        (e (treesit-node-end node)))
-                                    (when (< b e)
-                                      (push (list line-no (1- b) (1- e)
-                                                  face)
-                                            res)))))))))))))))
-          (nreverse res))))))
+        (let ((lines (split-string text "\n")))
+          (append
+           (code-review-hunkhighlight--whole-fragment-rows
+            entries lang test-p lines)
+           (code-review-hunkhighlight--per-line-rows
+            entries lang test-p lines)))))))
 
 (defun code-review-hunkhighlight--apply (ranges lines)
   "Apply cached RANGES onto the review buffer.
@@ -436,75 +543,106 @@ diff-colored only; deleted lines never reach the new side at all."
           (when (< beg end)
             (code-review-hunkhighlight--put-face beg end face)))))))
 
+(defun code-review-hunkhighlight--behavior-key ()
+  "The defcustom values that change WHICH ranges exist.
+Phase 20c intra-line marks and caps, the phase 20b outside-literal
+treatment, the fragment strategy."
+  (list code-review-hunkhighlight-intra-line
+        code-review-hunkhighlight-intra-line-max-length
+        code-review-hunkhighlight-intra-line-max-tokens
+        code-review-hunkhighlight-dim-outside-literals
+        code-review-hunkhighlight-fragment-line-languages))
+
+(defun code-review-hunkhighlight--vocabulary-key (lang test-p)
+  "The query inputs that change which ranges exist for LANG.
+The predicate contract (Emacs 30/31) and the four query alists;
+the test-file list rides only when TEST-P."
+  (list (code-review-hunkhighlight--contract lang)
+        (assq lang code-review-hunkhighlight-queries)
+        (assq lang code-review-hunkhighlight-security-queries)
+        (assq lang code-review-hunkhighlight-beacon-queries)
+        (and test-p
+             (assq lang code-review-hunkhighlight-test-queries))))
+
+(defun code-review-hunkhighlight--cache-key (body lang test-p)
+  "Cache key for the ranges of hunk BODY (file LANG, TEST-P file?).
+The key covers the body plus every defcustom and query list that
+changes WHICH ranges exist: cached ranges carry resolved faces, so
+a changed defcustom must invalidate the cache (learned live:
+repainting after a face swap silently reapplied the old face).
+FLAT `list's on purpose (behavior / vocabulary): the nested-cons
+version of this key was a paren-count bug farm."
+  (md5 (concat body "\e"
+               (prin1-to-string
+                (list (code-review-hunkhighlight--behavior-key)
+                      (code-review-hunkhighlight--vocabulary-key
+                       lang test-p))))))
+
+(defun code-review-hunkhighlight--treesit-available-p (lang)
+  "Non-nil when LANG's grammar is usable in this Emacs."
+  (and lang
+       (fboundp 'treesit-parser-create)
+       (fboundp 'treesit-language-available-p)
+       (or (require 'treesit nil t) t)
+       (treesit-language-available-p lang)))
+
+(defun code-review-hunkhighlight--ranges-cache ()
+  "The buffer-local ranges cache table, created on first use."
+  (or code-review-hunkhighlight--cache
+      (setq code-review-hunkhighlight--cache
+            (make-hash-table :test #'equal))))
+
+(defun code-review-hunkhighlight--compute-ranges (body text lang test-p treesit-p)
+  "The UNCACHED range rows of one hunk: intra-line + treesit."
+  (append
+   ;; phase 20c: grammar-free changed-token marks, for every
+   ;; language (including unknown ones: no grammar needed)
+   (and code-review-hunkhighlight-intra-line
+        (code-review-hunkhighlight--intra-line-ranges body))
+   ;; treesit semantic faces, only when the language and grammar
+   ;; are there
+   (and treesit-p
+        (code-review-hunkhighlight--ranges text lang test-p))))
+
+(defun code-review-hunkhighlight--cached-ranges (body text lang test-p treesit-p)
+  "The range rows for a hunk body, cache-served under `--cache-key'."
+  (let ((key (code-review-hunkhighlight--cache-key body lang test-p))
+        (cache (code-review-hunkhighlight--ranges-cache)))
+    (or (gethash key cache)
+        (puthash key
+                 (code-review-hunkhighlight--compute-ranges
+                  body text lang test-p treesit-p)
+                 cache))))
+
 (defun code-review-hunkhighlight-region (beg end path)
   "Apply semantic faces to hunk body BEG..END of file PATH.
 BEG is the first body line (after the @@ heading), END the end of
-the hunk.  Does nothing when tree-sitter, the grammar or the
-language's queries are unavailable, when the file's language is
-unknown, or when `code-review-semantic-highlight' is nil.
-Never signals; returns non-nil when faces were applied."
+the hunk.  Two layers, independently available: the treesit
+semantic faces (does nothing when tree-sitter, the grammar or the
+language's queries are unavailable, or when the file's language is
+unknown) and the phase 20c intra-line changed-token marks
+(`code-review-hunkhighlight-intra-line', grammar-free — they run
+for EVERY file, including unknown languages, so local diff
+reviews of any code inherit them).  Both off when
+`code-review-semantic-highlight' is nil.  Never signals; returns
+non-nil when faces were applied."
   (condition-case err
       (let ((applied nil))
-        (when (and code-review-semantic-highlight
-                   (fboundp 'treesit-parser-create)
-                   (fboundp 'treesit-language-available-p)
-                   (or (require 'treesit nil t) t)
-                   (let ((lang (code-review-hunkhighlight--language-for
-                                path)))
-                     (and lang
-                          (treesit-language-available-p lang))))
+        (when code-review-semantic-highlight
           (let* ((lang (code-review-hunkhighlight--language-for path))
                  (test-p (string-match-p
                           code-review-hunkhighlight-test-path-regexp
                           (downcase path)))
                  (body (buffer-substring-no-properties beg end))
-                 ;; the cache key includes the query+face MAPPINGS:
-                 ;; cached ranges carry resolved faces, so a
-                 ;; changed defcustom must invalidate the cache
-                 ;; (learned live: repainting after a face swap
-                 ;; silently reapplied the old face)
-                 (key (concat (symbol-name lang) "|"
-                              (if test-p "t" "nil") "|"
-                              (md5 (concat
-                                    body "\e"
-                                    (prin1-to-string
-                                     (cons
-                                      ;; the fragment strategy changes
-                                      ;; which ranges exist, so it must
-                                      ;; invalidate the cache too
-                                      code-review-hunkhighlight-fragment-line-languages
-                                      (cons
-                                       ;; the predicate contract matters
-                                       ;; for the ranges: it changes which
-                                       ;; queries capture (Emacs 30/31),
-                                       ;; so it must invalidate the cache
-                                       (code-review-hunkhighlight--contract
-                                        lang)
-                                       (cons
-                                        (assq lang
-                                              code-review-hunkhighlight-queries)
-                                        (cons
-                                         ;; the security list rides the
-                                         ;; same merge: toggling it must
-                                         ;; invalidate cached ranges
-                                         (assq lang
-                                               code-review-hunkhighlight-security-queries)
-                                         (when test-p
-                                           (assq lang
-                                                 code-review-hunkhighlight-test-queries)))))))))))
-                 (cache (or code-review-hunkhighlight--cache
-                            (setq code-review-hunkhighlight--cache
-                                  (make-hash-table :test #'equal))))
-                 (recon (code-review-hunkhighlight--reconstruct beg end))
-                 (text (nth 0 recon))
-                 (lines (nth 1 recon)))
-            (let ((ranges (or (gethash key cache)
-                              (puthash key
-                                       (code-review-hunkhighlight--ranges
-                                        text lang test-p)
-                                       cache))))
-              (code-review-hunkhighlight--apply ranges lines)
-              (setq applied (not (null ranges))))))
+                 (treesit-p (code-review-hunkhighlight--treesit-available-p
+                             lang)))
+            (when (or treesit-p code-review-hunkhighlight-intra-line)
+              (let* ((recon (code-review-hunkhighlight--reconstruct beg end))
+                     (lines (nth 1 recon))
+                     (ranges (code-review-hunkhighlight--cached-ranges
+                              body (nth 0 recon) lang test-p treesit-p)))
+                (code-review-hunkhighlight--apply ranges lines)
+                (setq applied (not (null ranges)))))))
         applied)
     (error
      (message "code-review-hunkhighlight: %S" err)
@@ -522,6 +660,16 @@ Thin wrapper over `code-review-hunkhighlight-region'."
      (oref section end)
      path)))
 
+(defun code-review-hunkhighlight--heading-text (parent)
+  "The trimmed heading text of PARENT's section, or nil.
+Magit diff FILE section headings contain the file name; the
+markers must live in a live buffer (`markerp')."
+  (when-let* ((beg (oref parent start))
+              (end (oref parent content))
+              (buf (and (markerp beg) (marker-buffer beg))))
+    (with-current-buffer buf
+      (string-trim (buffer-substring-no-properties beg end)))))
+
 (defun code-review-hunkhighlight--section-path (section)
   "Best-effort file path for hunk SECTION (code-review or magit).
 Never signals: unknown value shapes (plain magit hunk values are
@@ -536,15 +684,24 @@ removed `magit-section-parent' and `magit-section-heading'."
           (let ((pv (oref parent value)))
             (or (and (stringp pv) pv)
                 (and (listp pv) (stringp (car pv)) (car pv))
-                ;; last resort: the parent's heading text (magit
-                ;; diff file headings contain the file name)
-                (when-let* ((beg (oref parent start))
-                            (end (oref parent content))
-                            (buf (and (markerp beg)
-                                      (marker-buffer beg))))
-                  (with-current-buffer buf
-                    (string-trim
-                     (buffer-substring-no-properties beg end))))))))))
+                ;; last resort: the parent's heading text
+                (code-review-hunkhighlight--heading-text parent)))))))
+
+(defun code-review-hunkhighlight--paint-hunk-sections (section)
+  "Paint every hunk under SECTION recursively; return the count.
+Hunk children paint via `code-review-hunkhighlight-hunk', every
+other child recurses into."
+  (let ((n 0))
+    (dolist (child (oref section children))
+      (setq n
+            (+ n
+               (if (magit-section-match 'hunk child)
+                   (if (code-review-hunkhighlight-hunk
+                        child
+                        (code-review-hunkhighlight--section-path child))
+                       1 0)
+                 (code-review-hunkhighlight--paint-hunk-sections child)))))
+    n))
 
 ;;;###autoload
 (defun code-review-hunkhighlight-magit-buffer ()
@@ -559,18 +716,9 @@ duplicating."
              ;; start at the ROOT: walking from the section at point
              ;; would miss every sibling
              (bound-and-true-p magit-root-section))
-    (let ((n 0))
-      (cl-labels ((walk (section)
-                      (dolist (child (oref section children))
-                        (if (magit-section-match 'hunk child)
-                            (when (code-review-hunkhighlight-hunk
-                                   child
-                                   (code-review-hunkhighlight--section-path
-                                    child))
-                              (setq n (1+ n)))
-                          (walk child)))))
-        (walk magit-root-section))
-      (message "code-review-hunkhighlight: %d hunk(s) highlighted" n))))
+    (message "code-review-hunkhighlight: %d hunk(s) highlighted"
+             (code-review-hunkhighlight--paint-hunk-sections
+              magit-root-section))))
 
 (provide 'code-review-hunkhighlight)
 ;;; code-review-hunkhighlight.el ends here

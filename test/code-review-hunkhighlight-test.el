@@ -129,11 +129,15 @@ overlay face at that position."
     ;; UPPER_CASE is a constant, not a plain variable
     (should-not (memq 'font-lock-variable-name-face
                       (code-review-hunkhighlight-test--face-at "MAX_RETRIES")))
-    ;; literal constant VALUES also stand out
-    (should (memq 'code-review-constant-face
+    ;; literal constant VALUES outside conditions are DIM now (phase
+    ;; 20b): the strong face is reserved for conditions (see the
+    ;; beacon tests below)
+    (should (memq 'code-review-constant-dim-face
                   (code-review-hunkhighlight-test--face-at "ES = 3")))
-    (should (memq 'code-review-constant-face
+    (should (memq 'code-review-constant-dim-face
                   (code-review-hunkhighlight-test--face-at "msg = \"hi")))
+    (should-not (memq 'code-review-constant-face
+                      (code-review-hunkhighlight-test--face-at "msg = \"hi")))
     ;; return is the one keyword we keep
     (should (memq 'font-lock-keyword-face
                   (code-review-hunkhighlight-test--face-at "return")))
@@ -169,9 +173,13 @@ overlay face at that position."
                   (code-review-hunkhighlight-test--face-at "total")))
     (should (memq 'font-lock-keyword-face
                   (code-review-hunkhighlight-test--face-at "return")))
-    ;; the test case NAME string stands out as a constant value
-    (should (memq 'code-review-constant-face
-                  (code-review-hunkhighlight-test--face-at "some test name")))))
+    ;; the test case NAME string: a literal outside any condition —
+    ;; DIM now (phase 20b)
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "some test name")))
+    (should-not (memq 'code-review-constant-face
+                      (code-review-hunkhighlight-test--face-at
+                       "some test name")))))
 
 (ert-deftest code-review-hunkhighlight/elisp-hunk-faces ()
   (skip-unless (and (fboundp 'treesit-language-available-p)
@@ -190,10 +198,12 @@ overlay face at that position."
     ;; let-bound symbols are variables
     (should (memq 'font-lock-variable-name-face
                   (code-review-hunkhighlight-test--face-at "((x")))
-    ;; literals stand out
+    ;; literals: docstring and let-bound VALUES are outside any
+    ;; condition — DIM now (phase 20b); MY-CONST (a defconst NAME)
+    ;; keeps the strong constant face
     (should (memq 'code-review-constant-face
                   (code-review-hunkhighlight-test--face-at "MY-CONST")))
-    (should (memq 'code-review-constant-face
+    (should (memq 'code-review-constant-dim-face
                   (code-review-hunkhighlight-test--face-at "\"docstring")))
     ;; plain calls stay diff-colored
     (should-not (memq 'font-lock-function-name-face
@@ -222,8 +232,9 @@ overlay face at that position."
     ;; let bindings are variables
     (should (memq 'font-lock-variable-name-face
                   (code-review-hunkhighlight-test--face-at "[q")))
-    ;; literals stand out
-    (should (memq 'code-review-constant-face
+    ;; literals: outside any condition — DIM now (phase 20b);
+    ;; test-file literals keep the strong face (separate test below)
+    (should (memq 'code-review-constant-dim-face
                   (code-review-hunkhighlight-test--face-at "\"val\"")))
     ;; plain calls stay diff-colored
     (should-not (memq 'font-lock-function-name-face
@@ -287,11 +298,19 @@ overlay face at that position."
                   (code-review-hunkhighlight-test--face-at "return")))
     (should-not (memq 'font-lock-keyword-face
                       (code-review-hunkhighlight-test--face-at "import")))
-    ;; literal constant values: strings and numbers
-    (should (memq 'code-review-constant-face
+    ;; literal constant values outside conditions: DIM now (phase
+    ;; 20b) — `'vitest'` sits in an import, 5000 in a plain const
+    (should (memq 'code-review-constant-dim-face
                   (code-review-hunkhighlight-test--face-at "'vitest'")))
-    (should (memq 'code-review-constant-face
+    (should (memq 'code-review-constant-dim-face
                   (code-review-hunkhighlight-test--face-at "MAX_ROWS = 5000")))
+    ;; `'add'` is a switch-case VALUE — a condition by the phase 20b
+    ;; beacon — so it keeps the STRONG face
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "case 'add'")))
+    ;; `'added'` (a plain return value) is dim
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "return 'added'")))
     ;; the diff base face stays underneath
     (should (memq 'magit-diff-added
                   (code-review-hunkhighlight-test--face-at "computeTotal")))))
@@ -665,3 +684,368 @@ overlay face at that position."
       (should (code-review-hunkhighlight-region beg end "src/foo.py"))
       (should (memq 'code-review-source-face
                     (code-review-hunkhighlight-test--face-at "import"))))))
+
+;;; Phase 20b: beacon retargeting (strong inside conditions, dim
+;;; outside, strong everywhere in test files)
+
+(ert-deftest code-review-hunkhighlight/beacon-python-conditions ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+MAX_RETRIES = 3"
+        "+def f(x):"
+        "+    if x >= 5:"
+        "+        return 1"
+        "+    elif x < 2:"
+        "+        x = x + 1"
+        "+    while x != 4:"
+        "+        x = x + 1"
+        "+    msg = \"hi\"")
+    (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+    ;; literals INSIDE conditions keep the STRONG constant face:
+    ;; if / elif / while conditions
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x >= 5")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x < 2")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x != 4")))
+    ;; comparison OPERATORS strong inside conditions (the helper
+    ;; reads the last char of the match: each search ends on the
+    ;; operator)
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x >=")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x !=")))
+    ;; the `+ 1' increments are OUTSIDE any condition: dim
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "x + 1")))
+    ;; config/literals outside conditions: dim, not strong
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "MAX_RETRIES = 3")))
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "msg = \"hi")))))
+
+(ert-deftest code-review-hunkhighlight/beacon-python-test-file-strong ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+MAX_RETRIES = 3"
+        "+def test_f(x):"
+        "+    msg = \"hi\""
+        "+    assert x < 5")
+    (should (code-review-hunkhighlight-region beg end "tests/test_f.py"))
+    ;; TEST files: expected values ARE the payload — literals keep
+    ;; the strong face everywhere, conditions or not
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "MAX_RETRIES = 3")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "msg = \"hi")))
+    (should-not (memq 'code-review-constant-dim-face
+                      (code-review-hunkhighlight-test--face-at "msg = \"hi")))))
+
+(ert-deftest code-review-hunkhighlight/beacon-python-dim-toggle ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  ;; plain treatment (dim-outside-literals nil): outside literals
+  ;; paint NOTHING - rendered first so the cache-invalidation
+  ;; repaint below is ADDITIVE (old overlays are never removed)
+  (code-review-hunkhighlight-test--with-hunk
+      '("+def f(x):"
+        "+    msg = \"hi\"")
+    (let ((code-review-hunkhighlight-dim-outside-literals nil))
+      (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+      (should-not (memq 'code-review-constant-dim-face
+                        (code-review-hunkhighlight-test--face-at "msg = \"hi")))
+      (should-not (memq 'code-review-constant-face
+                        (code-review-hunkhighlight-test--face-at "msg = \"hi"))))
+    ;; back to the default (t): toggling the defcustom MUST
+    ;; invalidate the cached ranges (the cache key hashes it): the
+    ;; repaint applies the DIM face a stale cache would have
+    ;; skipped (the second render is OUTSIDE the let on purpose)
+    (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "msg = \"hi")))))
+
+(ert-deftest code-review-hunkhighlight/beacon-list-cache-invalidation ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+def f(x):"
+        "+    msg = \"hi\"")
+    ;; default beacon vocabulary: the outside literal paints dim
+    (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "msg = \"hi")))
+    ;; a changed BEACON vocabulary MUST invalidate the cached
+    ;; ranges (the cache key hashes the alist): the repaint
+    ;; applies the substitute mapping - a stale cache would serve
+    ;; the old dim ranges
+    (let ((code-review-hunkhighlight-beacon-queries
+           '((python ("(string) @lit"
+                      . ((lit . font-lock-warning-face)))))))
+      (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+      (should (memq 'font-lock-warning-face
+                    (code-review-hunkhighlight-test--face-at "msg = \"hi"))))))
+
+(ert-deftest code-review-hunkhighlight/beacon-elisp-conditions ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'elisp)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+(defun cr-fn (x)"
+        "+  (if (= x 1)"
+        "+      (list x)"
+        "+    (when (>= x 2)"
+        "+      (setq m \"msg\"))"
+        "+    (cond"
+        "+     ((string= s \"a\") 1)"
+        "+     (t 2))))"
+        "+(setq other \"note\")")
+    (should (code-review-hunkhighlight-region beg end "src/foo.el"))
+    ;; if/when/cond conditions: numbers and strings inside STRONG
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "= x 1")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at ">= x 2")))
+    ;; the cond clause TEST is the condition - its string is strong
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "s \"a\"")))
+    ;; the clause RESULTS (1, 2, the when body) are OUTSIDE: dim
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "m \"msg\"")))
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "other \"note\"")))
+    ;; the `=' comparison symbol inside the if condition: strong
+    ;; (the search ends ON the operator char)
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at " (=")))
+    ;; ...and `string=' is also a comparison symbol, but it sits in
+    ;; HEAD position of the clause test - it is INSIDE the cond
+    ;; condition range, so strong as well
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "((string=")))))
+
+(ert-deftest code-review-hunkhighlight/beacon-scala-conditions ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'scala)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+class Foo {"
+        "+  val LIMIT = 100"
+        "+  def check(x: Int): Boolean = {"
+        "+    if (x >= 2) {"
+        "+      true"
+        "+    } else if (x < 0) {"
+        "+      false"
+        "+    }"
+        "+    while (x != 0) {"
+        "+      x = x - 1"
+        "+    }"
+        "+  }"
+        "+}")
+    (should (code-review-hunkhighlight-region beg end "src/Foo.scala"))
+    ;; if/else-if/while conditions: numbers STRONG (scala operators
+    ;; are `operator_identifier' nodes - probed, see the queries)
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x >= 2")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x < 0")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "x != 0")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "(x >=")))
+    ;; the decrement and the config literal: outside conditions, dim
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "x - 1")))
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "LIMIT = 100")))))
+
+(ert-deftest code-review-hunkhighlight/beacon-clojure-conditions ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'clojure)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+(def LIMIT 100)"
+        "+(defn check [x]"
+        "+  (if (= x 1)"
+        "+    :one"
+        "+    (when (>= x 2)"
+        "+      (str \"big\"))))")
+    (should (code-review-hunkhighlight-region beg end "src/my/ns.clj"))
+    ;; positional list_lit conditions: numbers STRONG
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "= x 1")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at ">= x 2")))
+    ;; the `=' sym_lit inside the if condition: strong (the search
+    ;; ends on the operator char)
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at " (=")))
+    ;; the LIMIT config literal and the when-BODY string: dim
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "LIMIT 100")))
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "str \"big\"")))))
+
+(ert-deftest code-review-hunkhighlight/beacon-sql-where-conditions ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'sql)))
+  (code-review-hunkhighlight-test--with-hunk
+      '("+CREATE TABLE IF NOT EXISTS analytics.t ("
+        "+  organization_id UInt64, is_deleted UInt8 DEFAULT 0);"
+        "+SELECT a.x"
+        "+FROM analytics.t AS a"
+        "+WHERE a.x > 10 AND b.y = 'z'"
+        "+GROUP BY a.x")
+    (should (code-review-hunkhighlight-region beg end "models/ledger.sql"))
+    ;; the WHERE clause IS the condition: literals inside STRONG
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "a.x > 10")))
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "b.y = 'z'")))
+    ;; comparison operators inside the WHERE: strong
+    (should (memq 'code-review-constant-face
+                  (code-review-hunkhighlight-test--face-at "a.x >")))
+    ;; the CREATE TABLE column DEFAULT is OUTSIDE any condition: dim
+    (should (memq 'code-review-constant-dim-face
+                  (code-review-hunkhighlight-test--face-at "DEFAULT 0")))))
+
+;;; Phase 20c: intra-line changed-token marks
+
+(ert-deftest code-review-hunkhighlight/intraline-tokenize ()
+  (should (equal (code-review-hunkhighlight--tokenize "a + b \"x y\"")
+                 '(("a" 0 1) ("+" 2 3) ("b" 4 5) ("\"x y\"" 6 11))))
+  ;; digit runs and identifier runs with digits stay whole
+  (should (equal (mapcar #'car
+                         (code-review-hunkhighlight--tokenize "x2 = 10.5;"))
+                 '("x2" "=" "10" "." "5" ";")))
+  ;; escapes keep the string one token; whitespace dropped
+  (should (equal (mapcar #'car
+                         (code-review-hunkhighlight--tokenize
+                          "f(\"a\\\"b\")"))
+                 '("f" "(" "\"a\\\"b\"" ")"))))
+
+(ert-deftest code-review-hunkhighlight/intraline-changed-token-cols ()
+  ;; single token change: exactly the new token's columns
+  (should (equal (code-review-hunkhighlight--changed-token-cols
+                  "total = compute(a, b)" "total = compute(a, c)")
+                 '((19 20))))
+  ;; identical / whitespace-only: nothing to mark
+  (should (null (code-review-hunkhighlight--changed-token-cols
+                 "pad(x)" "pad(x)")))
+  (should (null (code-review-hunkhighlight--changed-token-cols
+                 "pad(x)" "    pad(x)")))
+  ;; pure insertion into the middle: all inserted tokens marked
+  (should (equal (code-review-hunkhighlight--changed-token-cols
+                  "config" "config = 1")
+                 '((7 8) (9 10))))
+  ;; pure deletion: nothing on the new side
+  (should (null (code-review-hunkhighlight--changed-token-cols
+                 "x = 1" "x")))
+  ;; reordered middles: exactly the unmatched new tokens (one of
+  ;; b/c aligns - which one is backtrack detail, the count is not)
+  (should (equal 2 (length (code-review-hunkhighlight--changed-token-cols
+                            "a + b + c" "a + c + b"))))
+  ;; the length cap marks nothing (monster lines are data)
+  (let ((code-review-hunkhighlight-intra-line-max-length 10))
+    (should (null (code-review-hunkhighlight--changed-token-cols
+                   "aaaaaaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaaaaaa")))
+    (should (null (code-review-hunkhighlight--changed-token-cols
+                   "short = 1" "aaaaaaaaaaaaaaaaaaaa"))))
+  ;; the token cap: middles bigger than the budget mark nothing
+  ;; (3-vs-3 middles under cap 2; `x = 1' stays at 1-vs-1)
+  (let ((code-review-hunkhighlight-intra-line-max-tokens 2))
+    (should (null (code-review-hunkhighlight--changed-token-cols
+                   "a b c" "z b y")))
+    (should (equal (code-review-hunkhighlight--changed-token-cols
+                    "x = 1" "x = 2")
+                   '((4 5))))))
+
+(ert-deftest code-review-hunkhighlight/intraline-ranges ()
+  ;; raw prefixed body: block pairing, pure-add unmarked, blank
+  ;; context resetting, `\ No newline' skipped
+  (should (equal
+           (code-review-hunkhighlight--intra-line-ranges
+            (mapconcat #'identity
+                       '(" same(x)"
+                         "-total = compute(a, b)"
+                         "+total = compute(a, c)"
+                         "+fresh = 9"
+                         ""
+                         "-def f(x):"
+                         "-    pass"
+                         "+def f(y):"
+                         "\\ No newline at end of file")
+                       "\n"))
+           '((2 19 20 code-review-changed-token-face)
+             (5 6 7 code-review-changed-token-face))))
+  ;; pure-add body (no `-' lines): no marks at all
+  (should (null (code-review-hunkhighlight--intra-line-ranges
+                 (mapconcat #'identity '("+a = 1" "+b = 2") "\n"))))
+  ;; whitespace-only difference: nothing marked
+  (should (null (code-review-hunkhighlight--intra-line-ranges
+                 (mapconcat #'identity '("-    pad(x)" "+  pad(x)") "\n")))))
+
+(ert-deftest code-review-hunkhighlight/intraline-unknown-language ()
+  ;; grammar-free layer: a README.md hunk (no language, no treesit)
+  ;; still gets its changed tokens underlined
+  (code-review-hunkhighlight-test--with-hunk
+      '("-total = compute(a, b)"
+        "+total = compute(a, c)"
+        "+fresh = 9")
+    (should (code-review-hunkhighlight-region beg end "README.md"))
+    ;; the helper reads the LAST char of the match: "a, c" ends on
+    ;; the changed `c' token itself
+    (should (memq 'code-review-changed-token-face
+                  (code-review-hunkhighlight-test--face-at "a, c")))
+    ;; pure-add line: the whole line IS the delta - no underline
+    (should-not (memq 'code-review-changed-token-face
+                      (code-review-hunkhighlight-test--face-at "fresh = 9")))
+    ;; the diff base face stays underneath
+    (should (memq 'magit-diff-added
+                  (code-review-hunkhighlight-test--face-at "fresh = 9")))))
+
+(ert-deftest code-review-hunkhighlight/intraline-stacks-with-semantic ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  ;; the underline composes with the semantic overlays: the
+  ;; changed `1' token is ALSO a beacon literal (dim outside
+  ;; conditions) - both faces at the same char
+  (code-review-hunkhighlight-test--with-hunk
+      '("+def f(a):"
+        "-    total = a + 2"
+        "+    total = a + 1")
+    (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+    (let ((faces (code-review-hunkhighlight-test--face-at "a + 1")))
+      (should (memq 'code-review-changed-token-face faces))
+      (should (memq 'code-review-constant-dim-face faces)))
+    ;; whitespace-only: no underline
+    (should-not (memq 'code-review-changed-token-face
+                      (code-review-hunkhighlight-test--face-at "total = a"))))
+    ;; monster lines: capped, no error (the minus line content
+    ;; differs so the searches land on the monster + line)
+    (code-review-hunkhighlight-test--with-hunk
+        (list "-    y = 1"
+              (concat "+    x = " (make-string 2500 ?1)))
+      (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+      (should-not
+       (memq 'code-review-changed-token-face
+             (code-review-hunkhighlight-test--face-at "x = ")))
+      (should (memq 'magit-diff-added
+                    (code-review-hunkhighlight-test--face-at "x = ")))))
+
+(ert-deftest code-review-hunkhighlight/intraline-cache-invalidation ()
+  (skip-unless (and (fboundp 'treesit-language-available-p)
+                    (treesit-language-available-p 'python)))
+  ;; rendered first with the layer OFF so the invalidation repaint
+  ;; below is ADDITIVE (old overlays are never removed)
+  (code-review-hunkhighlight-test--with-hunk
+      '("-x = 1"
+        "+x = 2")
+    (let ((code-review-hunkhighlight-intra-line nil))
+      (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+      (should-not (memq 'code-review-changed-token-face
+                        (code-review-hunkhighlight-test--face-at "x = 2"))))
+    ;; toggling the defcustom MUST invalidate the cached ranges
+    ;; (the cache key hashes it)
+    (should (code-review-hunkhighlight-region beg end "src/foo.py"))
+    (should (memq 'code-review-changed-token-face
+                  (code-review-hunkhighlight-test--face-at "x = 2")))))

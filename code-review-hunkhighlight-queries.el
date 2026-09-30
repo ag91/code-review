@@ -21,11 +21,13 @@
 
 ;;  The per-language treesit QUERY lists and FACES that drive
 ;;  `code-review-hunkhighlight' (phase 10), plus the phase 20a
-;;  security layer.  Three query lists:
+;;  security layer and the phase 20b beacon retargeting.  Four
+;;  query lists:
 ;;
 ;;   - `code-review-hunkhighlight-queries': the general face set
 ;;     (definition names, parameters, assignment targets,
-;;     UPPER_CASE constants, literal constant values);
+;;     UPPER_CASE constants - and, for languages WITHOUT a beacon
+;;     entry, literal constant values);
 ;;   - `code-review-hunkhighlight-test-queries': test-file
 ;;     extras (test definition names, assertion lines);
 ;;   - `code-review-hunkhighlight-security-queries' (20a):
@@ -37,6 +39,11 @@
 ;;     Vocabulary from measured rule corpora (bandit, Semgrep
 ;;     registry, Brakeman, Gosec); the SPARSENESS is the design -
 ;;     priming stops working when everything is marked.
+;;   - `code-review-hunkhighlight-beacon-queries' (20b): the
+;;     defect-oriented retargeting - condition subtrees captured
+;;     under @_cond, comparison operators strong only inside
+;;     conditions, literals strong inside conditions and in test
+;;     files / dim outside (see the defcustom docstring).
 ;;
 ;;  Every shipped query was PROBED against the INSTALLED grammar
 ;;  (compile success means nothing): python has `binary_operator'
@@ -86,6 +93,42 @@ reviewer's eye should brush over them and stop at the sink where
 the taint is USED."
   :group 'code-review-hunkhighlight)
 
+(defface code-review-constant-dim-face
+  '((t :inherit code-review-constant-face :weight normal))
+  "Dimmer variant of `code-review-constant-face' (phase 20b).
+Literals OUTSIDE conditions (log strings, ordinary arguments,
+config values) paint with it: eye-tracking of defect finding
+shows reviewers lock onto conditions and loops (Sharif, Falcone
+& Maletic, ETRA 2012), so the strong face stays reserved for
+boundary values and comparison operators INSIDE conditions — and
+for everything in test files, where the literal values ARE the
+payload."
+  :group 'code-review-hunkhighlight)
+
+(defface code-review-changed-token-face
+  '((t :underline t))
+  "Face for the CHANGED TOKENS of modified added lines (phase 20c).
+Whole-line green leaves the reviewer scanning the line for the
+delta by hand; most edits are small token edits inside the line
+(ChangeDistiller, TSE 2007; GumTree, ASE 2014), so exactly the
+changed tokens get an underline.  An underline composes with the
+semantic foreground overlays instead of fighting them and leaves
+the diff base backgrounds alone (a background tint would replace
+the green/red the line needs to keep)."
+  :group 'code-review-hunkhighlight)
+
+(defcustom code-review-hunkhighlight-dim-outside-literals t
+  "Pick the OUTSIDE-conditions literal treatment (phase 20b).
+Non-nil paints them with the dimmer
+`code-review-constant-dim-face'; nil leaves them plain (diff
+faces only).  Inside conditions (and in TEST files, where the
+expected values are the payload) literals and comparison
+operators always keep the strong `code-review-constant-face'.
+Languages without beacon entries (see
+`code-review-hunkhighlight-beacon-queries') are not affected."
+  :type 'boolean
+  :group 'code-review-hunkhighlight)
+
 (defcustom code-review-hunkhighlight-queries
   '((python
      ;; Deliberately MINIMAL (user request): definition names,
@@ -107,11 +150,10 @@ the taint is USED."
      ("((assignment left: (identifier) @var)
        (#match? @var \"\\\\`[a-z_]\"))"
       . ((var . font-lock-variable-name-face)))
-     ;; literal CONSTANT VALUES (strings, numbers) stand out in
-     ;; every language: in test code they are the test case names
-     ;; and expected values — the stuff the reviewer wants to see
-     ("[(string) (integer) (float)] @cval"
-      . ((cval . code-review-constant-face))))
+     ;; literal CONSTANT VALUES are managed by the BEACON list
+     ;; below for python (phase 20b: strong inside conditions,
+     ;; dim outside, strong everywhere in test files)
+     )
     (scala
      ("\"return\" @kw"
       . ((kw . font-lock-keyword-face)))
@@ -147,10 +189,9 @@ the taint is USED."
        (case_clause \"case\" @kw)"
       . ((case . font-lock-type-face)
          (kw . font-lock-keyword-face)))
-     ("(string) @cval"
-      . ((cval . code-review-constant-face)))
-     ("[(integer_literal) (floating_point_literal)] @cval"
-      . ((cval . code-review-constant-face))))
+     ;; literal CONSTANT VALUES are managed by the BEACON list
+     ;; below for scala (phase 20b)
+     )
     (elisp
      ;; grammar nodes (probed): defun forms are
      ;; `function_definition' with a named "defun" token child;
@@ -166,8 +207,9 @@ the taint is USED."
       . ((const . code-review-constant-face)))
      ("(special_form \"let\" (list (list (symbol) @v)))"
       . ((v . font-lock-variable-name-face)))
-     ("[(string) (integer)] @cval"
-      . ((cval . code-review-constant-face))))
+     ;; literal CONSTANT VALUES are managed by the BEACON list
+     ;; below for elisp (phase 20b)
+     )
     (clojure
      ;; grammar nodes (probed): everything is list_lit of sym_lits,
      ;; so definitions are matched by the head symbol with #match?
@@ -187,8 +229,9 @@ the taint is USED."
      ("((list_lit . (sym_lit) @_h . (vec_lit (sym_lit) @param))
        (#match? @_h \"\\\\`\\\\(fn\\\\|let\\\\|loop\\\\)\\\\'\"))"
       . ((param . font-lock-variable-name-face)))
-     ("[(str_lit) (num_lit)] @cval"
-      . ((cval . code-review-constant-face))))
+     ;; literal CONSTANT VALUES are managed by the BEACON list
+     ;; below for clojure (phase 20b)
+     )
     (typescript
      ;; grammar nodes (probed against
      ;; libtree-sitter-typescript): enum names are plain
@@ -230,8 +273,9 @@ the taint is USED."
        (switch_case \"case\" @kw)"
       . ((case . font-lock-type-face)
          (kw . font-lock-keyword-face)))
-     ("[(string) (template_string) (number)] @cval"
-      . ((cval . code-review-constant-face))))
+     ;; literal CONSTANT VALUES are managed by the BEACON list
+     ;; below for typescript (phase 20b)
+     )
     (tsx
      ;; the tsx grammar shares the typescript node names for
      ;; every query above (validated: identical captures), so
@@ -268,8 +312,9 @@ the taint is USED."
        (switch_case \"case\" @kw)"
       . ((case . font-lock-type-face)
          (kw . font-lock-keyword-face)))
-     ("[(string) (template_string) (number)] @cval"
-      . ((cval . code-review-constant-face))))
+     ;; literal CONSTANT VALUES are managed by the BEACON list
+     ;; below for tsx (phase 20b)
+     )
     (sql
      ;; grammar: DerekStride/tree-sitter-sql (installed in
      ;; ~/.emacs.d/tree-sitter).  Probed against real ClickHouse
@@ -509,6 +554,137 @@ verify=True, textContent.  Expect one tuning round: when the
 first vocabulary over- or under-shoots, trim HERE - the engine
 needs no changes."
   :type '(repeat (cons symbol (repeat (cons string (repeat (cons symbol face))))))
+  :group 'code-review-hunkhighlight)
+
+(defcustom code-review-hunkhighlight-beacon-queries
+  '((python
+     ;; Beacon shapes (all PROBED against the installed grammars,
+     ;; 2026-09-30): python if/elif/while carry `condition:' fields;
+     ;; comparison operators are anonymous tokens of
+     ;; `comparison_operator' (NOT in field position - a quoted
+     ;; anonymous token in a field slot fails to compile).
+     ("(if_statement condition: (_) @_cond)
+       (elif_clause condition: (_) @_cond)
+       (while_statement condition: (_) @_cond)
+       (comparison_operator [\"==\" \"!=\" \"<\" \">\" \"<=\" \">=\"] @bop)
+       [(integer) (float)] @lit
+       (string) @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face)))))
+    (typescript
+     ;; Beacon shapes (probed): if/while carry `condition:' fields,
+     ;; switch arms are `switch_case value:', comparisons are
+     ;; anonymous tokens of `binary_expression'.  Ternaries are
+     ;; deliberately out: not `conditional_expression' there, and
+     ;; the value branches would over-mark (sparseness).
+     ("(if_statement condition: (_) @_cond)
+       (while_statement condition: (_) @_cond)
+       (switch_case value: (_) @_cond)
+       (binary_expression [\"==\" \"!=\" \"===\" \"!==\" \"<\" \">\" \"<=\" \">=\"] @bop)
+       [(string) (template_string) (number)] @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face)))))
+    (tsx
+     ;; the tsx grammar accepts every typescript beacon query above
+     ;; (probed: identical captures)
+     ("(if_statement condition: (_) @_cond)
+       (while_statement condition: (_) @_cond)
+       (switch_case value: (_) @_cond)
+       (binary_expression [\"==\" \"!=\" \"===\" \"!==\" \"<\" \">\" \"<=\" \">=\"] @bop)
+       [(string) (template_string) (number)] @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face)))))
+    (elisp
+     ;; Beacon shapes (probed): if/while/cond are `special_form'
+     ;; with the head as an anonymous token child - the `.' anchor
+     ;; pins the condition to come right after it; cond clause
+     ;; tests are the first child of each clause list; when/unless
+     ;; are MACROS (plain `list's), matched positionally;
+     ;; comparison operators are plain symbols, painted only when
+     ;; the classification finds them inside a condition range.
+     ("(special_form \"if\" . (_) @_cond)
+       (special_form \"while\" . (_) @_cond)
+       (special_form \"cond\" (list . (_) @_cond))
+       ((list . (symbol) @_h . (_) @_cond)
+        (#match? @_h \"\\\\`\\\\(when\\\\|unless\\\\)\\\\'\"))
+       ((symbol) @bop
+        (#match? @bop \"\\\\`\\\\(=\\\\|<\\\\|<=\\\\|>\\\\|>=\\\\|eq\\\\|equal\\\\|string=\\\\)\\\\'\"))
+       [(string) (integer)] @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face)))))
+    (scala
+     ;; Beacon shapes (probed): if/else-if/while carry `condition:'
+     ;; fields (the parenthesized expressions); infix operators are
+     ;; `operator_identifier' nodes (NOT anonymous tokens: "=="/">="
+     ;; are not quotable there, only "<" happens to exist), so the
+     ;; predicate keeps the comparison spelling only.
+     ("(if_expression condition: (_) @_cond)
+       (while_expression condition: (_) @_cond)
+       ((infix_expression (operator_identifier) @bop)
+        (#match? @bop \"\\\\`\\\\(==\\\\|!=\\\\|<=\\\\|>=\\\\|<\\\\|>\\\\|eq\\\\|ne\\\\|lt\\\\|gt\\\\|le\\\\|ge\\\\)\\\\'\"))
+       [(integer_literal) (floating_point_literal)] @lit
+       (string) @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face)))))
+    (clojure
+     ;; Beacon shapes (probed): everything is list_lit of sym_lits,
+     ;; so if/when/when-not/while/if-not conditions are matched
+     ;; positionally after the head symbol; comparison operators are
+     ;; plain sym_lits, painted only inside condition ranges.
+     ("((list_lit . (sym_lit) @_h . (_) @_cond)
+        (#match? @_h \"\\\\`\\\\(if\\\\|when\\\\|when-not\\\\|while\\\\|if-not\\\\)\\\\'\"))
+       ((sym_lit) @bop
+        (#match? @bop \"\\\\`\\\\(=\\\\|<\\\\|<=\\\\|>\\\\|>=\\\\|==\\\\|not=\\\\)\\\\'\"))
+       [(str_lit) (num_lit)] @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face)))))
+    (sql
+     ;; Beacon shapes (probed): comparisons are anonymous tokens of
+     ;; `binary_expression'; the condition ranges are the whole
+     ;; WHERE clauses (already the phase 10 fixation targets); SQL
+     ;; literals are a single `literal' node (numbers AND strings -
+     ;; no separate `number'/'string' nodes exist).
+     ("(where) @_cond
+       (binary_expression [\"=\" \"<>\" \"!=\" \"<\" \">\" \"<=\" \">=\"] @bop)
+       (literal) @lit"
+      . ((bop . (code-review-constant-face . nil))
+         (lit . (code-review-constant-face . code-review-constant-dim-face))))))
+  "Like `code-review-hunkhighlight-queries', but beacon-shaped (phase 20b).
+Eye-tracking of defect finding shows reviewers scan broadly, then
+LOCK fixations onto the conditions and loops where the defects
+live (Sharif, Falcone & Maletic, ETRA 2012, replicating Uwano et
+al. 2006) - while the phase 10 face set made EVERY literal loud
+(691 of 959 overlays on scalafmt#5264 were constant-face
+literals: the loudest face pointed at the least defect-relevant
+tokens).  Beacon entries RETARGET that emphasis; they add no new
+keyword volume.
+
+Entry structure (a mapping value is a CONS (STRONG . DIM) instead
+of a plain face):
+  - the CONDITION subtrees of if/while/case clauses are captured
+    under the helper name @_cond (leading underscore: no face
+    mapping; the engine collects the ranges and classifies by
+    range containment, so beacons at any nesting depth inside the
+    condition work without ancestor walking);
+  - comparison OPERATORS map to (STRONG . nil): the strong
+    `code-review-constant-face' inside a condition, NOTHING
+    outside (the < vs <= distinction is the classic off-by-one
+    habitat);
+  - LITERALS map to (STRONG . DIM): strong inside conditions and
+    in TEST files (expected values are the payload there), the
+    dimmer `code-review-constant-dim-face' outside - or plain,
+    see `code-review-hunkhighlight-dim-outside-literals'.
+
+The general queries of these languages carry no literal entries:
+the beacon list owns them.  Languages without entries (yaml)
+keep their phase 10 shape; add per language when a real PR needs
+one, node names PROBED against the installed grammar first (see
+`code-review-hunkhighlight-queries')."
+  :type '(repeat (cons symbol
+                       (repeat (cons string
+                                     (repeat (cons symbol
+                                                   (choice face
+                                                           (cons face face))))))))
   :group 'code-review-hunkhighlight)
 
 (provide 'code-review-hunkhighlight-queries)

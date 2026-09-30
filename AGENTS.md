@@ -35,8 +35,9 @@ discovered.
 | `code-review-coupling.el` | phase 18 change-coupling completeness: co-change matrix from the history harvest (code-maat style: degree threshold, min co-changes, max changeset size), findings when a changed file's >=threshold peer (star case: its coupled TEST file) is untouched in the PR; cached per PR+diff, rendered in the Analysis section with jump buttons into the peer |
 | `code-review-dossier.el` | phase 16 hunk dossier: `C-c C-h` inserts an on-demand, cached, collapsible "Context (dossier)" section after a hunk (`git log -L` history of exactly those lines at the base rev, blame authors/last-touch, touched-def call sites with jump buttons, tests split, file heat, hunk risk); `C-u` appends the OFF-by-default LLM garnish |
 | `code-review-testimpact.el` | phase 17 test impact: CI-gaming detector (pure diff-text scan: language-scoped skip markers, `\|\| true`, gated/removed CI steps, lowered coverage thresholds → hard `[CI-GAME]` file tags; DOC-classified files and comment-only lines are skipped — they mention the markers legitimately), test mapping (changed defs → covering test files, `[NO-TEST]` hunk tags + Analysis entries), the `T` command running exactly the mapped subset via `compilation-start` (command resolution: user alist → any projectile/project.el test command already loaded and defined → built-in conventions, Makefile `test` target/pytest/jest/go/cargo; C-u: fake-fix check, running the subset at the BASE rev in a detached temp worktree too) |
-| `code-review-hunkhighlight.el` | phase 10: tree-sitter semantic hunk faces (python first; reusable on any magit diff buffer) — the ENGINE: reconstruct, parse, cache ranges, lay overlays |
-| `code-review-hunkhighlight-queries.el` | the per-language treesit query VOCABULARIES + faces: general (phase 10), test-file, and security source/sink lists (phase 20a; sparse by design) |
+| `code-review-hunkhighlight.el` | phase 10 + 20: tree-sitter semantic hunk faces (reusable on any magit diff buffer) — the ENGINE: reconstruct, parse, merge the general/test/security/BEACON query lists with per-entry condition-range classification (`--entry-conds`/`--entry-face`), the flat `--cache-key`, the treesit-optional `--region`, `--apply` overlays |
+| `code-review-hunkhighlight-queries.el` | the per-language treesit query VOCABULARIES + faces: general (phase 10), test-file, security source/sink lists (phase 20a; sparse by design), and the phase 20b BEACON list (conditions captured as @_cond, comparison operators and literals in `(STRONG . DIM)` cons mappings: strong inside conditions and in test files, dim outside) |
+| `code-review-hunkhighlight-intraline.el` | phase 20c: intra-line changed-token marks — grammar-free tokenizer, token-LCS alignment, raw-hunk `-`/`+` block pairing, underline face on exactly the changed tokens of modified added lines (line/token caps; pure-add and whitespace-only pairs unmarked) |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
@@ -557,7 +558,46 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   FIRST (output goes to BUF or `*Disassembly*`, NOT
   `standard-output`): the `goto-if-nil` targets show the real
   control flow, and they cannot be lied to by stale artifacts
-  once you have proven the `.elc` is fresh.
+  once you have proven the `.elc` is fresh.  Phase 20 shipped a
+  second instance that produced NO symptom at all instead of a
+  no-op: the beacon-merge restructure of
+  `code-review-hunkhighlight--ranges` left `(nreverse res)`
+  inside the `(when (memq lang ...fragment-line-languages...))`
+  gate, so every non-yaml language silently returned nil — no
+  error, no message (the caller's condition-case never fired),
+  check-parens green, compile clean, and every treesit ERT test
+  failing while its individual pieces probed perfect in
+  isolation.  When helpers work standalone but the composed
+  defun returns nil, disassemble the defun before debugging the
+  helpers; and do big-block edits with line-range splices plus
+  closer-count ASSERTIONS (the awk closer-count check), never
+  hand-transcribed `old_str` blocks.
+- Deeply nested data building is a paren-count bug farm (phase
+  20, third confirmed instance): a cache key built as nested
+  `(cons a (cons b (cons c ...)))` cost three failed hand-counted
+  closer fixes on the same defun — hand counting was wrong
+  three times, exactly the documented trap.  Restructure to a
+  FLAT helper with a plain `list` of the parts
+  (`code-review-hunkhighlight--cache-key`) instead of fighting
+  the nesting; balance with the depth-walk/unmatched-opener
+  probes and closer-count assertions, never by eye.
+- ERT `face-at`-style helpers read the LAST char of the search
+  match: an assertion about a single-char token (a comparison
+  operator) must use a search string that ENDS ON that char
+  (`" (="` ends on `=`), not on a neighboring operand — a
+  search ending on a space or an identifier silently asserts
+  the wrong position and the test proves nothing.
+- Pattern-anchored block splices can EAT a neighboring block:
+  splicing several blocks bottom-up, an earlier splice's END
+  anchor ("the next defun") can match a defun INSIDE the content
+  a later splice just inserted (the phase 20 engine refactor: the
+  cache-key splice's region anchor found the region defun that
+  now sat after its own helper defuns, and the splice deleted
+  them — the byte-compile "function not known to be defined"
+  warnings pointed straight at it).  Splice one block at a time
+  and re-derive the anchors from the CURRENT file between
+  splices, or anchor on the LAST line of the block you are
+  replacing instead of the first line of the next one.
 - `make compile` exits 0 even when a byte-compile FAILS (an
   `--eval`'d `byte-compile-file` never fails make), and the
   stale `.elc` serves the old code while the source looks

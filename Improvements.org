@@ -2723,7 +2723,7 @@ non-deterministic flavor we avoid.  Sources in the References
 section.
 
 
-* Phase 20 — Defect-oriented hunk highlighting (phase 10 refinement) :STATUS:todo:
+* Phase 20 — Defect-oriented hunk highlighting (phase 10 refinement) :STATUS:done:
 
 NOTE (research 2026-09-28): phase 10 answered "what is this
 code?" (definitions, names, literals).  This phase re-aims the
@@ -2908,6 +2908,91 @@ volume:
   predicates in the =#match?= spelling (the 30/31 rewrite
   handles Emacs 30), never place a predicate inside a =[...] =
   alternation, capture-exercise every query before shipping.
+- STATUS: DONE (2026-09-30).  Implementation notes:
+  - Beacon entries shipped for SEVEN languages (python,
+    typescript, tsx, elisp, scala, clojure, sql); yaml keeps its
+    phase 10 shape (its literals are semantic names already).
+    Every shape was probed against the installed grammar in
+    seven probe rounds; the probe results are baked into the
+    queries.el per-language comments.  The interesting shapes:
+    python =comparison_operator= operators are ANONYMOUS tokens
+    (quotable, not field positions); elisp =if= / =while= /
+    =cond= are =special_form= anchored by the =.= (head)
+    position, =when= / =unless= are plain lists matched
+    positionally, operators are plain symbols; scala operators
+    are =operator_identifier= NODES (only ="<"= happens to
+    exist as a quoted token) so a =#match?= predicate keeps the
+    comparison spelling; SQL has ONE =literal= node (numbers
+    and strings); ternaries were dropped on purpose (python has
+    =conditional_expression=, TS does not, and the value
+    branches would over-mark).
+  - The general queries of python / typescript / tsx / elisp /
+    scala / clojure DROPPED their literal entries: the beacon
+    list owns literals for those languages.  Beacon mapping
+    values are CONS =(STRONG . DIM)=: operators =(strong .
+    nil)=, literals =(strong . dim)=.  New defcustom
+    =code-review-hunkhighlight-dim-outside-literals= (t) picks
+    the outside treatment; new face
+    =code-review-constant-dim-face= (weight-normal variant of
+    the constant face).
+  - Engine: =--entry-conds= collects the entry's @_cond capture
+    ranges; =--entry-face= classifies — a SYMBOL mapping paints
+    always (phase 10 entries unchanged), a CONS mapping paints
+    STRONG inside any condition range or in a TEST file, DIM
+    outside (plain when the defcustom is nil).  Classification
+    is plain RANGE CONTAINMENT — no ancestor walking, so
+    beacons at any nesting depth inside the condition work.
+    The @_cond captures carry no face (leading underscore: no
+    mapping).
+  - The OPTIONAL rebind-face item (subtle face for assignments
+    that rebind a parameter/loop variable) is DEFERRED: tune it
+    after real PRs accumulate, per the plan's own "after the
+    first live render" note.
+  - THE ENGINE BUG FOUND AND FIXED: the beacon-merge restructure
+    of =--ranges= left the file BALANCED but MIS-NESTED —
+    =(nreverse res)= sat INSIDE the =(when (memq lang
+    ...fragment-line-languages...))= gate, so every non-yaml
+    language returned NIL: zero error messages (the region's
+    condition-case never fired), check-parens green, byte-file
+    clean, and EVERY treesit ERT test failed.  Disassembly
+    =(disassemble 'code-review-hunkhighlight--ranges)= located
+    it in minutes — the goto-if-nil targets cannot lie.  Fixed
+    by relocating one paren from the fragment block's tail to
+    the =nreverse= line (done with an awk splice + closer-count
+    assertions, not hand transcription).
+  - Cache: the ranges key now hashes the beacon alist and the
+    dim defcustom (regression tests
+    =code-review-hunkhighlight/beacon-list-cache-invalidation=
+    and =.../beacon-python-dim-toggle=).  The key itself moved
+    to a FLAT =--cache-key= helper (plain =list= of every
+    defcustom + assq result): the nested-cons version of the
+    key was a paren-count bug farm (three failed hand-counted
+    fixes on the same defun — the documented trap).
+  - ENGINE REFACTOR (2026-09-30, complexity audit: =--ranges=
+    scored 1147, region 512): same treatment as the intraline
+    refactor.  =--ranges= became a two-pass dispatcher over ONE
+    shared per-entry runner (=--node-ranges=: compile, isolated
+    capture, @_cond classification, mapper) with =--entries-for=,
+    =--line-layout=, =--line-mapper=, =--whole-fragment-rows=,
+    =--per-line-rows=; region became a thin =--treesit-available-p=
+    / =--ranges-cache= / =--compute-ranges= / =--cached-ranges=
+    chain; =--cache-key= split into =--behavior-key= /
+    =--vocabulary-key=; plus small extractions
+    (=--probe-query= from =--contract=, =--inside-conds-p= from
+    =--entry-face=, =--lay-line-face= from =--put-face=,
+    =--heading-text= from =--section-path=, and the recursive
+    =--paint-hunk-sections= replacing the =cl-labels= walk in
+    =-magit-buffer=).  Every function is now <= 33 lines.
+    Behavior identical: 219/219 ERT green unchanged; daemon
+    reloaded and probed (strong inside the condition, dim
+    outside, underline on the changed token, faces stacking at
+    the same char).
+  - Verified: 219/219 ERT green; daemon reloaded (explicit
+    =.elc= loads + =setq= from =standard-value= for the
+    queries alist) and the real hunk of this very diff
+    rendered: the outside literal went strong → dim, the
+    test-file render kept it strong, and 63 changed-token
+    underlines landed on the paired lines.
 
 ** 20c — Intra-line changed-token marking (rich diff in surface)
 
@@ -2947,6 +3032,57 @@ the two answer different questions on different availability
   incident; tokenizing is per line and cheap once capped).
 - Defcustom gate (=code-review-hunkhighlight-intra-line=);
   the ranges cache key must include it.
+- STATUS: DONE (2026-09-30).  Implementation notes:
+  - New file =code-review-hunkhighlight-intraline.el= (AGENTS
+    file-size rule; one coherent concern): the grammar-free
+    tokenizer (identifier/digit runs, escape-aware quoted
+    strings, single chars, whitespace dropped),
+    =--changed-token-cols= (common prefix/suffix trim + token
+    LCS DP with backtrack; pure insertion marks all inserted
+    tokens; pure deletion marks nothing), and
+    =--intra-line-ranges= (walks the RAW prefixed body,
+    groups change blocks, pairs the i-th =-= with the i-th =+=,
+    context/blank lines reset and count on the new side,
+    =\ No newline= marker skipped; emits =(LINE BEG END face)=
+    rows compatible with =--apply=).
+  - =--region= appends the intra-line ranges for EVERY language
+    (treesit now optional in the region: unknown-language files
+    and local diffs inherit the underlines), before the
+    treesit ranges so the semantic overlays stack on top.
+    The reconstruct was NOT extended (the design bullet
+    suggested it): =--intra-line-ranges= re-walks the raw body
+    itself — the reconstruct stays the new-side-only shape the
+    cache and apply already understand.
+  - Guards as designed: =-intra-line-max-length= (2000; the
+    litellm megabyte-line incident) and
+    =-intra-line-max-tokens= (250): over-budget MIDDLES mark
+    NOTHING (a code/docstring mismatch caught before shipping
+    — the fallback originally marked ALL middle tokens, which
+    underlines a whole machine-generated line = noise).
+    Pure-add =+= lines and whitespace-only pairs mark nothing.
+  - Face: =code-review-changed-token-face= is UNDERLINE only —
+    it composes with the semantic foreground overlays (verified:
+    the changed token carries BOTH the underline and the dim
+    beacon face) and leaves the diff backgrounds alone.
+  - Cache: the key hashes the three intra-line defcustoms
+    (regression tests =.../intraline-cache-invalidation=,
+    =.../intraline-stacks-with-semantic=).
+  - REFACTOR (2026-09-30, complexity audit: the three core
+    functions scored 596/212/190): split into single-purpose
+    helpers — the tokenizer (run/string scanners behind a pcase
+    driver), the alignment (common-prefix/suffix trimming, the
+    LCS table, the backtrack, the cols collectors, with
+    =--changed-token-cols= as a 5-branch dispatcher), and the
+    hunk walk (per-row-kind handlers =--see-minus= / =--see-plus=
+    / =--see-context= behind a plist state).  Behavior identical:
+    the exact-value ERT tests pass unchanged (219/219), and the
+    backtrack's tie-breaking was kept byte-for-byte so the marked
+    tokens stay stable.
+  - Verified: 219/219 ERT green; daemon render of this
+    repo's own diff hunk: 63 changed-token underlines, and the
+    baseline (phase-10 shape) render shows the swap — 1 strong
+    literal outside conditions became 1 dim, with 63 new
+    underlines on the paired lines.
 
 ** Verification plan (when implemented)
 
