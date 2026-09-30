@@ -45,6 +45,7 @@
 (require 'code-review-faces)
 (require 'code-review-actions)
 (require 'code-review-browse)
+(require 'code-review-registry)
 (require 'code-review-dossier)
 (require 'code-review-local)
 (require 's)
@@ -255,6 +256,7 @@ OUTDATED."
 ;; Run after a Code Review buffer is fully rendered
 (defcustom code-review-post-hook
   '(code-review--post-default-setup
+    code-review-registry--detect
     code-review-browse--after-render)
   "Hook run after the Code Review buffer is fully loaded and rendered."
   :group 'code-review

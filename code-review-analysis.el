@@ -60,6 +60,7 @@
 (require 'code-review-diff)
 (require 'code-review-repo)
 (require 'code-review-utils)
+(require 'code-review-registry)
 
 ;;; Configuration
 
@@ -837,14 +838,17 @@ silently per render."
       (format "%.0fy" (/ days 365.0))
     (format "%.0fm" (max 1 (/ days 30.0)))))
 
-(defun code-review-analysis--hunk-entry (path hunk refs-hash blame)
+(defun code-review-analysis--hunk-entry (path hunk refs-hash blame
+                                         &optional incident-ids)
   "Delicacy entry plist for HUNK of PATH.  Pure.
 REFS-HASH: definition name -> occurrences (phase 5 batched
 grep) for blast radius and dead-on-arrival.  BLAME: hash
 OLD-LINE -> (AUTHOR . AUTHOR-TIME), nil when blame was skipped:
-age and ownership ingredients are simply absent then.  Entry:
-(:path :ranges :score :callers :dead :median-age :authors
-:cplx)."
+age and ownership ingredients are simply absent then.
+INCIDENT-IDS: phase 22 ids of incidents touching PATH — the
+permanent review heat ingredient (+0.5 per incident, saturated
+at 1.0).  Entry: (:path :ranges :score :callers :dead
+:median-age :authors :cplx :incidents)."
   (let* ((added (plist-get hunk :added))
          (deleted (plist-get hunk :deleted))
          (old-lines (plist-get hunk :old))
@@ -896,7 +900,13 @@ age and ownership ingredients are simply absent then.  Entry:
                      0.0)
                    (if (>= authors-n 3) 0.25 0.0)
                    (min 0.5 (/ (float (max 0 cplx)) 20.0))
-                   (if dead (min 1.0 (* 0.5 (length dead))) 0.0))))
+                   (if dead (min 1.0 (* 0.5 (length dead))) 0.0)
+                   ;; phase 22: incident paths carry permanent review
+                   ;; heat; a single incident clears the delicacy
+                   ;; threshold on its own
+                   (if incident-ids
+                       (min 1.0 (* 0.5 (length incident-ids)))
+                     0.0))))
     (list :path path
           :ranges (plist-get hunk :ranges)
           :score score
@@ -904,7 +914,8 @@ age and ownership ingredients are simply absent then.  Entry:
           :dead dead
           :median-age median-age
           :authors authors-n
-          :cplx cplx)))
+          :cplx cplx
+          :incidents (length (or incident-ids ())))))
 
 (defun code-review-analysis--hunk-reasons (entry)
   "Compact risk reasons for ENTRY, nil when nothing stands out."
@@ -912,9 +923,13 @@ age and ownership ingredients are simply absent then.  Entry:
          (age (plist-get entry :median-age))
          (authors (plist-get entry :authors))
          (cplx (plist-get entry :cplx))
-         (dead (plist-get entry :dead)))
+         (dead (plist-get entry :dead))
+         (incidents (or (plist-get entry :incidents) 0)))
     (delq nil
-          (list (when (>= callers 5)
+          (list (when (>= incidents 1)
+                  (format "%d incident%s" incidents
+                          (if (>= incidents 2) "s" "")))
+                (when (>= callers 5)
                   (format "%d callers" callers))
                 (when (and age (>= age 365))
                   (format "lines %s old"
@@ -956,6 +971,10 @@ refs hash for blast radius and dead-on-arrival.  Entries below
 `code-review-analysis-delicacy-report-min' are not stored, and
 at most `code-review-analysis-max-hunk-entries' are."
   (let* ((old-rev (code-review-analysis--old-rev (oref pr base-ref-name)))
+         ;; phase 22: incident-touched paths carry permanent review
+         ;; heat (registry scan, cached per (REPO . HEAD) inside)
+         (incident-paths (code-review-registry--incident-paths
+                          (code-review-registry--incidents worktree)))
          ;; partial clone: blame lazy-fetches a blob per historical
          ;; version and can block the render for minutes — skip it
          ;; (one bounded `git config' call, only when a blame could
@@ -1001,7 +1020,9 @@ would block the render; see code-review-analysis-blame-partial-clones)"))
                        worktree blame-rev path ranges)))))))
           (dolist (hu hunks)
             (let ((entry (code-review-analysis--hunk-entry
-                          path hu refs-hash blame)))
+                          path hu refs-hash blame
+                          (and incident-paths
+                               (gethash path incident-paths)))))
               (when (>= (plist-get entry :score)
                         code-review-analysis-delicacy-report-min)
                 (push entry entries)))))))
@@ -1039,10 +1060,14 @@ are filtered out and the list is capped at
     (cl-subseq entries 0 (min (length entries)
                               code-review-analysis-delicacy-top-k))))
 
-(defun code-review-analysis--analyze-one-file (index refs path block)
+(defun code-review-analysis--analyze-one-file (index refs path block
+                                                    &optional incident-paths)
   "Analyze one diff file BLOCK at PATH against INDEX.
 REFS is the batched references hash (all definitions at once),
 see `code-review-analysis--definitions-refs'.
+INCIDENT-PATHS is the phase 22 hash PATH -> incident ids: a
+path with incidents is NEVER flagged as possibly dead — an
+incident there once cost real money, history says stay careful.
 Return (SIMILAR DEAD DANGLING) findings for this file."
   (if (or (string-match-p "^Binary files" block)
           (string-match-p "^GIT binary patch" block))
@@ -1092,6 +1117,10 @@ Return (SIMILAR DEAD DANGLING) findings for this file."
                                (string-match-p
                                 code-review-analysis-dead-test-name-regexp
                                 name))
+                   ;; phase 22: incident-touched paths are never
+                   ;; possibly-dead — permanent review heat
+                   unless (and incident-paths
+                              (gethash path incident-paths))
                    collect (list name path ln)))
          (dangling
           (cl-loop for (name . _ln) in (code-review-analysis--definitions-in
@@ -1141,10 +1170,14 @@ HUNKS — phase 15 delicacy entries, hottest first), or nil."
                                    (mapcar #'car defs))))
          (refs-hash (code-review-analysis--definitions-refs
                      worktree all-defs))
+         ;; phase 22: the dead-code analysis never flags
+         ;; incident-touched paths (permanent review heat)
+         (incident-paths (code-review-registry--incident-paths
+                          (code-review-registry--incidents worktree)))
          (similar nil) (dead nil) (dangling nil))
     (pcase-dolist (`(,path . ,block) blocks)
       (let ((res (code-review-analysis--analyze-one-file
-                  index refs-hash path block)))
+                  index refs-hash path block incident-paths)))
         (setq similar (append similar (nth 0 res))
               dead (append dead (nth 1 res))
               dangling (append dangling (nth 2 res)))))

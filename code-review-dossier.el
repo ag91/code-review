@@ -54,6 +54,7 @@
 (require 'code-review-diff)
 (require 'code-review-analysis)
 (require 'code-review-history)
+(require 'code-review-registry)
 
 (declare-function code-review-section--insert-analysis-jump
                   "code-review-section-analysis")
@@ -334,10 +335,12 @@ wash in `code-review-sections-hook')."
   "The dossier for hunk PATH+RANGES of the current review.
 Derives its inputs from the db (raw diff, PR — hence the base
 rev), enriches the engine result with the file's phase 14 heat
-(from the render's history order) and the hunk's phase 15 risk,
-and caches per (PR id, diff md5, path, hunk ranges).  nil when
-there is no worktree, no diff, or the compute failed (a failing
-dossier is logged and never takes the command down)."
+(from the render's history order), the hunk's phase 15 risk and
+the phase 22 incidents touching the file (registry scan, cached
+per (REPO . HEAD) inside), and caches per (PR id, diff md5,
+path, hunk ranges).  nil when there is no worktree, no diff, or
+the compute failed (a failing dossier is logged and never takes
+the command down)."
   (let* ((worktree code-review-repo-worktree)
          (diff (and worktree (code-review-db--pullreq-raw-diff)))
          (pr (and diff (code-review-db-get-pullreq))))
@@ -364,6 +367,14 @@ dossier is logged and never takes the command down)."
                                     :test #'equal))
                 (plist-put res :risk (code-review-dossier--risk
                                       path ranges))
+                ;; phase 22: the incidents touching this file (the
+                ;; registry scan is cached per (REPO . HEAD) inside)
+                (plist-put res :incidents
+                           (ignore-errors
+                             (cl-remove-if-not
+                              (lambda (inc)
+                                (member path (plist-get inc :paths)))
+                              (code-review-registry--incidents worktree))))
                 (puthash key res code-review-dossier--cache)
                 res)))))))
 
@@ -408,6 +419,16 @@ this text.  Pure."
                                     history)
                             "; "))))
                (plist-get dossier :risk)
+               (let ((incidents (plist-get dossier :incidents)))
+                 (when incidents
+                   (format "incidents touching this file: %s"
+                           (string-join
+                            (mapcar (lambda (inc)
+                                      (format "%s (%s)"
+                                              (plist-get inc :id)
+                                              (plist-get inc :title)))
+                                    incidents)
+                            "; "))))
                (let ((heat (plist-get dossier :heat)))
                  (when heat
                    (format "file heat: %s — %s"
@@ -561,6 +582,42 @@ capped; the render double-checks)."
                       (plist-get heat :bucket)
                       (plist-get heat :reason))))))
 
+(defun code-review-dossier--insert-incident-button (worktree incident)
+  "Insert a button for INCIDENT jumping to its registry entry.
+The target is the generated incidents/<date-slug>.md file in
+WORKTREE; when it is not generated yet the button says so (the
+registry is generated from trailers, never hand-curated)."
+  (let* ((id (plist-get incident :id))
+         (file (expand-file-name
+                (concat code-review-registry-dir "/"
+                        (code-review-registry--entry-file-name incident))
+                worktree)))
+    (insert-button
+     (format "%s" id)
+     'face 'code-review-url-header-face
+     'follow-link t
+     'help-echo "Visit this incident's registry entry"
+     'action (lambda (&rest _)
+               (if (file-exists-p file)
+                   (find-file-other-window file)
+                 (message "code-review-registry: entry not generated yet; \
+run M-x code-review-registry-generate"))))))
+
+(defun code-review-dossier--render-incidents (dossier)
+  "The incidents line of DOSSIER (phase 22 registry)."
+  (let ((incidents (plist-get dossier :incidents))
+        (worktree code-review-repo-worktree))
+    (when incidents
+      (insert "  ")
+      (insert (propertize "incidents touching this file: "
+                          'font-lock-face 'magit-dimmed))
+      (let ((first t))
+        (dolist (inc incidents)
+          (unless first (insert ", "))
+          (setq first nil)
+          (code-review-dossier--insert-incident-button worktree inc)))
+      (insert ?\n))))
+
 (defun code-review-dossier--render-calls (dossier)
   "The touched-defs and call-site lines of DOSSIER."
   (let ((defs (plist-get dossier :defs))
@@ -629,6 +686,7 @@ section."
                   (code-review-dossier--render-ages dossier)
                   (code-review-dossier--render-history dossier)
                   (code-review-dossier--render-context-lines dossier)
+                  (code-review-dossier--render-incidents dossier)
                   (code-review-dossier--render-calls dossier)
                   (code-review-dossier--render-summary dossier)
                   (insert ?\n))))

@@ -3351,7 +3351,7 @@ Order: 22 (pure git, viral) -> 23 (solo loop) -> 24 (surface
 + binding + capture) -> 25 (budget; consumes 22+24 signals)
 -> 26 (outcome telemetry; consumes infra, degrades to L0).
 
-* Phase 22 — Incident registry and agent conventions       :STATUS:todo:
+* Phase 22 — Incident registry and agent conventions       :STATUS:done:
 
 RELEVANCE (preamble): implements the CHECKED-BY-A-MACHINE-
 FOREVER side for incidents.  Today a postmortem produces a
@@ -3419,6 +3419,86 @@ truth, the markdown registry is generated.
   idempotent conventions append); batch emacs; live daemon on
   a real incident-shaped PR; the usual compile + eln-cache +
   reload protocol.
+
+** Done (2026-10-01)
+
+- Shipped =code-review-registry.el= (~560 lines): pure trailer
+  parsing (git's own rule: last paragraph only, continuations
+  fold), front-matter parsing (must close, =\\x1e=/=\\x1f=
+  log-record split), ONE bounded =git log= trailer scan
+  (=--no-merges=, capped by
+  =code-review-registry-max-log-commits=) with the
+  incidents/*.md files as byte-capped fallback, both cached
+  per =(REPO . HEAD)= (a new commit invalidates naturally);
+  entry generation (=code-review-registry-generate=: same-id
+  files are left alone so the human body is never clobbered,
+  stale ones rewritten, =<date>-<slug>.md= names);
+  =code-review-incident-tag= (id year-numbered, title from the
+  PR, PATHS PREFILLED from the review's own raw diff) with the
+  submission chain shipping strategies 3 (single PR comment
+  via =code-review-new-issue-comment=, forge reviews with a
+  live PR id only) and 4 (entry file into the worktree) —
+  strategies 1/2 arrive with phase 24; keyword detection
+  =code-review-registry--detect= in the
+  =code-review-post-hook= default (once per PR via the
+  =--prompted= hash, =y-or-n-p= never in batch);
+  =code-review-install-conventions= appending the
+  sentinel-marked CONVENTIONS block idempotently to
+  AGENTS.md (prefix: CONTRIBUTING.md too).
+- Consumption, existing machinery just fed: the phase 15 hunk
+  entry grew =:incidents= as a SCORE ingredient (+0.5 per
+  incident, saturated at 1.0 — one incident clears the
+  delicacy threshold on its own) and the badge reason ="N
+  incident(s)"= leads the list; file headings get a
+  =[N incident(s)]= tag next to the CI-GAME tag (same cached
+  scan); the phase 5 dead-code analysis NEVER flags
+  incident-touched paths (the =--analyze-one-file= dead loop
+  gets the =--incident-paths= table); the phase 16 dossier's
+  =--get= enriches =:incidents= and renders ="incidents
+  touching this file:"= with jump buttons to the generated
+  =incidents/<date>-<slug>.md= (and the LLM machine-summary
+  text lists them).
+- Two bugs the first suite run caught, both in the registry
+  engine: (1) =(or (gethash key cache 'missing) ...)= — the
+  'missing SENTINEL is truthy, so the scan never ran and the
+  symbol leaked into every consumer (the analysis =--hunks=
+  died with =wrong-type-argument listp missing=; the
+  file-tag's =ignore-errors= swallowed the same error and
+  silently returned nil).  Correct form: two-step gethash +
+  =(eq cached 'missing)= comparison.  (2) =--parse-trailers=
+  rejected every well-formed message ending in a newline: the
+  trailing empty line fell into the =t= branch and nulled ok —
+  split with OMIT-NULLS.
+- Test-side trap: the end-to-end initially bound
+  =code-review-repo-enable nil= (copied from the db-only
+  phase 12 end-to-end) — =--setup-worktree= gates on it, so
+  the render got NO worktree, no analysis, no badge, no file
+  tag.  Any render-level test needs it at its default t.
+- Verification: 20 new ERT tests (pure parsers, template
+  round-trip, id sequencing, keyword detection, batch no-op of
+  --detect, idempotent conventions install, trailer-scan and
+  generate on real git fixtures, cache invalidation on a new
+  commit, the incidents/ fallback, the phase 15/5 consumption
+  wiring) plus one REAL render end-to-end: a local review of
+  working-tree changes touching an incident path, on an
+  isolated db, asserting the =/[1 incident]/= file tag, the
+  =(risk: 1 incident)= hunk badge, the analysis entry count
+  and the dossier incident list — 240/240 green;
+  =code-review-autoloads.el= regenerated with
+  =loaddefs-generate= (it had been stale since phase 15c,
+  missing registry/testimpact/coupling entirely); compile 0
+  errors/warnings; eln purged; live daemon probed with
+  bounded function-level checks on a /tmp fixture repo (parse,
+  keyword match, the trailer scan, =--file-tag= on touched and
+  untouched paths, the post-hook default patched into the
+  daemon's live value).  The render-level verification ran in
+  BATCH on purpose: a daemon local-review render would write
+  a LOCAL row into the real db (replacing any active local
+  review) and =--detect= could =y-or-n-p= in the user's frame.
+- Dogfood next (phase 23): run
+  =M-x code-review-install-conventions= on this repo when the
+  criteria phases land, so the AGENTS.md block documents a
+  discipline this repo actually lives.
 
 * Phase 23 — Solo criteria loop (local diff enforcement)    :STATUS:todo:
 

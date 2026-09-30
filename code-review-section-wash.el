@@ -46,6 +46,7 @@
 (require 'code-review-hunkhighlight)
 (require 'code-review-history)
 (require 'code-review-testimpact)
+(require 'code-review-registry)
 
 (declare-function code-review-section-insert-comment "code-review-section-comment")
 (declare-function code-review-comment-insert-reactions "code-review-reactions")
@@ -237,6 +238,12 @@ this is non-nil."
       (when (code-review-testimpact--file-tag-for clean-path)
         (insert (propertize "  [CI-GAME]"
                             'font-lock-face 'font-lock-warning-face)))
+      ;; phase 22: incident count on the file heading (permanent
+      ;; review heat from the incident registry)
+      (when-let ((itag (code-review-registry--file-tag clean-path)))
+        (insert (propertize (format "  %s" itag)
+                            'font-lock-face
+                            'code-review-delicate-hunk-face)))
       (when long-status
         (insert (format " (%s)" long-status)))
       (magit-insert-heading)

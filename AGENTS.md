@@ -38,6 +38,7 @@ discovered.
 | `code-review-hunkhighlight.el` | phase 10 + 20: tree-sitter semantic hunk faces (reusable on any magit diff buffer) — the ENGINE: reconstruct, parse, merge the general/test/security/BEACON query lists with per-entry condition-range classification (`--entry-conds`/`--entry-face`), the flat `--cache-key`, the treesit-optional `--region`, `--apply` overlays |
 | `code-review-hunkhighlight-queries.el` | the per-language treesit query VOCABULARIES + faces: general (phase 10), test-file, security source/sink lists (phase 20a; sparse by design), and the phase 20b BEACON list (conditions captured as @_cond, comparison operators and literals in `(STRONG . DIM)` cons mappings: strong inside conditions and in test files, dim outside) |
 | `code-review-hunkhighlight-intraline.el` | phase 20c: intra-line changed-token marks — grammar-free tokenizer, token-LCS alignment, raw-hunk `-`/`+` block pairing, underline face on exactly the changed tokens of modified added lines (line/token caps; pure-add and whitespace-only pairs unmarked) |
+| `code-review-registry.el` | phase 22 incident registry: commit TRAILERS (Incident/Invariant-Ref/Regression-Test/Paths) are the source of truth, the `incidents/` markdown is GENERATED from them (`code-review-registry-generate`); one bounded `git log` trailer scan + byte-capped `incidents/*.md` fallback, cached per (REPO . HEAD); incident paths feed the phase 15 hunk badge (`:incidents` score ingredient, `N incident(s)` reason) and `[N incident(s)]` file-heading tags, the phase 5 dead-code never-flag, and the phase 16 dossier jump lines; keyword detection (`code-review-registry--detect` in `code-review-post-hook`) prompts ONCE per PR to tag the review (`code-review-incident-tag`: PR-prefilled paths, submission chain); `code-review-install-conventions` appends the idempotent sentinel-marked AGENTS.md block |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
@@ -713,3 +714,28 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   worktree.  The Execute shield wants ONE git invocation per
   call: build the fixture with a single heredoc fast-import
   spanning ALL commits.
+- A truthy cache-miss SENTINEL inside `or` short-circuits the
+  compute and LEAKS the symbol to every consumer (phase 22):
+  `(or (gethash key cache 'missing) (compute-and-store ...))`
+  never falls through — the cache hands back `'missing` itself
+  and downstream `dolist`/`gethash` die with
+  `wrong-type-argument listp missing`, or worse, an
+  `ignore-errors` upstream swallows it into a silent nil (the
+  file-tag bug: nil tag, no error, no clue).  Use a two-step
+  `(let ((cached (gethash key cache 'missing))) (if (eq
+  cached 'missing) (compute-and-store) cached))` whenever the
+  cached value may legitimately be nil.
+- A text block ending in a newline splits into a trailing
+  EMPTY line (phase 22): `--parse-trailers` rejected every
+  well-formed commit message because the final `""` element
+  fell into the `t` branch and nulled the ok flag.  Split with
+  OMIT-NULLS (`(split-string s "\n" t)`) whenever empty lines
+  are not data — folded-continuation parsers still work,
+  whitespace-led continuation lines are non-empty.
+- `code-review-section--setup-worktree` gates on
+  `code-review-repo-enable`: a render-level test that binds it
+  nil (copied from a db-only end-to-end) gets NO worktree, so
+  the analysis engine, hunk badge, incident registry tag and
+  dossier all silently render nothing.  Render-level tests
+  need it at its default `t`; db-field-only tests bind it nil
+  to skip the worktree setup.
