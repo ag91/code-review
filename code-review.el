@@ -3,7 +3,7 @@
 ;; Copyright (C) 2021 Wanderson Ferreira
 ;;
 ;; Author: Wanderson Ferreira <https://github.com/wandersoncferreira>
-;; Maintainer: Wanderson Ferreira <wand@hey.com>
+;; Maintainer: Andrea <andrea-dev@hotmail.com>
 ;; Created: October 14, 2021
 ;; Version: 0.0.7
 ;; Keywords: git, tools, vc
@@ -81,6 +81,7 @@
     code-review-section-insert-pr-description
     code-review-section-insert-feedback-heading
     code-review-section-insert-top-level-comments
+    code-review-section-insert-criteria
     code-review-section-insert-analysis
     code-review-section-insert-review-order)
   "Hook run to insert sections into a code review buffer."
@@ -123,7 +124,18 @@ OUTDATED."
 ;;;###autoload
 (defun code-review-start (url)
   "Start review given PR URL."
-  (interactive "sURL to review: ")
+  (interactive
+   (list
+    (cond
+     ((ignore-errors (code-review-utils-pr-from-url (car kill-ring))) (car kill-ring))
+     ((ignore-errors (code-review-utils-pr-from-url (gui-get-selection))) (gui-get-selection))
+     (t (let ((url (read-string "URL to review: ")))
+          (condition-case err
+              (progn
+                (code-review-utils-pr-from-url urk)
+                url)
+            (error
+             (message "Not a valid url" err))))))))
   (let ((code-review-section-full-refresh? t))
     (code-review-auth-source-debug)
     (code-review-utils-build-obj-from-url url)

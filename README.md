@@ -49,6 +49,56 @@ The basic workflow:
 - `r s f` to enable transient and Set a feedback
 - `r a` to approve the PR | `r r` to reject the PR | `r c` to add comments in the PR
 
+# Solo criteria loop (local reviews)
+
+When you review your own changes (`M-x code-review-review-local-diff`), the
+package can show you the REQUIREMENTS that govern the diff, so you judge
+conformance to intent — not just style. Requirements live under `specs/` as
+markdown, one per file, in EARS shape (`WHEN ... THE SYSTEM SHALL ...`), with a
+stable date-numbered id in the file name:
+
+```markdown
+---
+paths: [lib/payments.py]
+---
+WHEN a change touches the payment export
+THE SYSTEM SHALL keep the export pure (no network calls).
+```
+
+In a local review, a `Criteria (solo loop)` section renders next to the diff
+with every requirement whose `paths:` cover the changed files:
+
+- `RET` on a requirement row cycles its verdict: `[ ]` pending -> `[x]`
+  satisfied -> `[!]` violated. Your own reading aid — nothing is submitted.
+- `RET`/click on the req id jumps to the criteria file in the worktree.
+- No requirement covers the change? `warn` mode (the default) shows a banner
+  inviting `M-x code-review-criteria-insert-template`, which drafts a new
+  criteria file (paths prefilled from your diff) and visits it in another
+  window. `M-x code-review-criteria-draft` additionally calls
+  `code-review-criteria-generate-function` (FILE PATHS) when wired — point it
+  at your LLM/agent of choice to draft the EARS sentence for you to review.
+- `code-review-criteria-required` = `require` refuses to open a local review
+  for uncovered changes at all.
+
+Criteria files count before you commit them (tracked and
+untracked-but-not-ignored), so the loop works while drafting. Every
+requirement binds to its guard test: the req id goes into the ERT test name
+(`file/req-<id>-description`) so traceability holds forever.
+
+### Playing with issue trackers (Jira, etc.): no duplication
+
+A ticket is the CONVERSATION (context, negotiation, priority); the `specs/`
+file is the INVARIANT (the thing future reviews judge the code against). The
+ticket may rot — the spec may not. So the reference points one way: translate
+the ticket's acceptance criteria into one durable EARS sentence when you
+insert the template, keep at most a pointer (`refs: JIRA-123` in the front
+matter, or the `Invariant-Ref: <req id>` commit trailer) in the ticket's
+direction, and never maintain the same requirement in two places — two copies
+drift apart, and the drift is invisible until one is wrong.
+
+The loop is deliberately solo-first: it lives entirely in your local review
+and your working tree, so you can use it fully without team adoption.
+
 You can include your own bindings to functions like
 `code-review-set-feedback`, `code-review-submit-approve`,
 `code-review-submit-request-changes`, and `code-review-submit-comments` to not rely on the

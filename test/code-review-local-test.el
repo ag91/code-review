@@ -253,7 +253,11 @@ and fall back to the working tree.  The deferred chain is pumped
 until its db write lands and the queue drains, so nothing async
 survives the test's db reset."
   (let ((repo (code-review-local-test--make-repo))
-        (code-review-repo-enable nil))
+        (code-review-repo-enable nil)
+        ;; hermetic: no async history-harvest child whose sentinel
+        ;; would re-render THIS buffer mid-chain (the re-render
+        ;; deletes the LOCAL row and stalls the deferred chain)
+        (code-review-history-enabled nil))
     (code-review-test--with-db
       (let ((default-directory repo))
         (code-review-local-test--with-magit-buffer

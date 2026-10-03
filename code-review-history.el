@@ -351,9 +351,22 @@ code-review-history-max-commits %S) \
           (with-current-buffer buffer
             ;; the user may have opened another PR while the
             ;; harvest ran: re-assert this buffer's PR before
-            ;; re-rendering (the db pullreq id is a global)
-            (code-review--sync-db-pullreq)
-            (code-review--trigger-hooks (buffer-name))))))))
+            ;; re-rendering (the db pullreq id is a global).  A
+            ;; re-render whose PR row no longer exists (deleted
+            ;; meanwhile — a fresh LOCAL render deletes the
+            ;; previous LOCAL row) is LOGGED, never signaled
+            ;; into the process sentinel: a sentinel error is
+            ;; asynchronous and lands wherever the user happens
+            ;; to be
+            (condition-case err
+                (progn
+                  (code-review--sync-db-pullreq)
+                  (code-review--trigger-hooks (buffer-name)))
+              (error
+               (code-review-utils--log
+                "code-review-history"
+                (format "history re-render failed, skipping: %s"
+                        (error-message-string err)))))))))))
 
 (defun code-review-history-data (worktree &optional buffer)
   "Cached harvest data plist for WORKTREE's repository.

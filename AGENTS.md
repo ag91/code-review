@@ -39,6 +39,8 @@ discovered.
 | `code-review-hunkhighlight-queries.el` | the per-language treesit query VOCABULARIES + faces: general (phase 10), test-file, security source/sink lists (phase 20a; sparse by design), and the phase 20b BEACON list (conditions captured as @_cond, comparison operators and literals in `(STRONG . DIM)` cons mappings: strong inside conditions and in test files, dim outside) |
 | `code-review-hunkhighlight-intraline.el` | phase 20c: intra-line changed-token marks — grammar-free tokenizer, token-LCS alignment, raw-hunk `-`/`+` block pairing, underline face on exactly the changed tokens of modified added lines (line/token caps; pure-add and whitespace-only pairs unmarked) |
 | `code-review-registry.el` | phase 22 incident registry: commit TRAILERS (Incident/Invariant-Ref/Regression-Test/Paths) are the source of truth, the `incidents/` markdown is GENERATED from them (`code-review-registry-generate`); one bounded `git log` trailer scan + byte-capped `incidents/*.md` fallback, cached per (REPO . HEAD); incident paths feed the phase 15 hunk badge (`:incidents` score ingredient, `N incident(s)` reason) and `[N incident(s)]` file-heading tags, the phase 5 dead-code never-flag, and the phase 16 dossier jump lines; keyword detection (`code-review-registry--detect` in `code-review-post-hook`) prompts ONCE per PR to tag the review (`code-review-incident-tag`: PR-prefilled paths, submission chain); `code-review-install-conventions` appends the idempotent sentinel-marked AGENTS.md block |
+| `code-review-criteria.el` | phase 23 criteria engine: criteria files (default `specs/*.md`, EARS shape, stable date-numbered req IDs `YYYY-MM-DD-NNN`) matched against a change's paths; ONE bounded `git ls-files --cached --others --exclude-standard` pass (criteria are drafted BEFORE the commit, so untracked-but-not-ignored files count; output UNSORTED); `--covers-p` declared exact/parent-dir match with undeclared text/base-name fallback (declared-but-uncovering never falls back); `--enforce-local` (`criteria-required`: nil/warn/require, require REFUSES the local review); the EARS `--template`/`insert-template` (paths prefilled from the diff) and `criteria-draft` calling the soft `criteria-generate-function` AI hook (never implemented by the mode) |
+| `code-review-section-criteria.el` | phase 23 criteria CHECKLIST section (local reviews only, a reading aid — nothing submitted): per-item section class with a `req` slot, `RET` cycling `[ ]/[x]/[!]` in place, id jump buttons, covered paths, and the warn banner when no criteria cover the change |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
@@ -739,3 +741,137 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   dossier all silently render nothing.  Render-level tests
   need it at its default `t`; db-field-only tests bind it nil
   to skip the worktree setup.
+- `git ls-files --cached --others --exclude-standard` output
+  is UNSORTED (the tracked group, then the untracked group,
+  each in internal order): any test or consumer that expects
+  a deterministic order must compare `sort`ed copies of the
+  list (the phase 23 criteria scan test bit on exactly this).
+- Rendering a LOCAL review spawns the phase 14 async
+  history-harvest child, and its process sentinel later
+  RE-RENDERS the review buffer: if a subsequent test has reset
+  the db by then, rendering a second LOCAL review DELETES the
+  previous LOCAL row (the local key is unique), the re-render
+  reads a nil pullreq, and `oref` on nil signals from inside
+  the sentinel — killing the whole batch suite at a test that
+  passes in isolation.  Two lessons: a process sentinel must
+  NEVER signal (async errors land wherever the user happens to
+  be — wrap the sentinel body in `condition-case` and log), and
+  a render-level ERT test must be HERMETIC: bind
+  `code-review-history-enabled` nil inside it (no harvest child
+  at all) and `kill-buffer` the review buffer at test end so
+  nothing async outlives the db reset.
+- Deeply nested trailing-closer edits (appending a form at the
+  end of a long `let*` test body) are the classic hand-count
+  trap AGAIN: two of three kill-buffer insertions landed wrong
+  by eye and only the awk net-opener/closer count +
+  `check-parens` settled it.  Never balance closers by
+  counting — assert the net count per region with awk and let
+  `check-parens` be the verdict.
+- Regenerating an INSTALLED package's autoloads with a bare
+  `(loaddefs-generate DIR OUT ...)` call breaks the next fresh
+  Emacs restart (this bit for real): package.el's own
+  `package-generate-autoloads` passes EXTRA-DATA (the 4th
+  argument) — a printed
+  `(add-to-list 'load-path (or (and load-file-name ...)))`
+  form — and `loaddefs-generate` inserts that string ONLY when
+  the output file is created FRESH; in update mode (file
+  exists, `generate-full` nil) it reads the existing file and
+  silently DROPS extra-data.  A regenerated file that was
+  written without the form looks identical, registers every
+  autoload symbol — and on restart `package-activate-1` loads
+  it by absolute path without the dir on `load-path`, so
+  helm-M-x happily offers the commands and executing one dies
+  with "Cannot open load file: No such file or directory,
+  code-review".  The daemon kept working the whole time because
+  its `load-path` was set at ITS startup with the OLD file —
+  the failure only surfaces on a fresh start.  Regenerate the
+  package.el way: delete the old file first, then
+  `(package-generate-autoloads "code-review" PKG-DIR)`, and
+  VERIFY the `add-to-list` form is present in the result
+  before moving on.
+- The section class's `keymap` slot DOES route keys: magit 4.x
+  applies it (EVALUATED) over the section's text at render time.
+  What breaks keys is the MARKER REWRITE: `replace-match` writes
+  the new text with NO properties — losing BOTH the `magit-section`
+  MATCHER property (then `magit-current-section` at the rewritten
+  text falls to the root and the command silently no-ops) and the
+  routing keymap.  Capture `(text-properties-at BEG)` before
+  `replace-match` and `set-text-properties` the whole region back
+  after (then overlay the new state's face).  And the ERT test
+  must press the actual key — `(execute-kbd-macro "\r")` at point
+  ON the rewritten marker, not just call the command: a direct
+  call proves the command, not the routing, and ships broken keys
+  green.
+- A symbol-valued `keymap` TEXT PROPERTY is INERT (neither
+  `key-binding` nor the command loop resolves it): the value must
+  be the EVALUATED keymap object
+  (`(propertize TEXT 'keymap MAP-VARIABLE)` — the variable, not
+  `'MAP-VARIABLE`).  Diagnostic: the neighbors carry
+  `(keymap (13 . ...))` (evaluated, routes) while the broken chars
+  carry the bare symbol.  The phase-1 header sections propertize
+  with `'code-review-*-section-map` SYMBOLS — their RET bindings
+  are likely silently dead the same way (not yet fixed; flagged,
+  see Improvements.org phase 23 postscript).
+- `propertize` (and plist consumers) take KEY-VALUE pairs: a
+  helper spreading extra PROPS must `(apply #'propertize TEXT
+  'keymap MAP PROPS)`.  Passing `PROPS` as one argument leaves
+  an ODD-length plist, `put-text-property` gets the list as the
+  property NAME, signals `wrong-type-argument symbolp` — and
+  the render chain's condition-case reports it as "Got an error
+  from your VC provider", the documented false signature of an
+  engine error killing the render.
+- Any ERT test whose expectation embeds a date-numbered id
+  generated from TODAY (criteria req ids, incident ids) must
+  compute the date: `(format-time-string "%Y-%m-%d")`.  A
+  hardcoded date passes on the day the test is written and
+  fails the next day (the criteria draft test bit exactly so:
+  green on 2026-10-01, red on 2026-10-02 with zero source
+  changes).
+- A render-level ERT test must be BOTH hermetic AND leak-proof,
+  or its failure poisons LATER tests: (a) hermetic — bind
+  `code-review-history-enabled` nil so no async harvest child is
+  spawned (its sentinel's re-render of a LOCAL review DELETES the
+  current LOCAL row, stalling a later test's deferred chain with
+  "raw-diff missing" while logging "history re-render failed");
+  (b) leak-proof — wrap the assertion phase in
+  `unwind-protect` and `kill-buffer` the review buffer in the
+  cleanup, because an assertion failure otherwise leaks the
+  buffer, and the same sentinel re-render then deletes whatever
+  LOCAL row the LATER test is mid-flight on.  The sentinel's
+  `condition-case` (already in place) only stops the batch CRASH;
+  it does not stop the row-deletion side effect.
+
+<!-- code-review-conventions v1 -->
+
+## Code review conventions
+
+### Incident registry
+
+- Every production incident leaves a REGISTRY ENTRY under
+  `incidents/` and a regression test.  Entries are GENERATED
+  from commit trailers (`M-x code-review-registry-generate`) —
+  never hand-curated; edit only the human body below the
+  front matter.
+- Fix commits carry the trailers:
+  `Incident: <year-numbered id>`, `Invariant-Ref: <req id>`,
+  `Regression-Test: <test names>`, `Paths: <files the incident
+  touched>`.
+- Changes touching incident paths get ELEVATED review
+  attention (delicacy badge, dossier incidents, review
+  budget).
+
+### Criteria (requirements)
+
+- Criteria live under `specs/` as markdown, one requirement
+  per file, EARS/Gherkin shape (`WHEN ... THE SYSTEM SHALL
+  ...`), with a stable date-numbered req id in the file name.
+- Every requirement binds to its guard tests: the req id
+  appears in the ERT test name (`file/req-<id>-description`)
+  or the test docstring.
+
+### If you are an AI agent working in this repository
+
+- Author registry entries, criteria files and test tags
+  yourself, in the formats above, as part of the change.
+- PRs touching incident paths get elevated review attention.
+<!-- end code-review-conventions v1 -->

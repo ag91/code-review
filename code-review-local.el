@@ -36,6 +36,7 @@
 (require 'code-review-utils)
 (require 'code-review-interfaces)
 (require 'code-review-section)
+(require 'code-review-criteria)
 
 (declare-function code-review--build-buffer "code-review-section")
 
@@ -164,6 +165,11 @@ stops responding to G (full reload)."
                  (magit-git-output "diff" "--no-color" diff-args))))
     (if (or (not diff) (string-empty-p diff))
         (message "code-review: no local changes (git diff %s)" diff-args)
+      ;; phase 23: REQUIRE mode — the local review refuses to open
+      ;; until at least one criteria file covers the touched area
+      ;; (the change's REQUIREMENTS must exist before the diff is
+      ;; worth reading)
+      (code-review-criteria--enforce-local root diff)
       (let ((code-review-section-full-refresh? t))
         (code-review-local--cleanup-rows)
         (code-review-db--pullreq-create

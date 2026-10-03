@@ -49,7 +49,7 @@ Paths: src/payments/export.py
 
 ;;; Trailer parsing (git's own rule: last paragraph only)
 
-(ert-deftest code-review-registry/parse-trailers ()
+(ert-deftest code-review-registry/req-2026-10-01-002-parse-trailers ()
   ;; the last paragraph, all `Key: value' lines
   (should (equal (code-review-registry--parse-trailers
                   "Fix the export race
@@ -215,7 +215,7 @@ body
 
 ;;; Detection (keywords, once per PR)
 
-(ert-deftest code-review-registry/keyword-detection ()
+(ert-deftest code-review-registry/req-2026-10-01-005-keyword-detection ()
   (should (code-review-registry--keyword-match-p "Fix outage in payments"))
   (should (code-review-registry--keyword-match-p "chore" "cleanup after SEV1"))
   (should (code-review-registry--keyword-match-p "CVE-2026-1234 fixed"))
@@ -225,12 +225,12 @@ body
 
 ;; `--detect' is a no-op in batch emacs (no interactive prompt can
 ;; fire from a render inside a test or a daemon script)
-(ert-deftest code-review-registry/detect-batch-noop ()
+(ert-deftest code-review-registry/req-2026-10-01-005-detect-batch-noop ()
   (should-not (code-review-registry--detect)))
 
 ;;; Conventions installer (idempotent, sentinel-marked)
 
-(ert-deftest code-review-registry/conventions-install-idempotent ()
+(ert-deftest code-review-registry/req-2026-10-01-008-conventions-idempotent ()
   (let* ((dir (make-temp-file "cr-registry-conventions-" t))
          (file (expand-file-name "AGENTS.md" dir)))
     (with-temp-file file (insert "# Project\n\nSome rules.\n"))
@@ -250,7 +250,7 @@ body
 
 ;;; Git integration: the trailer scan, generation, cache
 
-(ert-deftest code-review-registry/log-incidents ()
+(ert-deftest code-review-registry/req-2026-10-01-001-log-incidents ()
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py" . "def export():\n    pass\n"))))))
@@ -263,7 +263,7 @@ body
     (should (equal (plist-get (car incidents) :paths)
                    '("src/payments/export.py")))))
 
-(ert-deftest code-review-registry/generate-writes-and-preserves ()
+(ert-deftest code-review-registry/req-2026-10-01-003-generate-preserves ()
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py" . "def export():\n    pass\n"))))))
@@ -288,7 +288,7 @@ body
         (insert-file-contents file)
         (should (search-forward "Postmortem notes by a human." nil t))))))
 
-(ert-deftest code-review-registry/cache-invalidated-by-new-commit ()
+(ert-deftest code-review-registry/req-2026-10-01-004-cache-invalidation ()
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py" . "def export():\n    pass\n")))))))
@@ -334,7 +334,7 @@ body
 
 ;;; Consumption wiring
 
-(ert-deftest code-review-registry/hunk-entry-incident-heat ()
+(ert-deftest code-review-registry/req-2026-10-01-006-hunk-entry-heat ()
   ;; incidents are permanent review heat: a single incident clears
   ;; the phase 15 delicacy threshold on its own, and the badge
   ;; carries the incident count.  The added line is definition-free
@@ -366,7 +366,7 @@ body
       (should-not (code-review-analysis--hunk-reasons entry3))
       (should-not (code-review-analysis--hunk-badge entry3)))))
 
-(ert-deftest code-review-registry/dead-never-flags-incident-paths ()
+(ert-deftest code-review-registry/req-2026-10-01-007-dead-never-flags ()
   ;; phase 5: an incident-touched path is never reported possibly
   ;; dead — an unreferenced definition there is heat, not death
   (let* ((refs (make-hash-table :test #'equal))
@@ -411,7 +411,7 @@ body
 
 ;;; End-to-end: a local review render of an incident-shaped change
 
-(ert-deftest code-review-registry/local-review-renders-incident-heat ()
+(ert-deftest code-review-registry/req-2026-10-01-006-render-incident-heat ()
   "A local review of working-tree changes touching an incident
 path renders the incident count on the file heading, the
 incident reason in the hunk delicacy badge, and feeds the
@@ -420,7 +420,10 @@ one real render, on an isolated db)."
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py"
-                               . "def export():\n    return 1\n")))))))
+                               . "def export():\n    return 1\n"))))))
+         ;; hermetic: no async history-harvest child whose sentinel
+         ;; would re-render this buffer AFTER the test's db reset
+         (code-review-history-enabled nil))
     ;; working-tree change on the incident path: the review's diff
     (with-temp-file (expand-file-name "src/payments/export.py" repo)
       (insert "def export():\n    return 2\n"))
@@ -444,7 +447,7 @@ one real render, on an isolated db)."
        (unless buf
          (ert-fail "local review render did not produce the \
 incident file tag"))
-       (with-current-buffer buf
+       (unwind-protect (with-current-buffer buf
          ;; file heading: the incident count tag
          (goto-char (point-min))
          (should (search-forward "[1 incident]" nil t))
@@ -463,4 +466,8 @@ incident file tag"))
              (should (= 1 (length (plist-get dossier :incidents))))
              (should (equal (plist-get (car (plist-get dossier :incidents))
                                        :id)
-                            "2026-047")))))))))
+                            "2026-047")))))
+       ;; leave no review buffer behind for later tests, EVEN ON
+       ;; FAILURE: a leaked buffer's async sentinel re-render can
+       ;; delete the current LOCAL row and stall later tests
+       (kill-buffer buf))))))

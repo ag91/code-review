@@ -60,6 +60,7 @@
 (require 'code-review-section-shared)
 (require 'code-review-section-header)
 (require 'code-review-section-analysis)
+(require 'code-review-section-criteria)
 (require 'code-review-section-comment)
 (require 'code-review-section-wash)
 

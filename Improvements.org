@@ -3500,7 +3500,121 @@ truth, the markdown registry is generated.
   criteria phases land, so the AGENTS.md block documents a
   discipline this repo actually lives.
 
-* Phase 23 — Solo criteria loop (local diff enforcement)    :STATUS:todo:
+* Phase 23 — Solo criteria loop (local diff enforcement)    :STATUS:done:
+** Done (2026-10-01)
+
+- Shipped =code-review-criteria.el= (~430 lines): defcustoms
+  (=criteria-file-regexp= =\`\(?:specs?\|requirements?\)/.+\.\(?:md\|feature\)\''=,
+  dir, =criteria-required= nil/warn/require with warn the
+  default, =criteria-generate-function= the soft AI hook the
+  MODE calls but never implements, byte/entry caps); pure parts
+  (=--id-from-file= date-numbered
+  =YYYY-MM-DD-NNN= stem heads, =--split-front-matter=
+  reusing the registry parser, =--sentence= first-paragraph
+  join, =--requirement-from-text=); ONE bounded =git ls-files
+  --cached --others --exclude-standard= pass (criteria are
+  drafted BEFORE the commit, so untracked-but-not-ignored
+  files count — and its output is UNSORTED, see the gotcha);
+  =--covers-p= (declared exact/parent-dir match, else
+  undeclared text/base-name mention, declared-but-uncovering
+  never falls back); =--matching= sorted oldest-id-first;
+  =--enforce-local= (require mode REFUSES via user-error,
+  warn mode silent); the EARS template +
+  =code-review-criteria-insert-template= (PATHS PREFILLED
+  from the review's own changed files) +
+  =code-review-criteria-draft= calling the optional hook with
+  =(FILE PATHS)=, hook result used verbatim, no hook = the
+  skeleton only.
+- Shipped =code-review-section-criteria.el= (~190 lines): the
+  "Criteria" section family member, LOCAL reviews only (the
+  section is a READING aid: nothing is submitted — phase 24
+  binds verdicts); per-item section class with a =req= slot
+  and a keymap (=RET= cycles pending -> satisfied -> violated
+  -> pending, rewriting =[ ]/[x]/[!]= in place, state kept in
+  a buffer-local hash), id jump buttons, covered paths on the
+  item, and the WARN banner when NO criteria cover the change
+  (=M-x code-review-criteria-insert-template= offered).
+- Wiring: =code-review-sections-hook= default grew
+  =code-review-section-insert-criteria= BEFORE the analysis
+  section; =code-review-review-local-diff= enforces via
+  =--enforce-local ROOT DIFF= in its else-branch (before any
+  row creation, reusing the diff text the entry already
+  computed).
+- DOGFOOD shipped: 14 criteria files under this repo's own
+  =specs/= (001-008 bind the phase 22 behaviors, 009-014 bind
+  phase 23's own, EARS sentences with front-matter =paths:=),
+  the 10 bound phase-22 ERT tests renamed with
+  =req-2026-10-01-00N= segments, the phase 23 tests born
+  tagged, and =code-review-install-conventions= run on THIS
+  repo (the AGENTS.md block now documents criteria the repo
+  actually lives).
+- Verification: =check-parens= every touched file;
+  =make compile= 0 errors; =make test= 248/248; eln purge +
+  autoloads regenerated (=criteria.el='s cookies picked up);
+  daemon reload + bounded probes (14 criteria, registry-touch
+  -> phase 22 reqs, criteria-touch -> phase 23 reqs, next id
+  015, warn mode, sections hook patched).  Two latent bugs
+  found by the suite: the async history-harvest sentinel
+  re-rendered a LEAKED test buffer after a later test reset
+  the db (rendering a second LOCAL review deletes the previous
+  row -> nil pr -> =oref= on nil, killing the batch run) — the
+  sentinel is now =condition-case=d (logged, never signaled
+  into the user's frame), and the render e2e tests are
+  hermetic (=code-review-history-enabled= nil + =kill-buffer=
+  at test end, so no harvest child and no leaked buffer
+  survives the db reset).
+- README documents the solo criteria loop (usage workflow, the
+  no-duplication ticket relationship, the solo-first scoping).
+- POSTSCRIPT (2026-10-02): the autoloads regeneration in the
+  phase 22/23 protocol broke the next fresh Emacs restart: my
+  =(loaddefs-generate DIR OUT nil nil nil t)= call dropped
+  package.el's 4th EXTRA-DATA argument — the embedded
+  =(add-to-list 'load-path ...)= self-registration — because
+  I did not know =package-generate-autoloads= passes it.
+  Symptom: after restart the package's commands were offered
+  (autoload symbols registered) but executing one died with
+  "Cannot open load file: No such file or directory,
+  code-review" (the dir never landed on =load-path=;
+  package-activate-1 loads the autoloads file by absolute
+  path).  The daemon hid the bug: its own =load-path= was set
+  at its startup with the OLD file.  FIXED by regenerating the
+  package.el way (delete the file first — update mode drops
+  extra-data — then =(package-generate-autoloads
+  "code-review" DIR)=); verified in a fresh batch
+  =(package-initialize)= probe (dir on =load-path=,
+  =(require 'code-review)= OK) and documented as an AGENTS.md
+  gotcha.
+- POSTSCRIPT 2 (2026-10-02/03): dogfooding the checklist caught
+  the RET cycling broken in the live buffer — and the first
+  diagnosis was WRONG (kept here as the lesson): the class
+  =keymap= slot DOES route keys (magit 4.x applies it,
+  evaluated, over the section's text at render).  The real
+  bugs, found by =execute-kbd-macro= keypress tests +
+  property dumps: (a) =replace-match= rewrites the marker with
+  NO properties, losing BOTH the =magit-section= MATCHER
+  property (=magit-current-section= then falls to the root and
+  the toggle silently no-ops) and the routing keymap — fixed by
+  capturing =text-properties-at= before the rewrite and
+  =set-text-properties= the region back after (plus the new
+  state's face); (b) a SYMBOL-valued =keymap= text property is
+  INERT — the value must be the EVALUATED keymap object (the
+  same latent bug sits in the phase-1 header sections'
+  propertize calls, flagged, not yet fixed); (c) the render
+  e2e tests must be BOTH hermetic (=code-review-history-enabled=
+  nil — the async harvest sentinel's re-render DELETES the
+  current LOCAL row and stalls a later test's deferred chain)
+  AND leak-proof (=unwind-protect= + =kill-buffer=: an
+  assertion failure otherwise leaks the buffer and the same
+  sentinel re-render deletes whatever LOCAL row a LATER test is
+  mid-flight on; the sentinel's =condition-case= stops the
+  batch crash but not the row-deletion side effect); (d) a
+  date-dependent ERT expectation (hardcoded req id date,
+  green on day one, red the next morning).  Also caught: an
+  odd-length plist into =propertize= (a list as the property
+  name -> =symbolp= error -> "Got an error from your VC
+  provider", the false forge-error signature).  All fixed;
+  248/248 with the keypress tests; documented as AGENTS.md
+  gotchas.
 
 RELEVANCE (preamble): implements the REVIEWED-BY-A-HUMAN-
 ONCE side at the place every user controls end-to-end:
