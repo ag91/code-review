@@ -840,6 +840,27 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   LOCAL row the LATER test is mid-flight on.  The sentinel's
   `condition-case` (already in place) only stops the batch CRASH;
   it does not stop the row-deletion side effect.
+- ghub 5.1 semantics (the mention fix, 2026-10-07): a
+  callback-less `ghub-query` is ASYNC by default — it returns nil
+  immediately and the answer is dropped (`ghub--retrieve` uses
+  `url-retrieve` unless `:synchronous t`).  With `:synchronous t`
+  the return is the single `(data CONTENTS)` PAIR, NOT the full
+  response alist older ghub returned: an old let-alist `.data`
+  reader silently reads nil (the `C-c @` @mention completion
+  listed no users for exactly this reason).  Unwrap with
+  `(cdr res)`.  And beware the fixture trap: the sync return
+  PRINTS as `(data (repository ...))` with the data contents
+  spliced as elements — writing an ERT stub that QUOTES the
+  contents wrapped (`'(data ((repository ...)))`) adds one list
+  level, `assq` then walks into the wrong level, and every test
+  against the stub reports empty with no error anywhere (the
+  first version of the mention tests failed both on exactly
+  this).  Stub the spliced shape: `'(data (repository ...))`.
+- Chunk-probing paren balance with byte ranges: `insert-file-contents`
+  with BEG/END takes BYTE offsets into the file, not line numbers —
+  convert a 1-based line position with a `(1- ...)` guard (or
+  `position-bytes`), or the chunk drops its first line and a
+  broken chunk "passes" while the file fails check-parens.
 
 <!-- code-review-conventions v1 -->
 

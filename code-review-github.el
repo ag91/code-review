@@ -900,10 +900,63 @@ For GitHub, use line/side and optional start_line/start_side for comments."
                :errorback #'code-review-github-errback
                :callback callback)))
 
+(defun code-review-github--graphql-data (res)
+  "The `data' contents of a synchronous `ghub-query' result RES.
+ghub 5.1 returns the single `(data CONTENTS)' pair, NOT the alist
+older ghub returned, so the old `.data' let-alist reads silently
+read nil (every GraphQL feature that used the return value listed
+nothing — the mention completion showed no users)."
+  (if (and (listp res) (eq (car-safe res) 'data))
+      (cdr res)
+    res))
+
+(defun code-review-github--path (data path)
+  "Resolve the symbol PATH (e.g. (repository assignableUsers)) in DATA.
+nil when any component is absent (a repository whose owner is no
+organization has a null `organization')."
+  (while (and data path)
+    (setq data (cdr (assq (pop path) data))))
+  data)
+
+(defun code-review-github--fetch-connection (github query variables path)
+  "All nodes of the paginated GraphQL connection at PATH for GITHUB.
+QUERY is the GraphQL query string; VARIABLES the first page's
+variables (the $cursor variable pages from one page's endCursor
+to the next); PATH the symbol path to the connection (e.g.
+(repository assignableUsers) or (organization membersWithRole)).
+The nodes are appended across pages; nil when the connection is
+absent or empty.  The call is `:synchronous t': WITHOUT it,
+ghub-query fires the request asynchronously and returns nil
+immediately (ghub 5.1) — the caller would read an empty answer."
+  (let ((has-next-page t)
+        cursor res)
+    (while has-next-page
+      (let* ((page (code-review-github--graphql-data
+                    (ghub-query query
+                                (append variables
+                                        (and cursor `((cursor . ,cursor))))
+                                :auth code-review-auth-login-marker
+                                :host code-review-github-graphql-host
+                                :synchronous t)))
+             (connection (code-review-github--path page path))
+             (page-info (cdr (assq 'pageInfo connection))))
+        (setq res (append res (cdr (assq 'nodes connection)))
+              cursor (cdr (assq 'endCursor page-info))
+              has-next-page (cdr (assq 'hasNextPage page-info)))))
+    res))
+
 (cl-defmethod code-review-get-assignable-users ((github code-review-github-repo))
-  "Get a list of assignable users for current PR in GITHUB."
-  (let ((infos (oref github raw-infos))
-        (query "query($repo_owner:String!, $repo_name:String!, $cursor:String) {
+  "Get a list of assignable users for current PR in GITHUB.
+The users GitHub will let you ASSIGN (explicit collaborators;
+organization members that reach the repository through the
+organization are typically NOT here —
+`code-review-get-mentionable-users' is the @mention source).
+Cached in RAW-INFOS as `assignable-users'."
+  (let ((infos (oref github raw-infos)))
+    (or (a-get infos 'assignable-users)
+        (let ((res (code-review-github--fetch-connection
+                    github
+                    "query($repo_owner:String!, $repo_name:String!, $cursor:String) {
    repository(owner: $repo_owner, name: $repo_name) {
      assignableUsers(first: 100, after: $cursor) {
        pageInfo {
@@ -917,25 +970,48 @@ For GitHub, use line/side and optional start_line/start_side for comments."
        }
      }
    }
- }"))
-    (if-let (users (a-get infos 'assignable-users))
-        users
-      (let ((has-next-page t)
-            cursor res)
-        (while has-next-page
-          (let ((graphql-res (ghub-query query
-                                         `((repo_owner . ,(oref github owner))
-                                           (repo_name . ,(oref github repo))
-                                           (cursor . ,cursor))
-                                         :auth code-review-auth-login-marker
-                                         :host code-review-github-graphql-host)))
-            (let-alist graphql-res
-              (setq has-next-page .data.repository.assignableUsers.pageInfo.hasNextPage
-                    cursor .data.repository.assignableUsers.pageInfo.endCursor
-                    res (append res .data.repository.assignableUsers.nodes)))))
-        (oset github raw-infos (a-assoc infos 'assignable-users res))
-        (code-review-db-update github)
-        res))))
+ }"
+                    `((repo_owner . ,(oref github owner))
+                      (repo_name . ,(oref github repo)))
+                    '(repository assignableUsers))))
+          (oset github raw-infos (a-assoc infos 'assignable-users res))
+          (code-review-db-update github)
+          res))))
+
+(cl-defmethod code-review-get-mentionable-users ((github code-review-github-repo))
+  "Get the users @-mentionable in a PR comment in GITHUB.
+The members of the organization the repository belongs to (an
+@mention reaches any of them); the repository's assignable users
+when it belongs to no organization (or the organization lists
+nobody).  Cached in RAW-INFOS as `mentionable-users'."
+  (let ((infos (oref github raw-infos)))
+    (or (a-get infos 'mentionable-users)
+        (let ((res (or (code-review-github--fetch-connection
+                        github
+                        "query($org:String!, $cursor:String) {
+   organization(login: $org) {
+     membersWithRole(first: 100, after: $cursor) {
+       pageInfo {
+         endCursor
+         hasNextPage
+       }
+       nodes {
+         id
+         login
+         name
+       }
+     }
+   }
+ }"
+                        `((org . ,(oref github owner)))
+                        '(organization membersWithRole))
+                       (code-review-get-assignable-users github))))
+          ;; re-read RAW-INFOS at store time: the assignable fallback
+          ;; above may have cached its own entry in between
+          (oset github raw-infos
+                (a-assoc (oref github raw-infos) 'mentionable-users res))
+          (code-review-db-update github)
+          res))))
 
 (cl-defmethod code-review-request-review ((github code-review-github-repo) user-ids callback)
   "Request review for your GITHUB PR from USER-IDS and call CALLBACK afterward."

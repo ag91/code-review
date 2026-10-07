@@ -622,17 +622,21 @@ comment buffer; the helper header is stripped first."
 
 ;;;###autoload
 (defun code-review-input-mention-user-at-point ()
-  "Insert @USERNAME at current point to mention an user."
+  "Insert @USERNAME at current point to mention an user.
+The candidates are the users @-mentionable in this repository:
+the members of the organization the repository belongs to, or
+its assignable users (`code-review-get-mentionable-users')."
   (interactive)
   (let* ((pr (code-review-db-get-pullreq))
-         (user (completing-read
-                "Mention user: "
-                (-map
-                 (lambda (it)
-                   (a-get it 'login))
-                 (code-review-get-assignable-users pr))
-                nil 'require-match)))
-    (insert "@" user " ")))
+         (users (code-review-get-mentionable-users pr)))
+    (if (not users)
+        (user-error "No mentionable users found for this repository")
+      (let ((user (completing-read
+                   "Mention user: "
+                   (sort (-map (lambda (it) (a-get it 'login)) users)
+                         #'string-lessp)
+                   nil 'require-match)))
+        (insert "@" user " ")))))
 
 ;;;###autoload
 (defun code-review-comment-quit ()

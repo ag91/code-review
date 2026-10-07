@@ -3720,6 +3720,70 @@ the ratchet works alone, before any org buy-in.
   existing test, and a seeded criteria edit with no test edit
   is FLAGGED); daemon reload per protocol.
 
+* Fix (2026-10-07) — C-c @ mention completion: ghub 5.1 broke the user fetch
+
+** The bug: @mention completion listed no users
+  =code-review-input-mention-user-at-point= (C-c @ in a *Code
+  Review Comment* buffer) completed against an EMPTY candidate
+  list: no user ever offered.  The db never cached a single
+  ='assignable-users= entry — the fetch had never once
+  completed successfully.
+
+** Root cause: ghub 5.1 changed two contracts at once
+  - A callback-less =ghub-query= is now ASYNC BY DEFAULT:
+    it returns nil immediately (=ghub--retrieve= uses
+    =url-retrieve= unless =:synchronous t=), so the old code
+    read an empty answer and cached nothing.  Verified
+    against the live daemon: without =:synchronous t= the
+    query "succeeds" and returns nil.
+  - With =:synchronous t=, the return is the single
+    =(data CONTENTS)= PAIR, not the full response alist older
+    ghub returned — the old =let-alist .data= reader silently
+    read nil.  Both breaks compound: even after adding
+    =:synchronous t=, the old parser still returned nothing.
+    Live probe with unwrap: =assignableUsers= AND
+    =organization.membersWithRole= both return 100+ users
+    (hasNextPage t) — the data was always there.
+  - Only ONE broken call site in the package: every other
+    =ghub-query= passes a callback (unaffected).  All GraphQL
+    now goes through =code-review-github--fetch-connection=
+    (paginated, =:synchronous t=, unwrap, cursor via endCursor).
+
+** The feature, restored and widened: org members for @mentions
+  - =code-review-get-mentionable-users=: the members of the
+    organization the repository belongs to
+    (=organization(login: $org){ membersWithRole ... }=) — an
+    @mention reaches any of them — falling back to the
+    repository's assignable users when the owner is no
+    organization (assignable users MISS org members who reach
+    the repo through the org, which is why the old source was
+    the wrong list for mentions anyway).
+  - Cached in RAW-INFOS as ='mentionable-users= (re-read at
+    store time: the assignable fallback may have cached its
+    own entry in between); assignable users cached as
+    ='assignable-users=.
+  - The command sorts logins and =user-error=s "No mentionable
+    users found for this repository" instead of hanging on an
+    empty require-match completion.
+
+** Verification
+  - ERT: =test/code-review-mention-test.el= — two-page org
+    members with caching, null-org fallback to assignable,
+    the command inserting the selected login, no-users
+    user-error.  Suite green 252/252.
+  - Fixture gotcha (cost both tests failing on the first
+    run): the sync =(data CONTENTS)= pair PRINTS with the
+    contents spliced — stubs must quote the SPLICED shape
+    ='(data (repository ...))=, not ='(data ((repository
+    ...)))= (one extra list level; assq walks into the wrong
+    level; everything "works" and reports empty).  Recorded
+    in AGENTS.md with the ghub 5.1 semantics.
+  - Live daemon: fresh =.elc= reload of github/interfaces/
+    comment, then the machinery behind C-c @ on the current
+    PR (WriterInternal/writer-data-platform): 226 org
+    members fetched across 3 pages, cached and persisted.
+    Before the fix: empty list, every time.
+
 * Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:todo:
 
 RELEVANCE (preamble): brings the spec/CI BINDING into the

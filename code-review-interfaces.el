@@ -99,6 +99,15 @@
 (cl-defgeneric code-review-get-assignable-users (obj)
   "Get users that can review a PR for OBJ.")
 
+(cl-defgeneric code-review-get-mentionable-users (obj)
+  "Get users that can be @-mentioned in a PR comment for OBJ.")
+
+(cl-defmethod code-review-get-mentionable-users ((obj t))
+  "Users @-mentionable for OBJ: the assignable users by default.
+GitHub overrides this with the members of the repository's
+organization (see `code-review-github.el')."
+  (code-review-get-assignable-users obj))
+
 (cl-defgeneric code-review-request-review (obj user-ids callback)
   "Request for OBJ a list of USER-IDS to review a PR and call CALLBACK afterward.")
 
