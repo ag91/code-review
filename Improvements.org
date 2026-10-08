@@ -3784,6 +3784,47 @@ the ratchet works alone, before any org buy-in.
     members fetched across 3 pages, cached and persisted.
     Before the fix: empty list, every time.
 
+* Fix (2026-10-08) — comment background paint one line low (heading overlay taken at the body bol)
+
+** The bug: the comment background sat one line down
+  In a review buffer, every comment's background paint started one
+  line BELOW the =Reviewed by @author - STATE - timestamp= heading
+  and ran one line PAST the comment (into the next comment or the
+  hunk below); the heading line itself carried no background at
+  all, so it was hard to see where a comment started.
+
+** Root cause: magit-insert-heading point semantics + the interleaved wash
+  - magit 4.x =magit-insert-heading= inserts the heading's OWN
+    trailing newline, so point after it is the FIRST BODY line's
+    bol.  The old code did =(forward-line 0)= + bol..eol there,
+    painting the first BODY line instead of the heading.
+  - Compounded by the phase 11b wash: comments are interleaved
+    into ALREADY-INSERTED hunk text, so =line-end-position= at
+    that bol read a HUNK line's eol and the "heading" overlay
+    swallowed the whole body, the next comment and a hunk line
+    (live ground truth: one "heading" overlay spanned the whole
+    comment block plus a hunk line).  The BODY overlays were
+    correct all along.
+  - Both heading-overlay sites had it: the default comment method
+    and the outdated-comment variant.
+
+** The fix
+  - Both sites now go UP one line from the body bol
+    (=forward-line -1=) and paint the heading line THROUGH its
+    newline (=(1+ (line-end-position))=): full-width to the edge,
+    contiguous with the body overlay below — the paint now covers
+    exactly heading + body, one block per comment.
+
+** Verification
+  - ERT: =wash-hunk-interleaves-comments= extended with overlay
+    extent assertions (heading overlay = exactly the heading line,
+    body overlay starts at the first body line, no paint on the
+    hunk's =+added= line).  Red/green proven: green with the fix,
+    the old code fails the new assertions.
+  - Live daemon: fresh =.elc= reload + re-render of the billing PR
+    from cache — overlays sit exactly on heading/body lines, no
+    bleed into the hunk below.
+
 * Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:todo:
 
 RELEVANCE (preamble): brings the spec/CI BINDING into the

@@ -607,7 +607,12 @@ and the written-count bookkeeping records the comment path."
   "The hunk wash interleaves grouped comments inline: the
 position-keyed comment lands after its anchor line, the
 side/line-keyed one after its new-side line, and the hunk itself is
-still painted."
+still painted.  The comment background overlays sit ON their
+comment: the heading overlay covers exactly the heading line
+(through its newline, contiguous with the body overlay), the body
+overlay starts at the first body line, and no paint bleeds into
+the hunk lines below (the interleaved wash: line-end-position at
+the body bol reads a HUNK line)."
   (code-review-section-test--with-section-env
     (code-review-db--pullreq-raw-infos-update
      `((author (login . "pr-author"))))
@@ -670,6 +675,49 @@ still painted."
                           code-review-section-hold-written-comment-ids))
           (should (member (code-review-utils--comment-key-from-line
                            "github.el" "RIGHT" 2)
-                          code-review-section-hold-written-comment-ids)))))))
+                          code-review-section-hold-written-comment-ids))
+          ;; the background paint sits ON the comment: a heading
+          ;; overlay starts at the heading bol and ends within the
+          ;; heading's newline, and the body overlay starts at the
+          ;; first body line (the paint sat one line LOW and ran one
+          ;; line past the comment when the eol was read at the body
+          ;; bol)
+          (dolist (author (list "@alice" "@bob"))
+            (goto-char (point-min))
+            (should (search-forward (concat "Reviewed by " author) nil t))
+            (let* ((h-bol (line-beginning-position))
+                   (h-eol (line-end-position))
+                   (body-bol (1+ h-eol))
+                   (ovs (cl-remove-if-not
+                         (lambda (ov)
+                           (memq (overlay-get ov 'face)
+                                 '(code-review-comment-self-bg
+                                   code-review-comment-author-bg
+                                   code-review-comment-other-bg)))
+                         (overlays-in h-bol h-eol))))
+              (should (cl-some (lambda (ov)
+                                 (and (= (overlay-start ov) h-bol)
+                                      (> (overlay-end ov) h-bol)
+                                      (<= (overlay-end ov) body-bol)))
+                               ovs))
+              (should (cl-some (lambda (ov)
+                                 (= (overlay-start ov) body-bol))
+                               (overlays-in body-bol (1+ body-bol))))))
+          ;; and no comment paint bleeds into the hunk below: the
+          ;; "+added" line carries no comment background
+          (goto-char (point-min))
+          (should (search-forward "+added" nil t))
+          (let ((bol (line-beginning-position)))
+            (should (not (cl-some (lambda (ov)
+                                    (and (<= (overlay-start ov) bol)
+                                         (> (overlay-end ov) bol)))
+                                  (cl-remove-if-not
+                                   (lambda (ov)
+                                     (memq (overlay-get ov 'face)
+                                           '(code-review-comment-self-bg
+                                             code-review-comment-author-bg
+                                             code-review-comment-other-bg)))
+                                   (overlays-in (point-min)
+                                                (point-max))))))))))))
 
 ;;; code-review-section-test.el ends here

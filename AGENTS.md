@@ -861,6 +861,19 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   convert a 1-based line position with a `(1- ...)` guard (or
   `position-bytes`), or the chunk drops its first line and a
   broken chunk "passes" while the file fails check-parens.
+- `magit-insert-heading` (magit 4.x) inserts the heading's OWN
+  trailing newline and leaves point at the FIRST BODY line's bol —
+  and in the interleaved diff wash the text BELOW that bol is
+  already-inserted HUNK text, so `line-end-position` there returns
+  a HUNK line's eol (2026-10-08: the comment background paint sat
+  one line low and its "heading" overlay swallowed the body, the
+  next comment and a hunk line — every comment looked shifted down
+  one line).  To paint the HEADING line go UP from the body bol:
+  `(save-excursion (forward-line -1) (make-overlay (point) (1+
+  (line-end-position))))` — never `(forward-line 0)` at the body
+  bol.  The body overlays were correct all along (start = body
+  bol, end = point after the insert); only the heading overlays
+  were broken.
 
 <!-- code-review-conventions v1 -->
 

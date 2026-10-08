@@ -403,11 +403,19 @@ slots `render-heading' and `render-extra-newline?'."
                       (concat " - " (code-review--propertize-keyword "RESOLVED"))))))
       (add-face-text-property 0 (length heading) 'code-review-recent-comment-heading t heading)
       (magit-insert-heading heading)
+      ;; point is now at the FIRST BODY line's bol (magit-insert-heading
+      ;; inserts the heading's own newline), so the heading line is the
+      ;; line ABOVE.  Never take the eol at the body bol: the wash
+      ;; interleaves comments into already-inserted hunk text, and the
+      ;; line-end-position there belongs to a HUNK line — the overlay
+      ;; would swallow the whole body, the next comment and a hunk line.
+      ;; Cover the heading's newline too so the paint runs to the edge,
+      ;; contiguous with the body overlay below.
       (save-excursion
-        (forward-line 0)
+        (forward-line -1)
         (let ((bol (point))
               (eol (line-end-position)))
-          (let ((ov (make-overlay bol eol)))
+          (let ((ov (make-overlay bol (1+ eol))))
             (overlay-put ov 'face bgface)
             (overlay-put ov 'priority 1))))
       (magit-insert-section (code-review-code-comment-section obj)
@@ -444,11 +452,14 @@ sections with their background overlays."
                            (oref c author)
                            (oref c state))))
         (magit-insert-heading heading)
+        ;; same as the default comment method: point is at the body's
+        ;; first bol, the heading line is the line above, and the eol
+        ;; must be the HEADING's, not a hunk line's (interleaved wash).
         (save-excursion
-          (forward-line 0)
+          (forward-line -1)
           (let* ((bol (point))
                  (eol (line-end-position))
-                 (ov (make-overlay bol eol)))
+                 (ov (make-overlay bol (1+ eol))))
             (overlay-put ov 'face bgface)
             (overlay-put ov 'priority 100))))
       (magit-insert-section (code-review-outdated-comment-section c)
