@@ -44,6 +44,7 @@
 (require 'code-review-interfaces)
 (require 'code-review-faces)
 (require 'code-review-actions)
+(require 'code-review-folding)
 (require 'code-review-browse)
 (require 'code-review-registry)
 (require 'code-review-dossier)
@@ -243,6 +244,13 @@ OUTDATED."
     ;; C-c +/- but with the code-review buffer layout in mind
     (define-key map (kbd "C-c C-+") 'code-review-fold-more)
     (define-key map (kbd "C-c C--") 'code-review-fold-less)
+    ;; Fold the whole FILE at point: a reviewed file collapses to
+    ;; its heading from anywhere inside it.  <backtab> is the
+    ;; portable Shift+TAB (magit's own binding for it, here
+    ;; overridden); S-<tab> is bound too so a GUI S-TAB cannot be
+    ;; translated away from it.
+    (define-key map (kbd "S-<tab>") 'code-review-fold-file-at-point)
+    (define-key map (kbd "<backtab>") 'code-review-fold-file-at-point)
     (set-keymap-parent map magit-section-mode-map)
     map))
 

@@ -13,6 +13,7 @@
 (require 'code-review-github)
 (require 'code-review-section)
 (require 'code-review-actions)
+(require 'code-review-folding)
 (require 'code-review-test-helpers)
 
 (defconst code-review-ergonomics-test--diff-text
@@ -115,6 +116,39 @@ root > files-chnged > file > hunk."
       (code-review-fold-more)
       (should (= code-review-fold-level 4))
       (should-not (oref hunk hidden)))))
+
+(ert-deftest code-review-ergonomics/fold-file-at-point ()
+  "S-<tab> from inside a hunk toggles the whole FILE section.
+The file collapses to its heading (a quick reviewed mark); the
+hunks' own fold state is kept when the file expands again; with
+point outside any file the command falls back to magit's global
+cycle instead of erroring."
+  (code-review-ergonomics-test--with-washed-diff
+    (let ((file (code-review-ergonomics-test--find-section 'file))
+          (hunk (code-review-ergonomics-test--find-section 'hunk)))
+      (should file)
+      (should hunk)
+      ;; point inside the hunk body: the file folds around it
+      (goto-char (point-min))
+      (search-forward "+added line")
+      (code-review-fold-file-at-point)
+      (should (oref file hidden))
+      (should-not (oref hunk hidden))
+      ;; and expands back (point now sits on the file heading, so
+      ;; the toggle works from the heading too)
+      (code-review-fold-file-at-point)
+      (should-not (oref file hidden))
+      ;; a hunk folded BEFORE the file fold keeps its fold when
+      ;; the file expands again
+      (magit-section-hide hunk)
+      (code-review-fold-file-at-point)
+      (should (oref file hidden))
+      (code-review-fold-file-at-point)
+      (should-not (oref file hidden))
+      (should (oref hunk hidden))
+      ;; outside any file: the global-cycle fallback, no error
+      (goto-char (point-min))
+      (should (progn (code-review-fold-file-at-point) t)))))
 
 ;;; Fringe thread markers
 

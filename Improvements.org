@@ -3825,6 +3825,60 @@ the ratchet works alone, before any org buy-in.
     from cache — overlays sit exactly on heading/body lines, no
     bleed into the hunk below.
 
+* Fix (2026-10-09) — S-<tab>: fold the whole file at point (the reviewed-file mark)
+
+** The ask
+  TAB folds the hunk at point; reviewing file by file, the user
+  wanted one key to fold the WHOLE file from inside a hunk —
+  a folded file reads as "I have reviewed this file".
+
+** What already existed
+  - TAB on a FILE heading folds the whole file (stock magit
+    section toggle) — but only when point is on the heading.
+  - =C-c C--= / =C-c C-+= (phase 9) fold the WHOLE BUFFER by
+    level — global, not per-file.
+  - =<backtab>= was magit's own =magit-section-cycle-global=
+    (cycle every section in the buffer) — not per-file either.
+  So the per-file fold from inside a hunk did not exist; it does
+  now.
+
+** The feature: =code-review-fold-file-at-point= on S-<tab>
+  - From anywhere inside a file (hunk, comment thread, heading)
+    it toggles the FILE section: collapse to the heading (the
+    reviewed mark), expand back with each hunk's own fold state
+    preserved.
+  - Outside any file it falls back to magit's global cycle
+    (=magit-section-cycle-global=), the key's stock behavior.
+  - Unlike the level folds (=code-review-fold-show-level=
+    bypasses the cache) it keeps magit's visibility cache ON:
+    a folded file STAYS folded across re-renders — that
+    persistence is the point (reviewed is reviewed).
+  - Bound to both =S-<tab>= and =<backtab>= (the portable
+    Shift+TAB; a local S-<tab> binding also stops the
+    S-TAB-to-backtab translation from bypassing it).
+
+** The extraction (file-size guideline)
+  The fold commands were the one coherent fold concern inside
+  the over-limit =code-review-actions.el= (1626 lines): moved
+  =code-review-fold-level= / =fold-show-level= / =fold-less= /
+  =fold-more= into the new =code-review-folding.el= (~110 lines)
+  with the new command; =actions.el= is down to 1574.  The
+  guideline's "stop adding and refactor first" applied exactly
+  here.
+
+** Verification
+  - ERT: =code-review-ergonomics/fold-file-at-point= (from
+    inside a hunk the file folds; the pre-folded hunk keeps its
+    fold on expand; the outside-any-file fallback).  Suite green
+    253/253; the moved commands proved from a fresh batch emacs
+    (the extraction test).
+  - Live daemon: =code-review-folding.elc= + =actions.elc=
+    loaded, the LIVE keymap object patched in place (the defvar
+    no-op gotcha — reloading =code-review.el= would rebuild a
+    map no live buffer uses), and the command exercised in the
+    billing PR buffer: file hid, expanded, per-section states
+    intact.
+
 * Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:todo:
 
 RELEVANCE (preamble): brings the spec/CI BINDING into the

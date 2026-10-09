@@ -1555,57 +1555,6 @@ because the string is computed in bounded time."
                       (format "%s:%d (= old %d)" path new-line old-line))
                      (t (format "%s:%d" path new-line)))))))))))))
 
-;;; Global section folding
-
-(defvar-local code-review-fold-level nil
-  "Current global fold level, nil when unset.
-1 shows only the top-level container, 2 collapses files, 3
-collapses hunks, 4 expands everything.  Managed by
-`code-review-fold-less'/`code-review-fold-more'.")
-
-(defun code-review-fold-show-level (level)
-  "Set the global fold LEVEL for this review buffer.
-The scale is by section KIND, not raw nesting depth, so it is
-stable across layouts (the real render wraps files in TWO
-containers, files-report and files-chnged, while tests use one):
-5 everything visible, 4 threads folded, 3 hunks folded,
-2 files folded, 1 only the top-level containers.
-Bypasses magit's visibility cache so a fold never gets remembered
-across renders."
-  (interactive "nCode-review fold level (1 folded ... 5 expanded): ")
-  (let ((magit-section-cache-visibility nil))
-    (magit-map-sections
-     (lambda (s)
-       (let ((type (oref s type)))
-         (oset s hidden
-               ;; a kind is folded AT its fold level and below:
-               ;; threads at 4, hunks at 3, files at 2, the
-               ;; top-level containers at 1
-               (or (and (< level 5)
-                        (cl-typep s 'code-review-base-comment-section))
-                   (and (< level 4) (eq type 'hunk))
-                   (and (< level 3) (eq type 'file))
-                   (and (< level 2)
-                        (not (eq s magit-root-section))
-                        (slot-boundp s 'parent)
-                        (eq (oref s parent) magit-root-section)))))))
-    (magit-section-show magit-root-section)
-    (setq code-review-fold-level level)))
-
-(defun code-review-fold-less ()
-  "Fold one level more (\\[code-review-fold-less]).
-5 = everything visible, 4 = threads folded behind hunks,
-3 = files expanded but hunks folded, 2 = files folded, 1 = only
-the top-level containers."
-  (interactive)
-  (code-review-fold-show-level (max 1 (1- (or code-review-fold-level 5)))))
-
-(defun code-review-fold-more ()
-  "Expand one level more (\\[code-review-fold-more]).
-See `code-review-fold-less' for the level scale."
-  (interactive)
-  (code-review-fold-show-level (min 5 (1+ (or code-review-fold-level 5)))))
-
 (defun code-review-fringe-jump-to-thread ()
   "From a line with a fringe thread marker, jump to the thread."
   (interactive)

@@ -46,6 +46,7 @@ discovered.
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
 | `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support (`actions.el` also holds the interactive/navigation commands) |
+| `code-review-folding.el` | the review-buffer fold commands: the global level folds (`C-c C--`/`C-c C-+`, phase 9) and the per-file fold `S-<tab>` (fold the whole file at point — a reviewed-file mark; per-hunk fold state kept on expand, the fold survives re-renders via magit's visibility cache; outside any file it falls back to magit's global cycle).  Extracted from `code-review-actions.el` (2026-10-09, the file-size guideline) |
 | `test/` | ERT tests (`make test`) |
 
 ## File size guideline
