@@ -638,3 +638,31 @@ list at `code-review-analysis-delicacy-top-k'."
                                    (code-review-analysis--delicate-hunks))
                            '("a.py")))))
       (fset 'code-review-analysis-run orig))))
+
+;;; req-2026-10-01-022: the reference grep sees untracked files
+
+(ert-deftest code-review-analysis-test/req-2026-10-01-022-grep-sees-untracked ()
+  "The worktree reference grep sees UNTRACKED-not-ignored files:
+tests (like criteria) are drafted before the commit, so a
+not-yet-committed test file counts as coverage — a tracked-only
+grep reported every new function of an in-flight change as
+uncovered.  GITIGNORED files still do not."
+  (let* ((repo (code-review-analysis-test--make-repo
+                '(("lib.py" . "def helper_fn():\n    return 1\n"))))
+         (untracked (expand-file-name "tests/test_lib.py" repo))
+         (ignored (expand-file-name "tests/ignored_test.py" repo)))
+    (make-directory (file-name-directory untracked) t)
+    (with-temp-file untracked
+      (insert "from lib import helper_fn\n\ndef test_x():\n    assert helper_fn()\n"))
+    (with-temp-file ignored
+      (insert "from lib import helper_fn\n"))
+    (with-temp-file (expand-file-name ".gitignore" repo)
+      (insert "tests/ignored_test.py\n"))
+    (let ((hits (code-review-analysis--git-grep repo "helper_fn")))
+      (should (cl-some (lambda (h)
+                         (and (equal (nth 0 h) "tests/test_lib.py")
+                              (equal (nth 2 h) "from lib import helper_fn")))
+                       hits))
+      (should-not (cl-some (lambda (h)
+                             (equal (nth 0 h) "tests/ignored_test.py"))
+                           hits)))))

@@ -50,6 +50,17 @@
 ;;  refusal).  Every scan is bounded: one `git ls-files' pass,
 ;;  per-file byte caps, a file-count cap, and nothing ever
 ;;  signals into a render.
+;;
+;;  Phase 24 (the SHARED surface): the TRACEABILITY pass
+;;  (`code-review-criteria--traceability`: a criteria file in
+;;  the diff whose req ID no test hunk references — strong; a
+;;  test hunk referencing an untouched criterion — hint), and
+;;  COMMENT-TO-CRITERION (`code-review-criteria-from-comment`,
+;;  C-c C-t in the comment buffer): a substantive comment leaves
+;;  a durable criterion behind, submitted to the AUTHOR through
+;;  the strategy chain (PR-attached agent, push to the PR
+;;  branch, suggestion block) with a greppable verdict SIDECAR
+;;  always.  The reviewer authors CRITERIA, never code.
 
 ;;; Code:
 
@@ -62,6 +73,7 @@
 ;; The render-side glue stays below the db layer (dependency
 ;; order: criteria never requires it).
 (declare-function code-review-db--pullreq-raw-diff "code-review-db")
+(declare-function code-review-db--pullreq-raw-infos "code-review-db")
 
 (defcustom code-review-criteria-file-regexp
   "\\`\\(?:specs?\\|requirements?\\)/.+\\.\\(?:md\\|feature\\)\\'"
@@ -388,6 +400,322 @@ the requirement text" file)
 wired (code-review-criteria-generate-function); template only")
       (when arg (find-file-other-window file))))
     file))
+
+;;; Traceability pass (phase 24: criteria <-> test binding, pure)
+
+(defcustom code-review-criteria-max-trace-lines 20000
+  "Line cap for one traceability scan of a raw diff.
+The pass is pure diff-text analysis; this bounds it."
+  :type 'natnum
+  :group 'code-review)
+
+;; soft dependency only: the review render always has testimpact
+;; loaded (section-wash requires it); pure ERT runs may not.
+;; VALUELESS on purpose: a defvar WITH a value would pre-bind the
+;; variable and testimpact.el's defcustom would then never install
+;; its default (defcustom never overwrites a bound variable)
+(defvar code-review-testimpact-test-path-regexp)
+(declare-function code-review-testimpact--test-file-p
+                   "code-review-testimpact")
+
+(defun code-review-criteria--test-file-p (path)
+  "Non-nil when PATH is a test file.
+`code-review-testimpact--test-file-p' when testimpact is loaded
+(the review render always has it); a plain heuristic otherwise."
+  (cond
+   ((fboundp 'code-review-testimpact--test-file-p)
+    (code-review-testimpact--test-file-p path))
+   ((and code-review-testimpact-test-path-regexp
+         (string-match-p code-review-testimpact-test-path-regexp
+                         (downcase path)))
+    t)
+   (t
+    (string-match-p
+     "\\`\\(tests?\\|__tests__\\|spec\\)/\\|[-._]test\\|\\.feature\\'"
+     (downcase path)))))
+
+(defun code-review-criteria--traceability (diff)
+  "Traceability findings for raw DIFF text (phase 24).  Pure.
+STRONG: a criteria file in the diff whose req ID no test hunk in
+the diff references — a spec change with no test change is
+almost always a real gap.  HINT: a test hunk referencing a req
+ID whose criteria file the diff does not touch (weaker,
+hint-grade).  Each finding: (:kind strong|hint :id ID :path
+PATH), PATH being the criteria file (strong) or the referencing
+test file (hint).  Bounded by
+`code-review-criteria-max-trace-lines'."
+  (ignore-errors
+    (let ((modified nil)     ; ((ID . PATH)...) criteria in diff
+          (referenced nil)   ; ((ID . PATH)...) ids in test hunks
+          (lines 0))
+      (dolist (blk (and diff (code-review--diff--split-by-files diff)))
+        (let* ((path (car blk))
+               (spec-p (string-match-p
+                        code-review-criteria-file-regexp path))
+               (test-p (code-review-criteria--test-file-p path)))
+          (when (or spec-p test-p)
+            (dolist (line (split-string (cdr blk) "\n" t))
+              (when (<= (cl-incf lines)
+                        code-review-criteria-max-trace-lines)
+                (cond
+                 (spec-p
+                  (let ((id (code-review-criteria--id-from-file path)))
+                    (when (and id (not (assoc id modified)))
+                      (push (cons id path) modified))))
+                 ;; test hunks: every req-ID mention counts
+                 ((string-match
+                   "req-\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}-[0-9]\\{3\\}\\)"
+                   line)
+                  (let ((id (match-string 1 line)))
+                    (when (not (assoc id referenced))
+                      (push (cons id path) referenced))))))))))
+      (append
+       ;; strong: modified but never referenced by a test hunk
+       (mapcar (lambda (m)
+                 (list :kind 'strong :id (car m) :path (cdr m)))
+               (cl-remove-if (lambda (m) (assoc (car m) referenced))
+                             modified))
+       ;; hint: referenced but its criteria file not touched
+       (mapcar (lambda (r)
+                 (list :kind 'hint :id (car r) :path (cdr r)))
+               (cl-remove-if (lambda (r) (assoc (car r) modified))
+                             referenced))))))
+
+(defvar code-review-criteria--trace-cache
+  (make-hash-table :test #'equal)
+  "Traceability cache, keyed (PR-ID md5-of-diff) (phase 24).")
+
+(defun code-review-criteria--traceability-run (pr-id diff)
+  "The cached traceability pass (phase 24) for PR-ID and DIFF.
+Cached per (PR-ID, md5 of DIFF) — a re-render hits the cache; a
+new diff invalidates naturally.  Never signals: a failure reads
+as no findings and is logged."
+  (ignore-errors
+    (let* ((key (list (or pr-id 0) (and diff (md5 diff))))
+           (cached (gethash key code-review-criteria--trace-cache
+                           'missing)))
+      (if (eq cached 'missing)
+          (let ((res (code-review-criteria--traceability diff)))
+            (puthash key res code-review-criteria--trace-cache)
+            res)
+        cached))))
+
+;;; Comment-to-criterion (phase 24: C-c C-t, the durable verdict)
+
+(defcustom code-review-criteria-agent-function nil
+  "PR-ATTACHED AGENT submission hook (phase 24, strategy 1).
+Called with (CRITERION) when the strategy chain picks the agent
+path — the criterion plist (:id :file :sentence :paths :text).
+Wire it to your coding agent's API (e.g. a Copilot coding agent
+accepting review comments as work items): it drafts the
+regression test FROM the criterion and posts it to the PR — the
+draft goes to the AUTHOR, never directly to main.  nil (the
+default) skips the strategy entirely.  The mode CALLS this but
+never implements it."
+  :type '(choice function (const nil))
+  :group 'code-review)
+
+(defcustom code-review-criteria-agent-logins '("copilot")
+  "Forge logins running PR-attached coding agents (phase 24).
+The strategy-1 PROBE: the PR under review was AUTHORED by one of
+these logins (a PR-attached agent is by definition the author's
+collaborator on the branch)."
+  :type '(repeat string)
+  :group 'code-review)
+
+(defcustom code-review-criteria-verdicts-file "criteria-verdicts.org"
+  "Repo-relative SIDECAR file where C-c C-t records verdicts
+(phase 24): for repos with no gate infrastructure yet, every
+captured criterion still lands somewhere greppable — nothing
+evaporates."
+  :type 'file
+  :group 'code-review)
+
+(defun code-review-criteria--from-comment (text path worktree)
+  "Criterion plist from a review comment TEXT about PATH (pure).
+The comment's first paragraph becomes the SHALL clause; the req
+ID is date-numbered from WORKTREE's criteria (stable, next in
+sequence).  nil when the comment carries no sentence."
+  (let* ((id (code-review-criteria--next-id worktree))
+         (sentence (code-review-criteria--sentence text)))
+    (and sentence
+         (list :id id
+               :file (expand-file-name
+                      (format "%s/%s-from-review.md"
+                              code-review-criteria-dir id)
+                      worktree)
+               :sentence sentence
+               :paths (and path (list path))
+               :text (concat
+                      "---\n"
+                      (if path
+                          (format "paths: [%s]\n" path)
+                        "paths: [<paths this requirement governs>]\n")
+                      "---\n\n"
+                      (format "WHEN a change touches %s THE SYSTEM SHALL %s\n"
+                              (or path "<the touched file>")
+                              sentence))))))
+
+(defun code-review-criteria--agent-available-p ()
+  "The strategy-1 probe: this PR was authored by a PR-attached
+coding agent (`code-review-criteria-agent-logins')."
+  (let* ((infos (ignore-errors (code-review-db--pullreq-raw-infos)))
+         (author (and infos
+                      (cdr (assq 'login (assq 'author infos))))))
+    (and author
+         (member (downcase author)
+                 (mapcar #'downcase code-review-criteria-agent-logins))
+         t)))
+
+(defun code-review-criteria--submit-via-agent (criterion)
+  "Strategy 1: the PR-ATTACHED AGENT (wired + the PR has one).
+Never signals: a failure logs and falls through to the next
+strategy."
+  (when (and code-review-criteria-agent-function
+             (code-review-criteria--agent-available-p))
+    (condition-case err
+        (progn (funcall code-review-criteria-agent-function criterion) t)
+      (error
+       (code-review-utils--log
+        "code-review-criteria"
+        (format "agent submission failed, next strategy: %S" err))
+       nil))))
+
+(defun code-review-criteria--submit-via-push (criterion worktree)
+  "Strategy 2: commit the criteria file and PUSH the PR branch.
+Works on any GitHub/GitLab PR today (from the review's worktree
+checkout of the branch); the criterion lands on the AUTHOR's
+branch, never on main.  Never signals: a failure logs and falls
+through to the next strategy."
+  (condition-case err
+      (let* ((file (plist-get criterion :file))
+             (rel (file-relative-name file worktree))
+             (branch (string-trim
+                      (or (code-review-registry--git
+                           worktree "rev-parse" "--abbrev-ref" "HEAD")
+                          ""))))
+        (and (not (string-empty-p branch))
+             (progn
+               (make-directory (file-name-directory file) t)
+               (with-temp-file file
+                 (insert (plist-get criterion :text)))
+               (and (zerop (call-process "git" nil nil nil "-C" worktree
+                                         "add" "--" rel))
+                    (zerop (call-process "git" nil nil nil "-C" worktree
+                                         "commit" "-m"
+                                         (format
+                                          "add criterion %s (from review)
+
+Invariant-Ref: %s"
+                                          (plist-get criterion :id)
+                                          (plist-get criterion :id))
+                                         "--" rel))
+                    (zerop (call-process "git" nil nil nil "-C" worktree
+                                         "push" "origin" branch))
+                    t))))
+    (error
+     (code-review-utils--log
+      "code-review-criteria"
+      (format "push submission failed, next strategy: %S" err))
+     nil)))
+
+(defun code-review-criteria--suggestion-text (criterion)
+  "The strategy-3 SUGGESTION BLOCK for CRITERION (pure).
+The criterion is a SINGLE-FILE addition, so the full criteria
+file rides the review comment as a fenced suggestion block: the
+AUTHOR applies it (never the reviewer, never main)."
+  (concat "```suggestion\n"
+          (plist-get criterion :text)
+          "```\n"))
+
+(defcustom code-review-criteria-submit-strategies '(agent push suggest)
+  "Where C-c C-t sends a captured criterion, FIRST MATCH WINS.
+An ordered list of strategy symbols:
+
+  `agent'   the PR-attached coding agent
+            (`code-review-criteria-agent-function' wired and the
+            PR authored by `code-review-criteria-agent-logins');
+  `push'    write the criteria file, commit (Invariant-Ref
+            trailer), push the PR branch — puts the criteria
+            under VERSION CONTROL;
+  `suggest' refill the comment buffer with the whole criteria
+            file as a fenced suggestion block for the AUTHOR;
+  `local'   write the criteria file into the worktree and stop —
+            nothing leaves the machine (the criteria directory
+            is NOT version controlled, the solo-loop model).
+
+The default suits criteria as version-controlled review
+artifacts; the UNVERSIONED solo model sets this to `\\='(local)'
+(the verdict sidecar is always recorded, whatever fired)."
+  :type '(repeat (choice (const agent) (const push)
+                        (const suggest) (const local)))
+  :group 'code-review)
+
+(defun code-review-criteria--submit-via-local (criterion)
+  "Strategy `local': write the criteria file, stop.
+The unversioned-solo model: the criteria directory is not under
+version control, nothing leaves the machine.  Always fires (never
+signals; a failure logs and the chain falls through)."
+  (condition-case err
+      (let ((file (plist-get criterion :file)))
+        (make-directory (file-name-directory file) t)
+        (with-temp-file file
+          (insert (plist-get criterion :text)))
+        t)
+    (error
+     (code-review-utils--log
+      "code-review-criteria"
+      (format "local submission failed, next strategy: %S" err))
+     nil)))
+
+(defun code-review-criteria--submit (criterion worktree)
+  "The submission strategy chain for CRITERION in WORKTREE.
+Walks `code-review-criteria-submit-strategies' FIRST MATCH WINS:
+`agent', `push' and `local' run their sub-strategy (a failure
+falls through to the next entry); `suggest' always fires (the
+caller refills the comment buffer with the suggestion block).
+Returns the fired strategy symbol, or nil when nothing fired
+(the caller still records the verdict sidecar — captured
+criteria never evaporate)."
+  (catch 'fired
+    (dolist (strategy code-review-criteria-submit-strategies)
+      (let ((res (pcase strategy
+                   ('agent
+                    (and (code-review-criteria--submit-via-agent criterion)
+                         'agent))
+                   ('push
+                    (and (code-review-criteria--submit-via-push
+                          criterion worktree)
+                         'push))
+                   ('local
+                    (and (code-review-criteria--submit-via-local criterion)
+                         'local))
+                   ('suggest 'suggest)
+                   (_ nil))))
+        (when res (throw 'fired res))))
+    nil))
+
+(defun code-review-criteria--verdict-sidecar (criterion comment-text
+                                              path line worktree)
+  "Append CRITERION's verdict to the SIDECAR in WORKTREE (phase 24).
+One greppable org entry per captured verdict: date, req-ID,
+file:line, the sentence and the original comment text.  Returns
+the sidecar path; never signals."
+  (ignore-errors
+    (let* ((file (expand-file-name
+                  code-review-criteria-verdicts-file worktree))
+           (entry (concat
+                   (format "* %s req-%s %s\n"
+                           (format-time-string "%Y-%m-%d")
+                           (plist-get criterion :id)
+                           (cond
+                            ((and path line) (format "%s:%s" path line))
+                            (path path)
+                            (t "")))
+                   (format "  %s\n" (plist-get criterion :sentence))
+                   (format "  %s\n" (or comment-text "")))))
+      (write-region entry nil file t 'silent)
+      file)))
 
 (provide 'code-review-criteria)
 ;;; code-review-criteria.el ends here

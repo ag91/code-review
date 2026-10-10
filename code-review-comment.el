@@ -31,6 +31,8 @@
 (require 'code-review-section)
 (require 'code-review-utils)
 (require 'markdown-mode)
+(defvar code-review-repo-worktree)             ; code-review-repo.el
+(declare-function code-review-registry--repo-dir "code-review-registry")
 
 (defcustom code-review-comment-buffer-name "*Code Review Comment*"
   "Name of comment buffer."
@@ -650,11 +652,77 @@ its assignable users (`code-review-get-mentionable-users')."
     (goto-char code-review-comment-cursor-pos)
     (code-review-comment-reset-global-vars)))
 
+;;;###autoload
+(defun code-review-comment-to-criterion ()
+  "Turn this comment into a durable criterion (C-c C-t, phase 24).
+The reviewer authors CRITERIA, never code: the comment's first
+paragraph becomes the SHALL clause of a new criteria file,
+anchored to the comment's file (and line).  Submission runs the
+`code-review-criteria-submit-strategies' chain — by default the
+PR-attached agent, a push to the PR branch, then the SUGGESTION
+BLOCK (the full criteria file as a fenced block, for the AUTHOR
+to apply); the UNVERSIONED solo model sets the chain to
+`local' (the criteria file lands in the worktree, nothing
+leaves the machine).  A greppable verdict entry always lands in
+`code-review-criteria-verdicts-file' (nothing evaporates).  The
+anchors (path/side/line) come from the uncommitted comment
+object; the worktree from the current review."
+  (interactive)
+  (let* ((buffer (get-buffer code-review-comment-buffer-name))
+         (comment-text (string-trim
+                        (with-current-buffer buffer
+                          (save-excursion
+                            (buffer-substring-no-properties
+                             (point-min) (point-max))))))
+         (obj code-review-comment-uncommitted)
+         (worktree (or code-review-repo-worktree
+                       (code-review-registry--repo-dir))))
+    (if (not obj)
+        (user-error "No comment to turn into a criterion")
+      (let* ((path (oref obj path))
+             (line (oref obj line))
+             (criterion (code-review-criteria--from-comment
+                         comment-text path worktree)))
+        (cond
+         ((not criterion)
+          (user-error "The comment carries no sentence to keep"))
+         (t
+          (let ((strategy (code-review-criteria--submit criterion worktree)))
+            (code-review-criteria--verdict-sidecar
+             criterion comment-text path line worktree)
+            (cond
+             ((eq strategy 'agent)
+              (message "Criterion req-%s given to the PR agent"
+                       (plist-get criterion :id))
+              (code-review-comment-quit))
+             ((eq strategy 'push)
+              (message "Criterion req-%s pushed to the PR branch"
+                       (plist-get criterion :id))
+              (code-review-comment-quit))
+             ((eq strategy 'local)
+              (message "Criterion req-%s captured locally (unversioned \
+solo model); verdict recorded"
+                       (plist-get criterion :id))
+              (code-review-comment-quit))
+             ((eq strategy 'suggest)
+              ;; the suggestion block, ready to send as the comment
+              (erase-buffer)
+              (insert (code-review-criteria--suggestion-text criterion))
+              (goto-char (point-min))
+              (message "Criterion req-%s drafted as a suggestion block - \
+send it with C-c C-c"
+                       (plist-get criterion :id)))
+             (t
+              (message "Criterion req-%s captured; no submission strategy \
+fired (see code-review-criteria-submit-strategies)"
+                       (plist-get criterion :id)))))))))))
+
 (defvar code-review-comment-mode-map
   (let ((map (copy-keymap markdown-mode-map)))
     (define-key map (kbd "C-c C-c") 'code-review-comment-commit)
     (define-key map (kbd "C-c C-k") 'code-review-comment-quit)
     (define-key map (kbd "C-c @") 'code-review-input-mention-user-at-point)
+    (define-key map (kbd "C-c C-t") 'code-review-comment-to-criterion)
     (set-keymap-parent map markdown-mode-map)
     map))
 

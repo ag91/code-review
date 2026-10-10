@@ -66,11 +66,15 @@ THE SYSTEM SHALL keep the export pure (no network calls).
 ```
 
 In a local review, a `Criteria (solo loop)` section renders next to the diff
-with every requirement whose `paths:` cover the changed files:
+with every requirement whose `paths:` cover the changed files — one scannable
+line per requirement (state marker, req id, subject, covered-path jump
+buttons), the full EARS sentence one `TAB` away:
 
 - `RET` on a requirement row cycles its verdict: `[ ]` pending -> `[x]`
   satisfied -> `[!]` violated. Your own reading aid — nothing is submitted.
-- `RET`/click on the req id jumps to the criteria file in the worktree.
+- `TAB` on a row expands its full EARS sentence in place.
+- `RET`/click on the req id jumps to the criteria file in the worktree;
+  clicking a covered path jumps to that file's section in the review.
 - No requirement covers the change? `warn` mode (the default) shows a banner
   inviting `M-x code-review-criteria-insert-template`, which drafts a new
   criteria file (paths prefilled from your diff) and visits it in another
@@ -84,6 +88,32 @@ Criteria files count before you commit them (tracked and
 untracked-but-not-ignored), so the loop works while drafting. Every
 requirement binds to its guard test: the req id goes into the ERT test name
 (`file/req-<id>-description`) so traceability holds forever.
+
+### Forge reviews: specs first, traceability, C-c C-t
+
+The same criteria are first-class artifacts when reviewing someone else's PR:
+
+- A PR that touches a `specs/` file renders a dedicated `Specs (criteria)`
+  section ABOVE `Files changed` — the reviewed-once artifact at the top, the
+  code diff as supporting evidence, EARS keywords fontified. Specs are never
+  collapsed or hidden by focus mode.
+- An `Analysis` row checks spec <-> test linkage mechanically:
+  `(traceability) req-... modified in specs/... — no test in this diff
+  references it` (strong; a spec change with no test change is almost always
+  a real gap) and the weaker `(traceability, hint)` when a changed test
+  references a requirement whose spec file the PR does not touch. Both rows
+  carry jump buttons.
+- In the comment buffer, `C-c C-t` turns the comment you just wrote into a
+  durable criterion: the comment's point becomes a `WHEN ... THE SYSTEM
+  SHALL ...` criteria file, and it goes to the AUTHOR through the
+  `code-review-criteria-submit-strategies` chain — a PR-attached coding agent
+  (`code-review-criteria-agent-function`, when the PR author runs one), a
+  commit pushed to the PR branch, or a fenced suggestion block you send as
+  the comment. If your criteria directory is not version controlled (solo
+  loop only), set the chain to `'(local)`: the criteria file lands in the
+  worktree and nothing else leaves the machine. Whatever fires, a greppable
+  verdict entry lands in `criteria-verdicts.org` — nothing evaporates. You
+  author criteria, never code.
 
 ### Playing with issue trackers (Jira, etc.): no duplication
 

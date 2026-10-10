@@ -31,6 +31,12 @@
 (defvar code-review-history--order)          ; code-review-history.el
 (declare-function code-review-history--tag-for "code-review-history")
 (declare-function code-review-history--score-for "code-review-history")
+;; phase 24: the criteria regexp, declared (criteria.el REQUIRES this
+;; file, so this must not require back) — VALUELESS on purpose: a
+;; defvar WITH a value would pre-bind the variable and criteria.el's
+;; later defcustom would then never install its default (defcustom
+;; never overwrites a bound variable)
+(defvar code-review-criteria-file-regexp)
 (require 'a)
 (require 'code-review-db)
 (require 'code-review-repo)
@@ -138,20 +144,30 @@ A string rule matches as itself."
 
 (defun code-review--diff--classify-path (path)
   "Return plist (:tag ... :collapse ... :hide ...) for PATH.
-Merge `code-review-diff-file-order-rules' and
+Criteria files (phase 24, `code-review-criteria-file-regexp')
+classify as SPEC FIRST — first-class artifacts, never noise:
+they escape the DOC rule (every `.md' would otherwise be DOC)
+and get neither `:collapse' nor `:hide' (focus mode never hides
+them).  Everything else merges
+`code-review-diff-file-order-rules' and
 `code-review-diff-noise-rules': the first rule that matches and
 sets a property wins for that property."
-  (let ((info nil))
-    (dolist (rule (append code-review-diff-file-order-rules
-                          code-review-diff-noise-rules))
-      (when-let* ((regexp (code-review--diff--rule-regexp rule))
-                  ((string-match-p regexp path)))
-        (dolist (key '(:tag :collapse :hide))
-          (unless (plist-member info key)
-            (when-let* ((val (and (not (stringp rule))
-                                  (plist-get rule key))))
-              (setq info (plist-put info key val)))))))
-    info))
+  (cond
+   ((and code-review-criteria-file-regexp
+         (string-match-p code-review-criteria-file-regexp path))
+    (list :tag "SPEC"))
+   (t
+    (let ((info nil))
+      (dolist (rule (append code-review-diff-file-order-rules
+                            code-review-diff-noise-rules))
+        (when-let* ((regexp (code-review--diff--rule-regexp rule))
+                    ((string-match-p regexp path)))
+          (dolist (key '(:tag :collapse :hide))
+            (unless (plist-member info key)
+              (when-let* ((val (and (not (stringp rule))
+                                    (plist-get rule key))))
+                (setq info (plist-put info key val)))))))
+      info))))
 
 (defun code-review--diff--ws-normalize (line)
   "Collapse whitespace in LINE for whitespace-only comparisons."

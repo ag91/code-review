@@ -230,10 +230,11 @@ everything."
 (defun code-review-testimpact--doc-file-p (path)
   "Non-nil when PATH is noise-classified as a DOC file.
 Docs MENTION CI markers in prose: the detector flagged its own
-release notes once.  See `code-review-diff-noise-rules'."
-  (string= (plist-get (code-review--diff--classify-path path)
-                      :tag)
-           "DOC"))
+release notes once.  SPEC-classified criteria files (phase 24)
+count too: a requirements file is prose, its mentions are
+claims, not code.  See `code-review-diff-noise-rules'."
+  (member (plist-get (code-review--diff--classify-path path) :tag)
+          '("DOC" "SPEC")))
 
 (defun code-review-testimpact--comment-prefix (path)
   "The comment-line prefix regexp for PATH, or nil.
@@ -402,12 +403,26 @@ megabyte-line regexp overflow gotcha, see AGENTS.md)."
 
 ;;; Pure: test mapping
 
+(defun code-review-testimpact--variable-def-line-p (text)
+  "Non-nil when TEXT defines an elisp VARIABLE, not behavior.
+`defvar'/`defconst'/`defcustom'/`defface' forms are configuration
+and data: the no-test-coverage mapping concerns BEHAVIOR
+(functions, types, commands), and a defcustom with no test
+grepping its NAME is not a coverage gap (2026-10-10 — the
+phase 24 defcustoms were reported as uncovered in rows of pure
+noise)."
+  (and (string-match-p
+        "^[ \t]*(\\(?:cl-\\)?def\\(?:var\\|const\\|custom\\|face\\|local\\)\\s-+"
+        text)
+       t))
+
 (defun code-review-testimpact--map-hunks (worktree blocks)
   "Map every hunk's touched definitions to its covering tests.
 BLOCKS are ((PATH . BLOCK)...) from `code-review--diff--split-by-files'.
 Return a list of entries (:path :ranges :defs :tests :notest) for
 every hunk touching at least one definition: :DEFS all added-side
-definition names of the hunk, :TESTS the test files referencing
+definition names of the hunk (elisp VARIABLE definitions excluded:
+data, not behavior), :TESTS the test files referencing
 any of them (deduped), :NOTEST the subset of DEFS that are USED
 in the worktree but referenced by NO test file.  Entirely
 unreferenced defs (phase 5 reports those as possibly dead) and
@@ -421,9 +436,20 @@ definitions even when they mention them."
       ;; DOC files mention definitions in prose: skipped whole
       (dolist (hu (and (not (code-review-testimpact--doc-file-p path))
                        (code-review-analysis--split-hunks block)))
-        (let ((defs (mapcar #'car
-                            (code-review-analysis--definitions-in
-                             path (plist-get hu :added)))))
+        ;; elisp variable definitions are data, not behavior:
+        ;; dropped before def extraction (the :DEFS list also
+        ;; feeds the T command's def-driven mapping — a defvar
+        ;; should not select tests either)
+        (let* ((added (if (string-match-p "\\.el\\'" path)
+                          (cl-remove-if
+                           (lambda (it)
+                             (code-review-testimpact--variable-def-line-p
+                              (cdr it)))
+                           (plist-get hu :added))
+                        (plist-get hu :added)))
+               (defs (mapcar #'car
+                             (code-review-analysis--definitions-in
+                              path added))))
           (when defs
             (push (list :path path
                         :ranges (plist-get hu :ranges)

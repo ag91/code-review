@@ -3351,6 +3351,13 @@ Order: 22 (pure git, viral) -> 23 (solo loop) -> 24 (surface
 + binding + capture) -> 25 (budget; consumes 22+24 signals)
 -> 26 (outcome telemetry; consumes infra, degrades to L0).
 
+PHASE 27 (designed 2026-10-10, on top of 24 + its solo
+layer) rides on this order without changing it: the
+REVIEWER-SIDE AI sits ON the criteria ledger (24), feeds the
+budget's P1 count (25), and obeys the same capability
+ladder — its L0 is NO AI AT ALL: every drafter hook defaults
+to nil and every station runs hand-written.
+
 * Phase 22 — Incident registry and agent conventions       :STATUS:done:
 
 RELEVANCE (preamble): implements the CHECKED-BY-A-MACHINE-
@@ -3879,7 +3886,174 @@ the ratchet works alone, before any org buy-in.
     billing PR buffer: file hid, expanded, per-section states
     intact.
 
-* Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:todo:
+* Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:done:
+** Done (2026-10-10)
+
+- Engine (=code-review-criteria.el=, the phase 24 sections):
+  =code-review-criteria-max-trace-lines= (20000-line cap),
+  =--test-file-p= (delegates to testimpact's predicate when
+  loaded, heuristic regexp otherwise), =--diff-spec-paths=,
+  =--traceability= (pure: req-IDs from the diff's criteria
+  files, req-ID mentions from the diff's TEST hunks — via
+  the =req-YYYY-MM-DD-NNN= tag the phase 23 conventions
+  already bind — emitting STRONG "modified, never referenced"
+  and HINT "referenced, never modified" findings
+  =(:kind :id :path)=), =--traceability-run= (cached per
+  (PR-ID, md5 diff), =ignore-errors=: a failure reads as no
+  findings).
+- COMMENT-TO-CRITERION: =--from-comment= (first paragraph =
+  the SHALL clause, next date-numbered id, the comment's path
+  anchored in the front matter, EARS text), the strategy chain
+  =--submit= FIRST MATCH WINS — =--submit-via-agent= (a wired
+  =code-review-criteria-agent-function= AND the PR authored
+  by a login in =code-review-criteria-agent-logins=),
+  =--submit-via-push= (write the criteria file, git
+  add/commit with =Invariant-Ref:= trailer, push the PR
+  branch), else =--suggestion-text= (the whole criteria file
+  as a fenced suggestion block — the AUTHOR applies it, never
+  the reviewer) — and =--verdict-sidecar= (a greppable org
+  entry per captured verdict in
+  =code-review-criteria-verdicts-file=: date, req-ID,
+  file:line, sentence, original comment) ALWAYS, whatever
+  fired.  =C-c C-t= = =code-review-comment-to-criterion= in
+  the comment buffer (=code-review-comment-mode-map=), reading
+  =code-review-comment-uncommitted='s path/line anchors.
+- SURFACE (=code-review-diff.el=): =--classify-path= runs the
+  SPEC branch FIRST — a criteria file gets =(:tag "SPEC")=
+  and nothing else, escaping the DOC rule (every =.md=) and
+  any =:collapse=/:hide= (focus mode never hides the spec).
+  =code-review-section--spec-path-p= (one predicate: the
+  classifier, the split and the stage-1 wash can never
+  disagree).  =code-review-testimpact---doc-file-p= now
+  includes SPEC (spec prose is claims, not code — the
+  CI-gaming detector skips it like release notes).
+- RENDER (=code-review-section-wash.el= +
+  =code-review-section.el=):
+  =code-review-section--specs-first= (pure block split/join,
+  the reorder engine's never-trim-the-trailing-newline rule,
+  identity when the diff has no criteria), stage 1
+  =code-review-section--wash-specs= inside =--render-diff-tree=
+  BEFORE the files-report: =code-review-specs-report-section=
+  > =code-review-specs-chnged-section= + a
+  =code-review-wash-spec-diff= washer (the
+  =magit-wash-sequence= contract: returns the washed section
+  while the block at point IS a criteria file, nil at the
+  first non-spec block — which ENDS the specs stage and hands
+  the rest to the files-report wash), and
+  =code-review-wash--fontify-ears= (EARS keywords as OVERLAYS
+  — they override the hunk paint's text-property faces, the
+  phase 10 lesson — capped 200/keyword,
+  =search-forward=-derived ranges, never =match-beginning=).
+  The Analysis section grew =--criteria-trace-findings= +
+  =--insert-criteria-trace= (strong rows warning-faced, hint
+  rows dimmed, jump buttons =--goto-file-section= — both
+  files are IN the diff), gated like the phase 5/17/18
+  findings so trace findings alone still open the section.
+- DOGFOOD: criteria files 015-019 under =specs/= (each binds
+  exactly the phase 24 behaviors: specs-first
+  classification, traceability both directions,
+  comment-to-criterion + the chain, the sidecar, specs-are-
+  prose), the 9 new ERT tests born =req-2026-10-01-01N=-tagged
+  (pure parts + =fset=+unwind-protect strategy probes + the
+  render regression: Specs section ABOVE Files changed, EARS
+  overlays, the strong finding row).
+- Verification: =check-parens= every touched file (one
+  missing closer in =--traceability= caught by the
+  read-forms/EOF probe — never hand-counted);
+  =make compile= 0 errors (a first pass warned
+  "not known to be defined" for the criteria functions in
+  =comment.el=/:section-analysis.el= — a compile-ORDER
+  artifact: they compile before =criteria.el= against the
+  stale =.elc=, clean on the second pass);
+  =make test= 263/263; eln purge; autoloads regenerated the
+  package.el way (the new =C-c C-t= cookie picked up, the
+  =add-to-list= self-registration verified present); daemon
+  reload of all touched =.elc= + the =code-review-comment-mode-map=
+  patch in place (a live defvar map never rebinds) + a live
+  local-review render probe: full header, Criteria checklist
+  and Analysis intact, =Files changed= washed, no phantom
+  findings on this repo's diff.
+- POSTSCRIPT: the first daemon render probe died with
+  =(void-variable code-review-sections-hook)= — NOT a phase 24
+  bug: the daemon was restarted since the last session and
+  package code is autoload-only until an entry command runs
+  (the documented gotcha); =(load
+  .../code-review.elc)= fixed the probe.  And the suite
+  caught one REAL systemic bug before anything else: a
+  forward-declaration =(defvar X nil)= in =diff.el= for the
+  criteria regexp PRE-BOUND the variable, so =criteria.el='s
+  later =defcustom= NEVER installed its default (=regexp=nil=
+  = every criteria scan returned nothing = half the phase 23
+  tests failed at once).  The fix: VALUELESS =defvar=s for
+  forward declarations — never =defvar= a value for a name a
+  =defcustom= later defines (documented in AGENTS.md).  Same
+  trap caught in =criteria.el='s own forward =defvar= for
+  testimpact's =test-path-regexp=.
+- POSTSCRIPT 2 (2026-10-10, the density feedback): dogfooding
+  the checklist on this repo's own review exposed that the
+  surface contradicted the philosophy — a criterion is
+  TRIAGED at review time, not re-verified, but the render made
+  it look like homework (a flat list of full EARS paragraphs,
+  10+ rows on the self-referential tool repo, and the covered
+  paths were plain text with no jump).  Four fixes shipped same
+  day: (a) the checklist row is ONE SCANNABLE LINE (marker,
+  id button, subject SLUG from the file-name stem, covered
+  paths as jump buttons into the review's file sections — base
+  names to keep rows short), the full sentence a HIDDEN CHILD
+  expanded by TAB — hidden-at-CREATION via =magit-insert-section='s
+  (CLASS VALUE HIDE) spec so magit's inherited-visibility
+  semantics keep user expansion across re-renders (hiding at
+  render time would clobber it, the bot-folding rule);
+  (b) =code-review-coupling---findings= drops DOC-classified
+  peers (changelog/roadmap/conventions prose co-changes with
+  code BY NATURE — 100% degree against Improvements.org is a
+  tautology, 12 of 18 completeness rows on this repo's review
+  were exactly that); (c) the phase 5 reference =git grep=
+  runs with =--untracked= (tests are drafted before the commit
+  like criteria — a tracked-only grep reported every new
+  function of an in-flight change as uncovered: all the "no
+  test coverage" rows on the phase 24 diff were false, the
+  covering test file was untracked); (d) =C-c C-t= submission
+  is now the ordered =code-review-criteria-submit-strategies=
+  list (default =(agent push suggest)=) with a =local= strategy
+  for the UNVERSIONED solo model (write the criteria file,
+  nothing else leaves the machine — the old chain would have
+  git-added an untracked specs dir as a surprise side effect,
+  and the suggestion block cannot create new files at all).
+  Live re-render after the fixes: 17 one-line rows, 0 rows
+  carrying a sentence, 0 DOC-peer completeness rows.  Dogfood
+  criteria 020-023 bind the four behaviors, tests born tagged.
+- POSTSCRIPT 3 (2026-10-10, the user's next buffer): the
+  "hidden" sentence rendered VISIBLE under every row — the
+  postscript-2 (a) mechanism was wrong twice over.  (1) A
+  heading-LESS section can never fold: with `content' nil
+  (no `magit-insert-heading'), `magit-section-hide' sets the
+  `hidden' slot and CONCEALS NOTHING — and the ERT test
+  asserted the SLOT, so it passed green while every sentence
+  showed (fold tests must assert the INVISIBLE OVERLAY,
+  `get-char-property POS 'invisible').  (2) Even a properly
+  headed section does not fold in this package without the
+  EXPLICIT `--hide-if-hidden' call (magit folds during
+  =magit-refresh-buffer= only; code-review renders directly —
+  the documented rule the first attempt ignored).  Final shape:
+  the ROW is the item's HEADING, the sentence its BODY, the item
+  created hidden (spec HIDE arg) and folded via
+  `--hide-if-hidden' — TAB toggles, inherited visibility keeps
+  user expansion across re-renders, and a fresh render folds
+  (an OLD buffer inherits shown from its pre-fix tree: one
+  fresh open, not a re-render, was the honest migration).
+  Three more rows of the user's paste fixed the same day: DOC
+  exclusion extended to the CHANGED side (a coupled code peer
+  of a changed README is not a refactor question), elisp
+  VARIABLE definitions (defvar/defconst/defcustom/defface)
+  dropped from the no-test mapping (the phase 24 defcustoms
+  were "uncovered" rows of pure noise — data, not behavior;
+  criterion 024), and the dead =--diff-spec-paths= REMOVED —
+  the tool's own "possibly dead" finding was correct, dogfood
+  said clean it up (fmakunbound in the live daemon: re-loading
+  never unbinds).  Fresh-render probe: 18 rows, 18 bodies
+  folded, 0 DOC completeness rows (9 code-peer rows remain —
+  real history), 0 variable-def no-test rows.
 
 RELEVANCE (preamble): brings the spec/CI BINDING into the
 shared review surface (preamble goal 3).  Specs render as
@@ -4089,6 +4263,141 @@ bare personal repo.
   DARK-region matching; the outcome state machine); a db
   migration test per the phase 21 pattern; live L0 on a
   personal repo, L2 links on a work PR.
+
+
+* Phase 27 — Reviewer-side AI: the criteria drafter and the grill :STATUS:todo:
+
+RELEVANCE (preamble): defends the REVIEWED-BY-A-HUMAN-ONCE
+side of the unifying principle against AI's two failure modes
+in review.  The extreme is delegating DECISION SELECTION to
+agents (launch an agent, paste its findings: a rubber stamp
+with extra steps, and no mental model built anywhere —
+automation-bias research says exactly this happens, Skitka
+et al. 1999).  The subtle one is the solo reviewer degrading
+into delegating COMPREHENSION (summarize first, verify later)
+with no scaffold that turns the summary into a mental model.
+The human-factors literature puts the safe boundary at the
+STAGES of automation (Parasuraman/Sheridan/Wickens 2000):
+automate information acquisition and analysis, NEVER decision
+selection.  Phase 27 does exactly that, and routes ALL AI
+output through the ONE representation the reviewer owns,
+verifies and edits: the phase 23/24 criteria ledger.  Every
+AI artifact in the loop is a CRITERION plus evidence — one
+mapping to maintain (the indirection AI always adds is
+funneled, not eliminated).  The reviewer's cognitive task
+stays constant across the whole loop: "is this criterion met
+by what I am reading?" — never "what tool do I run now".
+
+- THE DRAFTER/TRANSPORT SPLIT (the architectural rule, the
+  agent-shell note): every AI capability in this phase is a
+  DRAFTER HOOK — a defcustom function the mode CALLS but
+  never implements, the existing
+  =code-review-criteria-generate-function= pattern (phase
+  23).  Transport stays the deterministic, AI-free
+  =code-review-criteria-submit-strategies= chain (phase 24 +
+  the 2026-10-10 solo layer: agent/push/suggest/local).  The
+  drafter never ships anything; the chain never drafts
+  anything.  =nil= hooks (the default) degrade every
+  station to hand-written criteria — the =local= strategy
+  already proves the no-AI/no-forge floor, so AI-optional is
+  STRUCTURAL, not a fallback flag.
+- NEW FILE =code-review-agents-shell.el=: the REFERENCE
+  drafter implementation, a soft dependency probed the
+  difftastic way (=featurep=/=fboundp= at load, never a hard
+  =require=): when the user has agent-shell, the file wires
+  the hooks; absent, every station still runs by hand.
+  Drafters for OTHER Emacs agents (gptel, ellama, Copilot
+  chat, ...) are CONTRIBUTOR extensions to the same hook
+  contract — the mode ships the contract and ONE
+  implementation, and never grows a hard dependency.
+  CORRECTION this phase makes to phase 24:
+  =--submit-via-agent= conflates two roles.  The PR-ATTACHED
+  probe (author login in =code-review-criteria-agent-logins=)
+  is a TRANSPORT concern about a CONTRIBUTOR-side agent
+  consuming work items; a REVIEWER-side agent needs no login
+  probe — it is a DRAFTER.  Split them: transport keeps the
+  login probe, drafters feature-probe the local agent.
+
+- THE LOOP, FOUR STATIONS (one artifact, one next action):
+  - STATION 1 — THE BRIEF (=d= popup, phase 9's surface): a
+    criteria pane above the PR description — drafted EARS
+    criteria from ticket + diff, ranked, evidence-linked (the
+    covered-path jump buttons of the 2026-10-10 one-line
+    rows).  EDITING THE PANE IS THE OWNERSHIP STEP: merge,
+    drop, re-prioritize BEFORE reading the diff — an
+    unverifiable draft is outsourced comprehension, never
+    support.  New =:priority= slot (P1..P3): the P1 count
+    feeds phase 25's per-PR budget and its TRIAGE LAW: a P1
+    list that cannot be edited under
+    =code-review-criteria-max-p1= (default 7) is an
+    UNDER-SPECIFIED change — phase 25's bounce template then
+    carries the LEDGER, and "too big to review" becomes a
+    legible rejection artifact instead of an apology.
+  - STATION 2 — BUDGET: phase 25 as drafted (no new work; it
+    consumes the P1 count).
+  - STATION 3 — READ AND VERDICT: already built (phase 23
+    checklist, phase 24 traceability, the one-line rows);
+    mid-read discoveries keep flowing through =C-c C-t= into
+    the ledger, never evaporating as bare comments.
+  - STATION 4 — THE GRILL (=g=, only AFTER verdicts are
+    recorded): the drafter validates the LEDGER, never the
+    diff directly — criteria marked =[x]= that the diff does
+    not satisfy (the DISAGREEMENT SET: the highest-signal
+    finding available, it localizes the reviewer's own blind
+    spot — where the rabbit hole is worth descending);
+    vague/unfalsifiable EARS wording; contradictions; P1
+    criteria no hunk covers.  The order is the point:
+    attempt first, feedback after (self-explanation before
+    correction, Chi et al. 1994; the pretesting effect — the
+    FAILED prediction is the encoding moment).  All grill
+    output lands as LEDGER SUGGESTIONS awaiting disposition,
+    never as review comments (automation bias: the forced
+    disposition is the verification behavior that otherwise
+    disappears).
+
+- REVIEW-BY-EXECUTION (station 4's probe step): a contested
+  criterion converts to an executable probe (EARS
+  WHEN...THE SYSTEM SHALL... -> a runnable check) via the
+  drafter; the phase 17 machinery runs it in the DETACHED
+  WORKTREE (the =C-u T= fake-fix substrate: no network, no
+  forge, bounded).  Every probe failure is high-signal with
+  two crisp outcomes: the code contradicts the criterion ->
+  EMIT through the phase 24 chain (the push strategy IS the
+  reviewer's PR-to-the-PR with red tests, each docstring
+  carrying req id + EARS sentence — the one artifact
+  contributor AGENTS consume without another round of
+  interpretation; on merge the probe graduates with the
+  =Regression-Test:= trailer, phase 22 closing the loop); or
+  the code holds and the REVIEWER's model was wrong -> the
+  verdict flips and the mental model self-corrects.  Cost is
+  bounded by the reviewer's OWN criteria (naturally 3-8
+  probes, never PR-sized): "agent builds the test
+  environment" becomes affordable BECAUSE you can only test
+  what you actually claimed.
+
+- THE LOOP AS A STATE MACHINE (swift): the mode tracks per-PR
+  station state (ledger drafted? verdicts recorded? grill
+  run? probes pending?) and the transient offers exactly ONE
+  next action — the reviewer never chooses tools.  State
+  persists in the =code-review-criteria-verdicts-file=
+  sidecar and the PR row: the loop itself obeys "nothing
+  evaporates".
+- ENGINEERING DISCIPLINE: every drafter call is
+  condition-cased and BOUNDED (a failing grill reads as no
+  findings — the phase 5 rule: an engine error must never
+  masquerade as a forge error); no interactive command may
+  prompt from a daemon probe; the popup pane is user-invoked
+  (=d=), so the render path stays AI-free (heavy compute
+  never rides the render — the litellm incident rule).
+- VERIFICATION: ERT for the pure parts (priority plumbing;
+  pane assembly; grill finding shapes (:kind :id
+  :evidence); EARS->probe conversion; chain behavior with
+  hooks nil — THE degradation test: no agent-shell, no wired
+  drafter, every station still completes); strategy probes
+  via =fset= + =unwind-protect= (the =cl-letf= trap); a
+  render regression with a FAKE drafter (a lambda over
+  fixtures, never a real agent in CI); live daemon with the
+  real agent-shell drafter on a work PR, bounded probes only.
 
 
 * Future ideas
@@ -4513,3 +4822,89 @@ shaped phases 14-19; each entry notes the claim it grounds.
   without a human).  Etsy is the canonical healthy-adoption
   arc: deploy often first, instrument before flagging, one
   low-stakes service at a time.
+
+** Reviewer-side AI and human-factors research (phase 27; researched 2026-10-10)
+
+- Parasuraman, Sheridan & Wickens, "A Model for Types and
+  Levels of Human Interaction with Automation", IEEE
+  Transactions on Systems, Man, and Cybernetics 30(3),
+  2000.  The four stages of automation (information
+  acquisition, information analysis, decision selection,
+  action implementation): automating the first two keeps
+  humans engaged; automating decision selection produces
+  over-reliance.  Grounds the phase's core split — drafters
+  are stages 1-2, the verdict stays human — and diagnoses
+  both failure modes (paste-the-verdict reviewing automates
+  stage 3; summarize-first reviewing abandons stage 2's
+  scaffold).
+  https://andrewclark.co.uk/all-media/a-model-for-types-and-levels-of-human-interaction-with-automation.pdf
+- Bainbridge, "The Ironies of Automation", Automatica 19(6),
+  1983.  Automating the easy parts leaves humans only the
+  hard, rare judgments with atrophied skills — the end state
+  of delegation-heavy review.
+  https://ckrybus.com/static/papers/Bainbridge_1983_Automatica.pdf
+- Skitka, Mosier & Burrows, "Does automation bias
+  decision-making?", International Journal of Human-Computer
+  Studies 51(5), 1999.  Commission errors: humans follow
+  incorrect automated advice precisely because it is
+  automated.  Grounds: AI output must be dispositioned by
+  hand (grill findings are ledger suggestions, never
+  comments), and the disagreement set is the reviewer's
+  blind-spot map.
+  https://www.sciencedirect.com/science/article/abs/pii/S1071581999902525
+- Bacchelli & Bird, "Expectations, Outcomes, and Challenges
+  of Modern Code Review", ICSE 2013.  Change understanding is
+  the key aspect of reviewing; knowledge transfer is a top
+  outcome — the value that "launch agents at it" discards,
+  and the reason comprehension must not be outsourced.
+  https://sback.it/publications/icse2013.pdf
+- Czerwonka, Greiler & Tilford, "Code Reviews Do Not Find
+  Bugs", ICSE SEIP 2015.  Defect finding is a minor yield of
+  review: delegating exactly that part to AI and losing the
+  human parts is the worst trade available.
+  https://www.microsoft.com/en-us/research/wp-content/uploads/2015/05/PID3556474.pdf
+- Chi, de Leeuw, Chiu & LaVancher, "Eliciting
+  Self-Explanations Improves Understanding", Cognitive
+  Science 18, 1994.  Grounds station 4's order: the
+  reviewer's own verdicts BEFORE the AI's feedback.
+  https://onlinelibrary.wiley.com/doi/10.1207/s15516709cog1803_3
+- Chase, Chin, Oppezzo & Schwartz, "Teachable Agents and the
+  Protégé Effect", Journal of Science Education and
+  Technology, 2009.  Learning by teaching: grilling the
+  AUTHOR's agent teaches nobody; the reviewer must be the
+  one explaining.  Grounds the reversed grill.
+- Kornell, Hays & Bjork, "Unsuccessful Retrieval Attempts
+  Enhance Learning", Journal of Experimental Psychology:
+  Learning, Memory, and Cognition 2009, and the
+  pretesting-effect robustness line (Memory & Cognition
+  2025; Journal of Cognition 2025): a failed prediction
+  before feedback encodes better than passive reading.
+  Grounds review-by-execution: probe failure is the learning
+  moment, and BOTH outcomes (code wrong / model wrong) are
+  actionable.
+  https://link.springer.com/article/10.3758/s13421-025-01813-x
+  https://journalofcognition.org/articles/10.5334/joc.455
+- WirelessCar study, "Rethinking Code Review Workflows with
+  LLM Assistance: An Empirical Study", 2025.  Hybrid
+  proactive/on-demand LLM designs best balance efficiency,
+  trust and reviewer control; comprehension support is where
+  LLMs genuinely help.  Grounds the =d= brief (on-demand,
+  before reading) and the grill (after the human pass), not
+  ambient always-on findings.
+  https://arxiv.org/abs/2505.16339
+- "From Industry Claims to Empirical Reality: An Empirical
+  Study of AI Code Review Tools in Industry", 2026.
+  Developers keep human judgment for decisions and treat AI
+  as input — the disposition ledger mechanizes exactly this.
+  https://arxiv.org/abs/2604.03196
+- SmartBear/Cisco peer review study: defect detection
+  collapses past 200-400 LOC per sitting.  Grounds the P1
+  count as the per-PR review budget proxy that feeds phase
+  25's triage law.
+  https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/
+- Huang et al., "Large Language Models Cannot Self-Correct
+  Reasoning Yet" (ICLR 2024, already cited under the 22-26
+  economics): the grill is EXTERNAL feedback on the
+  reviewer's model — self-review within one model family is
+  correlated blind spots, which is why the drafter never
+  validates its own drafts.

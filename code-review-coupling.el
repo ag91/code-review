@@ -170,7 +170,9 @@ touches PATH but NOT PEER — the incomplete-refactor signal.
 Findings strongest first, capped at
 `code-review-coupling-max-findings'.  TEST-P marks the star case:
 the untouched peer is a TEST file (CodeScene's positive coupling
-broken — tests historically kept in sync with PATH)."
+broken — tests historically kept in sync with PATH).  DOC-classified
+files on EITHER side never become findings: prose co-changes with
+code by nature."
   (let* ((pairs (plist-get data :pairs))
          (revs (plist-get data :revisions))
          (want (make-hash-table :test #'equal))
@@ -189,6 +191,25 @@ broken — tests historically kept in sync with PATH)."
                  (peer (cdr side)))
              (when (and (gethash path want)
                         (not (gethash peer want))
+                        ;; DOC-classified files on EITHER side never
+                        ;; make findings (2026-10-10): changelogs,
+                        ;; roadmap and convention files co-change
+                        ;; with code BY NATURE — a 100% degree
+                        ;; against Improvements.org is a tautology,
+                        ;; not an incomplete refactor, and "is the
+                        ;; refactor complete?" is meaningless for a
+                        ;; changed README (the same reason the
+                        ;; CI-gaming detector skips DOC files)
+                        (not (string= (plist-get
+                                       (code-review--diff--classify-path
+                                        path)
+                                       :tag)
+                                      "DOC"))
+                        (not (string= (plist-get
+                                       (code-review--diff--classify-path
+                                        peer)
+                                       :tag)
+                                      "DOC"))
                         (>= co code-review-coupling-min-cochanges))
                (let* ((rev (gethash path revs 0))
                       (degree (if (zerop rev) 0 (/ co (float rev)))))

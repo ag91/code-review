@@ -21,11 +21,14 @@
 ;;  the criteria checklist section (part of the code-review section
 ;;  rendering family, phase 23): the solo loop's enforcement surface.
 ;;  LOCAL reviews only: every requirement covering the changed files,
-;;  each with a does-this-diff-satisfy-it state (RET cycles pending ->
-;;  satisfied -> violated), rendered next to the diff, jump buttons
-;;  into the criteria files.  warn mode: a warning banner when no
-;;  criteria cover the change.  Forge reviews skip the section (phase
-;;  24 builds their surface).
+;;  each as ONE SCANNABLE LINE (state marker, RET to cycle pending ->
+;;  satisfied -> violated; the req id as a jump button into the
+;;  criteria file; the subject slug; the covered paths as jump
+;;  buttons into the review's file sections), with the full EARS
+;;  sentence as a TAB-expandable hidden child — a checklist row is
+;;  scanned, not read (the 2026-10-10 density fix).  warn mode: a
+;;  warning banner when no criteria cover the change.  Forge reviews
+;;  skip the section (phase 24 builds their surface).
 
 ;;; Code:
 
@@ -38,6 +41,8 @@
 (require 'code-review-criteria)
 
 (defvar code-review-repo-worktree)         ; code-review-repo.el
+(declare-function code-review-section--goto-file-section
+                  "code-review-section-analysis")
 
 (defclass code-review-criteria-section (magit-section)
   (()))
@@ -133,34 +138,74 @@ exception (insert-button sets its own keymap there)."
                  text 'keymap code-review-criteria-item-section-map
                  props)))
 
+(defun code-review-section--criteria-slug (req)
+  "The subject SLUG of REQ, from its file name (the stem after
+the stable date-numbered id).  The one-line checklist row shows
+the slug; the sentence is reference material on TAB."
+  (let* ((base (and (plist-get req :file)
+                    (file-name-nondirectory (plist-get req :file))))
+         (id (plist-get req :id))
+         (stem (and base id
+                    (string-remove-prefix (concat id "-") base))))
+    (or (and stem (file-name-sans-extension stem)) "")))
+
 (defun code-review-section--insert-criteria-item (req covered)
   "Insert one checklist row for REQ with its COVERED paths.
-State marker (RET cycles), the req ID (a jump button into the
-criteria file), the EARS sentence, the covered paths."
+ONE SCANNABLE LINE (2026-10-10, the density fix): the state
+marker (RET cycles), the req ID (a jump button into the criteria
+file), the subject SLUG, and the covered paths as JUMP BUTTONS
+into the review buffer's file sections — base names keep the
+row short.  The full EARS sentence is the section's BODY (the
+row is its heading), and the item is created HIDDEN — but the
+actual FOLD is explicit (`--hide-if-hidden', the documented
+code-review rule: magit only folds during
+`magit-refresh-buffer', this package renders directly), so TAB
+toggles the sentence in place, and the fold is inherited-
+visibility on re-renders (user expansion survives).  A heading-
+LESS child section cannot fold at all (`content' nil means
+`magit-section-hide' conceals nothing) — the first version of
+this made exactly that mistake: the sentence rendered visible
+under every row while the `hidden' slot said t.
+A checklist row is scanned, not read; the sentence is the
+reference, on demand."
   (let* ((id (plist-get req :id))
          (state (code-review-criteria--state id))
          (repo code-review-repo-worktree))
-    (magit-insert-section
-        (code-review-criteria-item-section id nil :req req)
-      (code-review-section--criteria-insert "  ")
-      (code-review-section--criteria-insert
-       (code-review-criteria--state-marker state)
-       'font-lock-face (code-review-criteria--state-face state))
-      (code-review-section--criteria-insert " ")
-      (insert-button (format "%s" id)
-                     'face 'code-review-url-header-face
-                     'follow-link t
-                     'help-echo "Visit this criteria file in the worktree"
-                     'action (lambda (&rest _)
-                               (find-file-other-window
-                                (expand-file-name
-                                 (plist-get req :file) repo))))
-      (code-review-section--criteria-insert
-       (format " %s" (plist-get req :sentence)))
-      (code-review-section--criteria-insert
-       (format "  (%s)" (string-join covered ", "))
-       'font-lock-face 'magit-dimmed)
-      (code-review-section--criteria-insert "\n"))))
+    (code-review-section--hide-if-hidden
+     (magit-insert-section
+         (code-review-criteria-item-section id t :req req)
+       ;; the HEADING (stays visible when folded): the row
+       (code-review-section--criteria-insert "  ")
+       (code-review-section--criteria-insert
+        (code-review-criteria--state-marker state)
+        'font-lock-face (code-review-criteria--state-face state))
+       (code-review-section--criteria-insert " ")
+       (insert-button (format "%s" id)
+                      'face 'code-review-url-header-face
+                      'follow-link t
+                      'help-echo "Visit this criteria file in the worktree"
+                      'action (lambda (&rest _)
+                                (find-file-other-window
+                                 (expand-file-name
+                                  (plist-get req :file) repo))))
+       (code-review-section--criteria-insert
+        (format " %s" (code-review-section--criteria-slug req)))
+       (dolist (p covered)
+         (code-review-section--criteria-insert " ")
+         (insert-button (file-name-nondirectory p)
+                        'face 'code-review-url-header-face
+                        'follow-link t
+                        'help-echo (format "Jump to %s in this review" p)
+                        'action (lambda (&rest _)
+                                  (code-review-section--goto-file-section
+                                   p))))
+       (magit-insert-heading)
+       ;; the BODY (folded by default): the full EARS sentence
+       (code-review-section--criteria-insert "      ")
+       (code-review-section--criteria-insert
+        (plist-get req :sentence)
+        'font-lock-face 'magit-dimmed)
+       (code-review-section--criteria-insert "\n")))))
 
 (defun code-review-section-insert-criteria ()
   "Insert the phase 23 criteria checklist (LOCAL reviews only).

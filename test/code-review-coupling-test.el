@@ -191,3 +191,30 @@ finds the left-behind coupled test file."
       (ignore-errors (delete-directory repo t)))))
 
 ;;; code-review-coupling-test.el ends here
+
+;;; req-2026-10-01-023: DOC peers are never findings
+
+(ert-deftest code-review-coupling-test/req-2026-10-01-023-doc-peers-never-findings ()
+  "A DOC-classified file on EITHER side never becomes a
+completeness finding: prose co-changes with code by nature — a
+100% degree against the changelog is a tautology, not an
+incomplete refactor, and \"is the refactor complete?\" is
+meaningless for a changed README.  A code peer under the same
+matrix still flags."
+  (let ((code-review-diff-noise-rules
+         '((:match "\\.md\\'" :tag "DOC" :collapse t))))
+    (let* ((data (code-review-coupling--matrix
+                  (append
+                   (make-list 20 '("a.py" "CHANGELOG.md"))
+                   (make-list 20 '("a.py" "src/b.py"))
+                   (make-list 20 '("README.md" "src/c.py")))))
+           (fs (code-review-coupling--findings data '("a.py"))))
+      ;; both a.py pairs at 20/40 = 50% degree, but the DOC peer
+      ;; (100%-coupled changelog) never fires
+      (should (= 1 (length fs)))
+      (should (equal (plist-get (car fs) :peer) "src/b.py"))
+      (should (not (string= (plist-get (car fs) :peer) "CHANGELOG.md")))
+      ;; a DOC file as the CHANGED side: its coupled code peer is
+      ;; not a finding either ("is the refactor complete?" is
+      ;; meaningless for a README)
+      (should (null (code-review-coupling--findings data '("README.md")))))))

@@ -456,11 +456,16 @@ Return ((NAME . LINE) ...)."
 ;;; Reference search (git)
 
 (defun code-review-analysis--git-grep (worktree name)
-  "Search NAME in WORKTREE's tracked files.
-Return a list of (PATH LINE TEXT), or nil when there is no match."
+  "Search NAME in WORKTREE's tracked AND untracked-not-ignored files.
+`--untracked' (2026-10-10): tests are often written BEFORE the
+commit (the package's own criteria philosophy), so a not-yet-
+committed test file must still count as coverage — a tracked-only
+grep reported every new function of an in-flight change as
+uncovered.  Return a list of (PATH LINE TEXT), or nil when there
+is no match."
   (let* ((default-directory worktree)
          (out (magit-git-output
-               "grep" "-n" "-I" "-w" "-F" "-e" name "--" "."
+               "grep" "-n" "-I" "-w" "-F" "--untracked" "-e" name "--" "."
                (mapcar (lambda (g) (format ":(exclude)%s" g))
                        code-review-analysis-ref-exclude-globs))))
     (when (and out (not (string-empty-p out)))

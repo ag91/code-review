@@ -45,6 +45,7 @@
 (require 'code-review-analysis)
 (require 'code-review-testimpact)
 (require 'code-review-coupling)
+(require 'code-review-criteria)
 
 (declare-function code-review-browse--reveal "code-review-browse")
 (declare-function code-review-browse--strip-diff-prefix "code-review-browse")
@@ -202,6 +203,58 @@ untouched in this PR: %s\n"
 behind"
                           "is the refactor complete?")))))))
 
+(defun code-review-section--criteria-trace-findings ()
+  "The phase 24 traceability findings of the current review (or
+nil: no diff, no PR, no criteria in the diff, or a disabled or
+failed engine — the pass never signals, a failure reads as no
+findings).  Cached per (PR, diff) by the engine
+(`code-review-criteria--traceability-run')."
+  (let* ((diff (code-review-db--pullreq-raw-diff))
+         (pr-id (or code-review-db--pullreq-id
+                    (and diff
+                         (ignore-errors
+                           (oref (code-review-db-get-pullreq) id)))))
+         (findings (and diff
+                        (code-review-criteria--traceability-run
+                         pr-id diff))))
+    findings))
+
+(defun code-review-section--insert-criteria-trace ()
+  "Insert the phase 24 criteria traceability findings.
+STRONG: a criteria file in this diff whose req ID no test hunk of
+the diff references (a spec change without a test change is
+almost always a real gap).  HINT: a test hunk referencing a req
+ID whose criteria file the diff does not touch (weaker).  Both
+files are in the diff, so the jump button goes to the file
+section INSIDE the review buffer."
+  (dolist (f (code-review-section--criteria-trace-findings))
+    (let* ((kind (plist-get f :kind))
+           (id (plist-get f :id))
+           (path (plist-get f :path))
+           (strong-p (eq kind 'strong)))
+      (insert "  ")
+      (insert (propertize
+               (if strong-p "(traceability) " "(traceability, hint) ")
+               'font-lock-face (if strong-p
+                                   'font-lock-warning-face
+                                 'magit-dimmed)))
+      (insert (propertize (format "req-%s " id)
+                          'font-lock-face
+                          (if strong-p
+                              'font-lock-warning-face
+                            'magit-dimmed)))
+      (insert (if strong-p "modified in " "referenced by a test in "))
+      (insert-button (format "%s" path)
+                     'face 'code-review-url-header-face
+                     'follow-link t
+                     'help-echo "Jump to this file in the review"
+                     'action (lambda (&rest _)
+                               (code-review-section--goto-file-section
+                                path)))
+      (insert (if strong-p
+                 " — no test in this diff references it\n"
+               " — its criteria file is untouched in this diff\n")))))
+
 (defun code-review-section-insert-analysis ()
   "Insert the heuristic Analysis section (phase 5, 15, 17, 18).
 Phase 17 findings (CI-gaming, no test coverage) are HOISTED
@@ -215,8 +268,9 @@ disabled, or there is no worktree)."
          (tres-findings (and tres (or (plist-get tres :ci)
                                       (plist-get tres :notest))))
          (cres (code-review-coupling-run))
-         (cfindings (and cres (plist-get cres :findings))))
-    (when (or res tres-findings cfindings)
+         (cfindings (and cres (plist-get cres :findings)))
+         (tfindings (code-review-section--criteria-trace-findings)))
+    (when (or res tres-findings cfindings tfindings)
       (let ((similar (and res (plist-get res :similar)))
             (dead (and res (plist-get res :dead)))
             (dangling (and res (plist-get res :dangling)))
@@ -232,6 +286,9 @@ disabled, or there is no worktree)."
           ;; phase 18: change-coupling completeness
           (when cfindings
             (code-review-section--insert-coupling cres))
+          ;; phase 24: criteria <-> test traceability
+          (when tfindings
+            (code-review-section--insert-criteria-trace))
           (when res
             (code-review-section--insert-analysis-similar worktree similar)
             (code-review-section--insert-analysis-dead dead)

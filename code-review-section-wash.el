@@ -47,6 +47,7 @@
 (require 'code-review-history)
 (require 'code-review-testimpact)
 (require 'code-review-registry)
+(require 'code-review-criteria)
 
 (declare-function code-review-section-insert-comment "code-review-section-comment")
 (declare-function code-review-comment-insert-reactions "code-review-reactions")
@@ -57,6 +58,134 @@
 
 (defclass code-review-files-report-section (magit-section)
   (()))
+;; specs report (phase 24: the criteria files of the diff render
+;; ABOVE "Files changed" - the reviewed-once artifact gets the
+;; top of the buffer; the code diff is supporting evidence)
+
+(defclass code-review-specs-report-section (magit-section)
+  ())
+(defclass code-review-specs-chnged-section (magit-section)
+  ())
+
+(defun code-review-section--spec-path-p (path)
+  "Non-nil when PATH is a criteria file (the phase 24 SPEC class).
+One predicate for every consumer: classification (diff.el, through
+`code-review-criteria-file-regexp'), the diff split
+(`code-review-section--specs-first') and the stage-1 wash
+(`code-review-wash-spec-diff') - they can never disagree."
+  (and code-review-criteria-file-regexp
+       (string-match-p code-review-criteria-file-regexp path)))
+
+(defun code-review-section-insert-specs-changed ()
+  "Insert the phase 24 Specs heading (the criteria files of this
+diff, first-class review artifacts ABOVE the code)."
+  (insert (propertize "Specs (criteria)"
+                      'font-lock-face 'magit-section-heading))
+  (insert (propertize
+           "  - requirements first: the code below is evidence"
+           'font-lock-face 'magit-dimmed))
+  (magit-insert-heading))
+
+(defun code-review-wash-spec-diff ()
+  "Wash ONE SPEC-classified diff block, or stop the specs stage.
+The `magit-wash-sequence' loop contract: returns non-nil while a
+spec block was washed (then EARS-fontified); nil at the first
+NON-spec `diff --git' block, which ENDS the specs stage - the
+files-report wash (`code-review-wash-diff') picks the rest up."
+  (when (looking-at "^diff --\\(git\\|cc\\|combined\\) ")
+    (let* ((header (buffer-substring-no-properties
+                    (line-beginning-position) (line-end-position)))
+           (path (code-review--diff--extract-b-path header)))
+      (when (and path (code-review-section--spec-path-p path))
+        (let ((section (code-review-wash-diff)))
+          (code-review-wash--fontify-ears section)
+          section)))))
+
+(defun code-review-wash--fontify-ears (section)
+  "Fontify the EARS keywords of the washed SPEC SECTION.
+OVERLAYS, not text properties: they override the hunk paint's
+text-property faces (the phase 10 lesson).  `search-forward'
+does NOT set match data, so the match range is derived from
+POINT, never `match-beginning'/`match-end' (the documented
+trap).  Bounded: at most 200 overlays per keyword, idempotent
+per render (erase-buffer kills overlays)."
+  (when section
+    (let ((start (oref section start))
+          (end (oref section end)))
+      (save-excursion
+        (dolist (kw '("WHEN" "WHILE" "WHERE" "SHALL" "MUST" "MAY"))
+          (goto-char start)
+          (let ((n 0))
+            (while (and (< (point) end)
+                        (search-forward kw end t)
+                        (< n 200))
+              (let* ((beg (- (point) (length kw)))
+                     (ov (make-overlay beg (point))))
+                (overlay-put ov 'face 'font-lock-keyword-face)
+                (overlay-put ov 'evaporate t)
+                (overlay-put ov 'cr-criteria-ears t))
+              (setq n (1+ n)))))))))
+
+(defun code-review-section--specs-first (diff-text)
+  "Reorder DIFF-TEXT so criteria (SPEC) blocks come first.
+Pure string surgery (phase 24): the stage-1 wash
+(`code-review-section--wash-specs') stops at the first NON-spec
+block, so the specs section needs the criteria files at the HEAD
+of the inserted diff text.  Identity when no criteria file is in
+the diff (no join, the text is returned untouched).  Blocks keep
+their trailing newline (a block missing it glues onto the next
+header and breaks the wash downstream - the documented
+reorder-engine trap, same join idiom as
+`code-review--maybe-reorder-diff')."
+  (if (or (not code-review-criteria-file-regexp)
+          (not (string-match-p "^diff --" diff-text)))
+      diff-text
+    (let* ((first-pos (string-match "^diff --" diff-text 0))
+           (prefix (if (and first-pos (> first-pos 0))
+                       (substring diff-text 0 first-pos)
+                     ""))
+           (blocks (code-review--diff--split-by-files
+                    (if first-pos
+                        (substring diff-text first-pos)
+                      diff-text)))
+           (specs nil)
+           (rest nil))
+      (dolist (blk blocks)
+        (if (code-review-section--spec-path-p (car blk))
+            (push blk specs)
+          (push blk rest)))
+      (if (null specs)
+          diff-text
+        (concat prefix
+                (mapconcat
+                 (lambda (blk)
+                   (let ((text (cdr blk)))
+                     (if (string-suffix-p "\n" text) text (concat text "\n"))))
+                 (append (nreverse specs) (nreverse rest))
+                 ""))))))
+
+(defun code-review-section--wash-specs ()
+  "Wash the SPEC-classified blocks at the head of the diff text.
+Stage 1 of the phase 24 criteria surface: the criteria files of
+the diff (moved to the head by `code-review-section--specs-first'
+in `code-review-section--insert-pr-text') wash into their own
+`code-review-specs-report-section' ABOVE 'Files changed'.  Runs
+inside the buffer, at the head of the inserted diff text.  Only
+inserts when the head block IS a criteria file: with no criteria
+in the diff nothing changes (no empty section, no heading)."
+  (save-restriction
+    (narrow-to-region (point) (point-max))
+    (when (and (looking-at "^diff --\\(git\\|cc\\|combined\\) ")
+               (let* ((header (buffer-substring-no-properties
+                               (line-beginning-position)
+                               (line-end-position)))
+                      (path (code-review--diff--extract-b-path header)))
+                 (and path (code-review-section--spec-path-p path))))
+      (magit-insert-section (code-review-specs-report-section)
+        (code-review-section-insert-specs-changed)
+        (magit-insert-section (code-review-specs-chnged-section)
+          (magit-wash-sequence #'code-review-wash-spec-diff))))))
+
 (defun code-review-section--focus-summary ()
   "One-line summary of the files hidden by focus mode, or nil."
   (when code-review-section--file-classifications

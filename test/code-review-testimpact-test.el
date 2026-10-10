@@ -564,3 +564,32 @@ def test_used():
       (delete-directory dir :recursive))))
 
 ;;; code-review-testimpact-test.el ends here
+
+;;; req-2026-10-01-024: variables are data, not behavior
+;;; data, not behavior
+
+(ert-deftest code-review-testimpact/req-2026-10-01-024-variable-defs-not-coverage-gaps ()
+  "Elisp VARIABLE definition lines (defvar/defconst/defcustom/
+defface) are dropped before def extraction: configuration and
+data never need a covering test, and a defcustom with no test
+grepping its NAME is not a coverage gap (the phase 24 defcustoms
+were reported as uncovered in rows of pure noise).  Function
+forms stay."
+  (should (code-review-testimpact--variable-def-line-p
+           "(defcustom code-review-criteria-max-trace-lines 20000"))
+  (should (code-review-testimpact--variable-def-line-p
+           "  (defvar foo)"))
+  (should (code-review-testimpact--variable-def-line-p
+           "(cl-defconst x 1)"))
+  (should (code-review-testimpact--variable-def-line-p
+           "(defface my-face ((t :inherit font-lock))"))
+  ;; function/type/command forms are NOT variables
+  (should-not (code-review-testimpact--variable-def-line-p
+               "(defun code-review-criteria--traceability (diff)"))
+  (should-not (code-review-testimpact--variable-def-line-p
+               "(defclass code-review-criteria-item-section (magit-section)"))
+  (should-not (code-review-testimpact--variable-def-line-p
+               "(defsubst foo (x) x)"))
+  ;; python lines never match (elisp-only rule)
+  (should-not (code-review-testimpact--variable-def-line-p
+               "def test_x(): pass")))

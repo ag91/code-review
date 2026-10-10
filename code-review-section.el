@@ -221,9 +221,10 @@ cache kicks the async harvest and stays nil here."
           (code-review--diff--classify-diff
            (code-review-db--pullreq-raw-diff)))
     (erase-buffer)
-    (insert (code-review--maybe-reorder-diff
-             (code-review-db--pullreq-raw-diff)
-             code-review-section--file-classifications))
+    (insert (code-review-section--specs-first
+             (code-review--maybe-reorder-diff
+              (code-review-db--pullreq-raw-diff)
+              code-review-section--file-classifications)))
     (insert ?\n)))
 
 (defun code-review-section--render-diff-tree (commit-focus?)
@@ -236,6 +237,9 @@ washed diff under the files-report container."
       (magit-run-section-hook (if commit-focus?
                                   'code-review-sections-commit-hook
                                 'code-review-sections-hook)))
+    ;; phase 24 stage 1: the criteria files of the diff wash ABOVE
+    ;; "Files changed" (specs are first-class review artifacts)
+    (code-review-section--wash-specs)
     (magit-insert-section (code-review-files-report-section)
       (code-review-section-insert-files-changed)
       (magit-insert-section (code-review-files-chnged)

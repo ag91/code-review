@@ -25,22 +25,22 @@ discovered.
 | `code-review-section.el` | the section-rendering FACADE + review-buffer build/orchestration: `--trigger-hooks` render phases, `--internal-build` per forge, `--build-buffer`, patch-line/hunk navigation |
 | `code-review-section-shared.el` | shared section-render primitives: the render defcustoms/defvars (indent, fill, display toggles, grouped/written-comment bookkeeping), `--hide-if-hidden`, html rendering, hunk painting |
 | `code-review-section-header.el` | the PR header section inserters (title/state/milestone/labels/assignees/reviewers/commits+CI checks/description/feedback) |
-| `code-review-section-analysis.el` | the analysis + review-order sections and their jump/goto helpers |
+| `code-review-section-analysis.el` | the analysis + review-order sections and their jump/goto helpers.  Phase 24: the criteria traceability rows (`(traceability)` strong / `(traceability, hint)` dimmed, jump buttons, fed by `code-review-criteria--traceability-run`) |
 | `code-review-section-comment.el` | the comment section classes and renderers (conversation, top-level, inline code comments, outdated hunks, bot folding, fringe markers) |
-| `code-review-section-wash.el` | the owned diff wash (phase 11b): `wash-diff` / `wash-insert-file-section` / `wash-hunk` + the comment interleaving, and the diff report |
-| `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms |
+| `code-review-section-wash.el` | the owned diff wash (phase 11b): `wash-diff` / `wash-insert-file-section` / `wash-hunk` + the comment interleaving, and the diff report.  Phase 24 stage 1: `--specs-first` (pure split/join, criteria blocks to the head) and `--wash-specs` (the SPEC-classified blocks wash into their own Specs section ABOVE "Files changed", EARS keywords fontified by overlays) |
+| `code-review-diff.el` | diff classification engine: pure functions on raw diff text + file-order/noise rule defcustoms.  Phase 24: criteria files classify `SPEC` FIRST (they escape the DOC `.md` rule and any collapse/hide — focus mode never hides the reviewed-once artifact) |
 | `code-review-reactions.el` | reaction toggle machinery (one engine, three contexts: description/conversation/code-comment) |
-| `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps, byte-capped, cached per PR+diff) |
+| `code-review-analysis.el` | phase 5 heuristics (duplicate/dead-code/dangling findings) + phase 15 hunk delicacy (blast radius, bounded blame age/ownership, branch delta, dead defs; badge on delicate hunk headings, top-K jump list, C-c C-d cycling; worktree greps `--untracked` so drafted-not-committed tests count as coverage, byte-capped, cached per PR+diff) |
 | `code-review-history.el` | phase 14 harvest + review heat: per-repo history cache (ONE `git log --name-only` parsed twice — code-compass metrics + the phase 18 coupling matrix — async child emacs, TTL, format-versioned: old caches re-harvest once), churn-percentile x complexity x knowledge score, HOT/WARM/COLD buckets feeding the phase 3 tags/order/focus (soft dependency on code-compass) |
-| `code-review-coupling.el` | phase 18 change-coupling completeness: co-change matrix from the history harvest (code-maat style: degree threshold, min co-changes, max changeset size), findings when a changed file's >=threshold peer (star case: its coupled TEST file) is untouched in the PR; cached per PR+diff, rendered in the Analysis section with jump buttons into the peer |
+| `code-review-coupling.el` | phase 18 change-coupling completeness: co-change matrix from the history harvest (code-maat style: degree threshold, min co-changes, max changeset size), findings when a changed file's >=threshold peer (star case: its coupled TEST file) is untouched in the PR — DOC-classified files on either side never fire (prose co-changes with code by nature); cached per PR+diff, rendered in the Analysis section with jump buttons into the peer |
 | `code-review-dossier.el` | phase 16 hunk dossier: `C-c C-h` inserts an on-demand, cached, collapsible "Context (dossier)" section after a hunk (`git log -L` history of exactly those lines at the base rev, blame authors/last-touch, touched-def call sites with jump buttons, tests split, file heat, hunk risk); `C-u` appends the OFF-by-default LLM garnish |
-| `code-review-testimpact.el` | phase 17 test impact: CI-gaming detector (pure diff-text scan: language-scoped skip markers, `\|\| true`, gated/removed CI steps, lowered coverage thresholds → hard `[CI-GAME]` file tags; DOC-classified files and comment-only lines are skipped — they mention the markers legitimately), test mapping (changed defs → covering test files, `[NO-TEST]` hunk tags + Analysis entries), the `T` command running exactly the mapped subset via `compilation-start` (command resolution: user alist → any projectile/project.el test command already loaded and defined → built-in conventions, Makefile `test` target/pytest/jest/go/cargo; C-u: fake-fix check, running the subset at the BASE rev in a detached temp worktree too) |
+| `code-review-testimpact.el` | phase 17 test impact: CI-gaming detector (pure diff-text scan: language-scoped skip markers, `\|\| true`, gated/removed CI steps, lowered coverage thresholds → hard `[CI-GAME]` file tags; DOC-classified files and comment-only lines are skipped — they mention the markers legitimately), test mapping (changed defs → covering test files, elisp VARIABLE definitions excluded — data, not behavior, they never need a covering test — `[NO-TEST]` hunk tags + Analysis entries), the `T` command running exactly the mapped subset via `compilation-start` (command resolution: user alist → any projectile/project.el test command already loaded and defined → built-in conventions, Makefile `test` target/pytest/jest/go/cargo; C-u: fake-fix check, running the subset at the BASE rev in a detached temp worktree too) |
 | `code-review-hunkhighlight.el` | phase 10 + 20: tree-sitter semantic hunk faces (reusable on any magit diff buffer) — the ENGINE: reconstruct, parse, merge the general/test/security/BEACON query lists with per-entry condition-range classification (`--entry-conds`/`--entry-face`), the flat `--cache-key`, the treesit-optional `--region`, `--apply` overlays |
 | `code-review-hunkhighlight-queries.el` | the per-language treesit query VOCABULARIES + faces: general (phase 10), test-file, security source/sink lists (phase 20a; sparse by design), and the phase 20b BEACON list (conditions captured as @_cond, comparison operators and literals in `(STRONG . DIM)` cons mappings: strong inside conditions and in test files, dim outside) |
 | `code-review-hunkhighlight-intraline.el` | phase 20c: intra-line changed-token marks — grammar-free tokenizer, token-LCS alignment, raw-hunk `-`/`+` block pairing, underline face on exactly the changed tokens of modified added lines (line/token caps; pure-add and whitespace-only pairs unmarked) |
 | `code-review-registry.el` | phase 22 incident registry: commit TRAILERS (Incident/Invariant-Ref/Regression-Test/Paths) are the source of truth, the `incidents/` markdown is GENERATED from them (`code-review-registry-generate`); one bounded `git log` trailer scan + byte-capped `incidents/*.md` fallback, cached per (REPO . HEAD); incident paths feed the phase 15 hunk badge (`:incidents` score ingredient, `N incident(s)` reason) and `[N incident(s)]` file-heading tags, the phase 5 dead-code never-flag, and the phase 16 dossier jump lines; keyword detection (`code-review-registry--detect` in `code-review-post-hook`) prompts ONCE per PR to tag the review (`code-review-incident-tag`: PR-prefilled paths, submission chain); `code-review-install-conventions` appends the idempotent sentinel-marked AGENTS.md block |
-| `code-review-criteria.el` | phase 23 criteria engine: criteria files (default `specs/*.md`, EARS shape, stable date-numbered req IDs `YYYY-MM-DD-NNN`) matched against a change's paths; ONE bounded `git ls-files --cached --others --exclude-standard` pass (criteria are drafted BEFORE the commit, so untracked-but-not-ignored files count; output UNSORTED); `--covers-p` declared exact/parent-dir match with undeclared text/base-name fallback (declared-but-uncovering never falls back); `--enforce-local` (`criteria-required`: nil/warn/require, require REFUSES the local review); the EARS `--template`/`insert-template` (paths prefilled from the diff) and `criteria-draft` calling the soft `criteria-generate-function` AI hook (never implemented by the mode) |
-| `code-review-section-criteria.el` | phase 23 criteria CHECKLIST section (local reviews only, a reading aid — nothing submitted): per-item section class with a `req` slot, `RET` cycling `[ ]/[x]/[!]` in place, id jump buttons, covered paths, and the warn banner when no criteria cover the change |
+| `code-review-criteria.el` | phase 23 criteria engine: criteria files (default `specs/*.md`, EARS shape, stable date-numbered req IDs `YYYY-MM-DD-NNN`) matched against a change's paths; ONE bounded `git ls-files --cached --others --exclude-standard` pass (criteria are drafted BEFORE the commit, so untracked-but-not-ignored files count; output UNSORTED); `--covers-p` declared exact/parent-dir match with undeclared text/base-name fallback (declared-but-uncovering never falls back); `--enforce-local` (`criteria-required`: nil/warn/require, require REFUSES the local review); the EARS `--template`/`insert-template` (paths prefilled from the diff) and `criteria-draft` calling the soft `criteria-generate-function` AI hook (never implemented by the mode).  Phase 24: the TRACEABILITY pass (`--traceability`/`--traceability-run`: req-IDs of the diff's criteria files vs req-ID tags in the diff's TEST hunks, strong/hint findings, capped, cached per (PR, diff), never signals) and COMMENT-TO-CRITERION (`--from-comment` + the ordered `code-review-criteria-submit-strategies` chain — PR-attached agent, push to the PR branch, suggestion block, or `local` for the unversioned solo model — plus the greppable verdict SIDECAR always) |
+| `code-review-section-criteria.el` | phase 23 criteria CHECKLIST section (local reviews only, a reading aid — nothing submitted): per-item section class with a `req` slot, `RET` cycling `[ ]/[x]/[!]` in place, ONE-SCANNABLE-LINE rows (id jump button, subject slug, covered paths as jump buttons into the review's file sections), the full EARS sentence as a TAB-expandable hidden child, and the warn banner when no criteria cover the change |
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
@@ -813,6 +813,39 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   with `'code-review-*-section-map` SYMBOLS — their RET bindings
   are likely silently dead the same way (not yet fixed; flagged,
   see Improvements.org phase 23 postscript).
+- To fold a section by DEFAULT in this package, THREE things must
+  hold, and each one bit separately (2026-10-10, the criteria
+  sentence): (1) the section needs a HEADING — `content` nil (no
+  `magit-insert-heading` call) means `magit-section-hide` sets the
+  `hidden` slot but CONCEALS NOTHING: a heading-less child section
+  rendered its "hidden" text under every row while the slot said t;
+  (2) the fold must be EXPLICIT — magit only folds during
+  `magit-refresh-buffer`, code-review renders directly, so wrap the
+  insert in `code-review-section--hide-if-hidden` (it folds when
+  the section was created hidden, skips when inherited visibility
+  says shown — user expansion survives re-renders); (3) pass HIDE in
+  the `magit-insert-section` spec — `(CLASS VALUE HIDE)`: hidden-at-
+  CREATION, and on refresh magit inherits the predecessor's
+  visibility and ignores HIDE.  Note the spec is ONE form
+  `(CLASS VALUE HIDE)`; anything after the third element is
+  constructor initargs (`:req` etc.), not a hide flag.  And a test
+  asserting folds must check the INVISIBLE OVERLAY
+  (`get-char-property POS 'invisible`), never the `hidden` slot.
+- A forward-declaration `(defvar X nil)` with a VALUE PRE-BOUNDS the
+  variable, and a later `defcustom` for the same name then NEVER
+  installs its default (`custom-declare-variable` does not overwrite
+  a bound variable) — the defcustom's default is silently swallowed
+  and stays nil forever.  This shipped with phase 24: a
+  `(defvar code-review-criteria-file-regexp nil)` in diff.el killed
+  criteria.el's defcustom default, every criteria scan returned
+  nothing, and half the phase 23 suite failed at once.  Forward-
+  declare VALUELESS (`(defvar X)` — marks the variable special,
+  binds nothing); only the OWNING file gives the value.  Diagnostic:
+  after `(require 'foo)` print the variable — a nil where a defcustom
+  default belongs is exactly this bug.  And re-probe after fixing the
+  SOURCE only once you recompiled: the batch daemon prefers the stale
+  `.elc`, so the probe keeps answering nil and the "fix" looks wrong
+  (the stale-artifact trap's quiet cousin).
 - `propertize` (and plist consumers) take KEY-VALUE pairs: a
   helper spreading extra PROPS must `(apply #'propertize TEXT
   'keymap MAP PROPS)`.  Passing `PROPS` as one argument leaves

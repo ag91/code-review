@@ -325,8 +325,10 @@ RET cycles pending -> satisfied -> violated -> pending.
                   nil t))
          (goto-char (point-min))
          (should (search-forward "[ ] 2026-10-01-001" nil t))
+         ;; the covered path renders as a JUMP BUTTON on the row
          (goto-char (point-min))
-         (should (search-forward "(lib.py)" nil t))
+         (search-forward "lib.py")
+         (should (button-at (1- (point))))
          ;; RET cycles the state marker in place — via the ACTUAL
          ;; keypress (execute-kbd-macro), not a direct call: the
          ;; keymap must live as a TEXT PROPERTY on the item line
@@ -360,6 +362,98 @@ RET cycles pending -> satisfied -> violated -> pending.
          ;; FAILURE: a leaked buffer's async sentinel re-render
          ;; DELETES the current LOCAL row and stalls later local
          ;; render tests (one LOCAL row exists at a time)
+         (kill-buffer buf))))))
+
+;;; req-2026-10-01-020: one-line checklist rows
+
+(ert-deftest code-review-criteria-test/req-2026-10-01-020-one-line-rows-and-tab ()
+  "The checklist row is ONE SCANNABLE LINE: marker, req id, the
+subject SLUG, the covered paths as jump buttons — the full EARS
+sentence is the section's BODY, actually FOLDED by default (the
+invisible overlay, not just the `hidden' slot — the first
+version set the slot and rendered the sentence visible under
+every row), and TAB semantics (`magit-section-show') unfold it.
+`search-forward' finds invisible text, so the buffer carries
+the sentence either way.  (render-level: worktree setup on,
+isolated db.)"
+  (let* ((repo (code-review-criteria-test--make-repo
+                '(("lib.py" . "def one():\n    return 1\n")
+                  ("specs/2026-10-01-001-lib.md"
+                   . "---\npaths: [lib.py]\n---\n\nWHEN a change touches lib.py\nTHE SYSTEM SHALL show its requirement next to the diff.\n"))))
+         (code-review-criteria-required 'warn)
+         ;; hermetic: no async history-harvest child whose sentinel
+         ;; would re-render this buffer AFTER the test's db reset
+         (code-review-history-enabled nil))
+    ;; pure: the slug comes from the file-name stem after the id
+    (should (equal (code-review-section--criteria-slug
+                    (list :id "2026-10-01-001"
+                          :file "specs/2026-10-01-001-lib.md"))
+                   "lib"))
+    (should (equal (code-review-section--criteria-slug
+                    (list :id "2026-10-01-001" :file nil))
+                   ""))
+    (with-temp-file (expand-file-name "lib.py" repo)
+      (insert "def one():\n    return 2\n"))
+    (code-review-test--with-db
+     (let ((default-directory repo))
+       (code-review-review-local-diff 1))
+     (let ((deadline (+ (float-time) 15))
+           (buf nil))
+       (while (and (not buf) (< (float-time) deadline))
+         (dolist (b (buffer-list))
+           (when (and (string-match-p "Code Review: local:"
+                                      (buffer-name b))
+                      (with-current-buffer b
+                        (goto-char (point-min))
+                        (save-excursion
+                          (search-forward "2026-10-01-001" nil t))))
+             (setq buf b)))
+         (unless buf (sit-for 0.05)))
+       (unless buf (ert-fail "checklist did not render"))
+       (unwind-protect (with-current-buffer buf
+         ;; the row: marker, id, SLUG, covered-path button, ONE line
+         (goto-char (point-min))
+         (search-forward "2026-10-01-001")
+         (beginning-of-line)
+         (let ((line (buffer-substring-no-properties
+                      (point) (line-end-position))))
+           (should (string-match-p "\\`  \\[.\\] 2026-10-01-001 lib " line))
+           ;; the sentence is NOT on the row line
+           (should-not (string-match-p "THE SYSTEM SHALL" line))
+           ;; the covered path is a BUTTON on the row (searched
+           ;; WITHIN the line: the whole buffer holds lib.py in the
+           ;; diff text below)
+           (search-forward "lib.py" (line-end-position))
+           (should (button-at (1- (point)))))
+         ;; the sentence is in the buffer AND ACTUALLY INVISIBLE:
+         ;; the item is created hidden and folded for real (an
+         ;; `invisible' overlay from `content' to `end' — the row
+         ;; is the heading, the sentence the body)
+         (goto-char (point-min))
+         (should (search-forward
+                  "WHEN a change touches lib.py THE SYSTEM SHALL show its requirement next to the diff."
+                  nil t))
+         (should (get-char-property (1- (point)) 'invisible))
+         (let ((item nil))
+           (magit-map-sections
+            (lambda (s)
+              (when (and (not item)
+                         (eq (eieio-object-class s)
+                             'code-review-criteria-item-section))
+                (setq item s))))
+           (should item)
+           (should (oref item hidden))
+           ;; TAB semantics: show unfolds the body (visible text)
+           (magit-section-show item)
+           (should-not (oref item hidden))
+           (goto-char (point-min))
+           (search-forward
+            "WHEN a change touches lib.py THE SYSTEM SHALL show its requirement next to the diff."
+            nil t)
+           (should-not (get-char-property (1- (point)) 'invisible))))
+         ;; leave no review buffer behind for later tests, EVEN ON
+         ;; FAILURE: a leaked buffer's async sentinel re-render
+         ;; deletes the current LOCAL row and stalls later tests
          (kill-buffer buf))))))
 
 (provide 'code-review-criteria-test)
