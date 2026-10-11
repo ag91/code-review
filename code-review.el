@@ -47,6 +47,8 @@
 (require 'code-review-folding)
 (require 'code-review-browse)
 (require 'code-review-registry)
+(require 'code-review-criteria-regression)
+(require 'code-review-agents-shell)
 (require 'code-review-dossier)
 (require 'code-review-local)
 (require 's)
@@ -226,6 +228,9 @@ OUTDATED."
     (define-key map (kbd "C-c C-h") 'code-review-dossier-hunk)
     ;; phase 17: run the tests mapped to the hunk/file at point
     (define-key map (kbd "T") 'code-review-testimpact-run-tests)
+    ;; phase 27: ship the explored regression draft (stacked PR the
+    ;; contributor decides on); the checklist row at point wins
+    (define-key map (kbd "C-c C-g") 'code-review-criteria-request-regression)
     (define-key map (kbd "G") 'code-review-reload)
     ;; Repository context: xref and worktree access from the diff
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)

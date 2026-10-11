@@ -114,6 +114,19 @@ The same criteria are first-class artifacts when reviewing someone else's PR:
   worktree and nothing else leaves the machine. Whatever fires, a greppable
   verdict entry lands in `criteria-verdicts.org` — nothing evaporates. You
   author criteria, never code.
+- The `'(local)` chain is also the reviewer-side agent loop: with
+  agent-shell installed, the
+  criterion is handed to YOUR agent session on the review worktree with a
+  draft-not-push contract — the agent drafts the regression suite as
+  uncommitted changes, you explore the draft (diff it, run the `T` command's
+  mapped subset), and only then press `C-c C-g`
+  (`code-review-criteria-request-regression`): branch `review/req-<id>`,
+  commit with `Invariant-Ref:`/`Regression-Test:` trailers, and — on a GitHub
+  PR — a stacked PR whose base is the contributor's PR branch, so the
+  contributor decides whether the suite is useful. A local review ships
+  L0-only (branch + commit, nothing leaves the machine). The handoff hook is
+  `code-review-criteria-drafter-function` (auto-wired when agent-shell is
+  present); other agents implement the same one-function contract.
 
 ### Playing with issue trackers (Jira, etc.): no duplication
 

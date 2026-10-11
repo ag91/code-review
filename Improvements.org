@@ -4398,7 +4398,90 @@ by what I am reading?" — never "what tool do I run now".
   render regression with a FAKE drafter (a lambda over
   fixtures, never a real agent in CI); live daemon with the
   real agent-shell drafter on a work PR, bounded probes only.
-
+- SHIPPED SLICE (2026-10-10, ahead of the stations, driven by
+  the reviewer's actual workflow: "start an agent ON the
+  worktree during the review; the agent drafts, I explore,
+  THEN it branches and PRs to the PR branch so the contributor
+  decides").  Three pieces, all respecting the drafter/transport
+  split above:
+  - THE DRAFTER HOOK (criteria.el):
+    =code-review-criteria-drafter-function=, fired by the
+    =local= strategy AFTER the ledger file lands (a drafter
+    failure logs and never loses the criterion — the
+    degradation test covers exactly that).  The phase's own
+    correction, implemented: NO login probe on a reviewer-side
+    drafter.
+  - THE REFERENCE DRAFTER (=code-review-agents-shell.el=):
+    hands the criterion to the agent-shell session of the
+    review worktree's project (the agent the reviewer started
+    on the worktree), queued when mid-run, with the
+    DRAFT-NOT-PUSH contract spelled out in the prompt.  Soft
+    dependency (fboundp-probed); auto-wires the hook only when
+    agent-shell is present and the slot is default-empty.
+  - THE APPROVAL STEP
+    (=code-review-criteria-regression.el=, C-c C-g): the
+    explicit keypress that IS the decision-selection boundary.
+    Branch =review/req-<id>= off the PR head (the detached
+    worktree is AT the PR head, so the stacked diff is the
+    suite alone), trailers =Invariant-Ref:= / =Regression-Test:=;
+    L0 stages ONLY criteria + test-matching files (never a
+    blanket add on the user's own tree; a nothing-to-ship run
+    deletes the empty branch again — the rerun-refusal trap);
+    L1 pushes and opens the STACKED PR with base = the
+    contributor's PR branch.  This REFINES the station-4 text
+    above: "the push strategy IS the reviewer's PR-to-the-PR"
+    was too strong — pushing straight onto the contributor's
+    branch both needs write access and decides FOR them; the
+    stacked PR (head = reviewer's branch, base = the PR branch,
+    maintainer-can-modify) keeps the decision where it belongs.
+  Criteria =specs/2026-10-10-001= (drafter handoff) and
+  =specs/2026-10-10-002= (approval/stacked PR), 8 ERT tests born
+  tagged (276/276), autoloads regenerated the package.el way.
+  Live daemon: the drafter auto-wired (agent-shell present),
+  C-c C-g patched into the shared keymap.  Still open for the
+  full phase: stations 1-2 (the brief pane, P1 budget), the
+  grill, the EARS->probe conversion, and the criteria-
+  granularity lift below.  STATUS stays TODO — the slice
+  completes nothing by itself.
+- CRITERIA GRANULARITY (2026-10-11, the phase's completion
+  work, from the reviewer's own reading of the ledger): the
+  criteria written so far drift toward INTERFACE level — a
+  criterion must state a USER-VISIBLE SYSTEM OUTCOME, never a
+  keybinding, command name, or section shape (017 "the user
+  presses C-c C-t" is a door, not a requirement; 014 checklist
+  placement and 020 one-line rows are layout, README material).
+  THE LEVEL RULE, adopted: lift the SENTENCE, keep the FILE and
+  the ID — one stable id per file is what the machinery binds
+  on (traceability tags in test names, =--covers-p= path
+  matching, the verdict sidecar, RET cycling), so NO merging
+  into grouped multi-criterion files; the ids and the file
+  names stay, only the EARS wording rises to behavior level
+  (017's sentence becomes "WHEN the reviewer records a
+  regression verdict as a comment THE SYSTEM SHALL capture it
+  as a durable criterion and route it through the configured
+  submission loop" — the keybinding moves to the README).
+  Pass 1 (REQUIRED): rewrite the interface-flavored sentences
+  in place — 014, 017, 020, 021 (and 019 reviewed) — no id
+  churn, no test re-tagging, =--covers-p= untouched; the
+  checklist and the ledger are what they always were.  THE
+  RULE IS NOW ENCODED (2026-10-11): in the conventions text
+  the installer appends (=code-review-registry-conventions-text=)
+  and in this repo's own AGENTS.md block, so every AI agent
+  authoring criteria reads it before writing one — the rule
+  travels with the installer into every repo that adopts the
+  conventions.  Old v1 installs keep the old block until an
+  upgrade mechanism exists (new installs get the rule).
+  Pass 2 (OPTIONAL, decide after 1): =group:= front matter per
+  criterion — the JOURNEY level ("a regression found via a
+  comment, an agent available, the system creates a PR with a
+  red suite the contributor decides on" = 017 + the phase-27
+  slice composed) — the CHECKLIST renders journey rows with
+  the member criteria as foldable children (the heading/body
+  fold of the 2026-10-10 rows); a string in front matter,
+  grouping at render time, no id machinery touched.  The
+  journey sentence does not REPLACE its members — a
+  fails-before/passes-after red suite is several separately
+  testable behaviors — it heads them.
 
 * Future ideas
 

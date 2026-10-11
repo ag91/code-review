@@ -628,6 +628,26 @@ AUTHOR applies it (never the reviewer, never main)."
           (plist-get criterion :text)
           "```\n"))
 
+(defcustom code-review-criteria-drafter-function nil
+  "REVIEWER-SIDE drafter hook (phase 27, the drafter/transport
+split).  Called with (CRITERION) when the `local' strategy fires
+— after the criteria file has landed in the worktree, so a
+drafter failure never loses the criterion.  No login probe: the
+PR-attached `agent-function' asks `is there a CONTRIBUTOR-side
+agent on this PR?'; a REVIEWER-side agent is the reviewer's own
+tool and needs no permission — it is a DRAFTER, never transport.
+The drafter hands the criterion to the reviewer's coding agent
+(reference implementation: `code-review-agents-shell-drafter',
+agent-shell) with a DRAFT-NOT-PUSH contract: the regression
+suite is drafted as uncommitted changes in the review worktree;
+the reviewer explores it and ships it with
+`code-review-criteria-request-regression' (C-c C-g) — branch,
+trailers, stacked PR the CONTRIBUTOR decides on.  nil (the
+default) keeps the local strategy ledger-only.  The mode CALLS
+this but never implements it."
+  :type '(choice function (const nil))
+  :group 'code-review)
+
 (defcustom code-review-criteria-submit-strategies '(agent push suggest)
   "Where C-c C-t sends a captured criterion, FIRST MATCH WINS.
 An ordered list of strategy symbols:
@@ -641,8 +661,12 @@ An ordered list of strategy symbols:
   `suggest' refill the comment buffer with the whole criteria
             file as a fenced suggestion block for the AUTHOR;
   `local'   write the criteria file into the worktree and stop —
-            nothing leaves the machine (the criteria directory
-            is NOT version controlled, the solo-loop model).
+            nothing leaves the machine.  With
+            `code-review-criteria-drafter-function' wired this is
+            the phase 27 reviewer-side loop: ledger + DRAFTER
+            handoff (the local agent drafts the regression suite
+            in the worktree, never pushes — C-c C-g ships it
+            after the reviewer has explored the draft).
 
 The default suits criteria as version-controlled review
 artifacts; the UNVERSIONED solo model sets this to `\\='(local)'
@@ -654,13 +678,26 @@ artifacts; the UNVERSIONED solo model sets this to `\\='(local)'
 (defun code-review-criteria--submit-via-local (criterion)
   "Strategy `local': write the criteria file, stop.
 The unversioned-solo model: the criteria directory is not under
-version control, nothing leaves the machine.  Always fires (never
-signals; a failure logs and the chain falls through)."
+version control, nothing leaves the machine.  With a
+REVIEWER-SIDE drafter wired (`code-review-criteria-drafter-function',
+phase 27) the criterion is also handed to the
+reviewer's agent as a DRAFT-NOT-PUSH work item — the handoff
+runs AFTER the file write and can never lose the criterion (a
+drafter failure logs; the strategy still fired).  Always fires
+(never signals; a failure logs and the chain falls through)."
   (condition-case err
       (let ((file (plist-get criterion :file)))
         (make-directory (file-name-directory file) t)
         (with-temp-file file
           (insert (plist-get criterion :text)))
+        (when code-review-criteria-drafter-function
+          (condition-case err
+              (funcall code-review-criteria-drafter-function criterion)
+            (error
+             (code-review-utils--log
+              "code-review-criteria"
+              (format "drafter handoff failed (criterion kept): %S"
+                      err)))))
         t)
     (error
      (code-review-utils--log
