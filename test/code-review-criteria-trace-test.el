@@ -167,7 +167,14 @@ still records the sidecar).  The sub-strategies are faked with
 `fset' + `unwind-protect' (never `cl-letf')."
   (let ((real-agent (symbol-function 'code-review-criteria--submit-via-agent))
         (real-push (symbol-function 'code-review-criteria--submit-via-push))
-        (criterion (list :id "2026-10-01-001" :file "specs/x.md"
+        ;; :file is ABSOLUTE and in a temp dir: the `local' leg of
+        ;; this test runs the REAL --submit-via-local, which writes
+        ;; the file — a relative :file here once leaked a 1-byte
+        ;; specs/x.md into the real repo on every `make test' (the
+        ;; batch suite runs in the repo root)
+        (criterion (list :id "2026-10-01-001"
+                         :file (expand-file-name
+                                "x.md" (make-temp-file "cr-chain-" t))
                          :sentence "S" :paths nil :text "T")))
     (unwind-protect
         (progn

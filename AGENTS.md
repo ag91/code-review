@@ -833,6 +833,15 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   constructor initargs (`:req` etc.), not a hide flag.  And a test
   asserting folds must check the INVISIBLE OVERLAY
   (`get-char-property POS 'invisible`), never the `hidden` slot.
+- A criterion plist's `:file` is ALWAYS ABSOLUTE (`--from-comment`
+  builds it so).  A test passing a RELATIVE `:file` into the real
+  `--submit-via-local` (the chain test's `local' leg) writes into
+  `default-directory` — and the batch suite runs in the REPO ROOT,
+  so every `make test` leaked a 1-byte `specs/x.md` into the real
+  repo for days (misread twice as a user experiment / a stale
+  render).  A stray file reappearing after `make test` is a test
+  fixture leaking through a relative path, not a cleanup miss:
+  point every fixture path at a `make-temp-file` dir, absolute.
 - A forward-declaration `(defvar X nil)` with a VALUE PRE-BOUNDS the
   variable, and a later `defcustom` for the same name then NEVER
   installs its default (`custom-declare-variable` does not overwrite
