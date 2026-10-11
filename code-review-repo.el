@@ -26,6 +26,7 @@
 
 ;;; Code:
 
+(require 'dash)
 (require 'magit-git)
 (require 'code-review-utils)
 (require 'code-review-db)
@@ -43,8 +44,9 @@ review silently falls back to the remote-only behavior."
   :type 'boolean
   :group 'code-review-repo)
 
-(defcustom code-review-projects-root nil
-  "Default directory where your project clones live.
+(defcustom code-review-projects-roots nil
+  "Default directories where your project clones live.
+The first is the default.
 Used to locate a local clone of the PR repository.  Candidate
 directories are matched by git remote URL, so only clones whose
 origin points at the PR repository are used.
@@ -55,7 +57,7 @@ clone is found (under the repository name: ROOT/REPO).  When nil,
 
 Example: \"~/src\"."
   :type '(choice (const :tag "Disabled" nil)
-                 (directory :tag "Directory"))
+                 (list :tag "Directories"))
   :group 'code-review-repo)
 
 (defcustom code-review-repo-clone-confirm t
@@ -115,8 +117,8 @@ Supports both https://host/owner/repo(.git) and git@host:owner/repo(.git)."
 
 (defun code-review-repo--base-dir ()
   "Root directory for on-demand clones.
-`code-review-projects-root' when set, \"/tmp\" otherwise."
-  (expand-file-name (or code-review-projects-root "/tmp")))
+First of `code-review-projects-roots' when set, \"/tmp\" otherwise."
+  (expand-file-name (or (nth 0 code-review-projects-roots) "/tmp")))
 
 (defun code-review-repo--clone-dir (repo)
   "Return directory for an on-demand clone of REPO.
@@ -128,19 +130,18 @@ The repository is cloned under its own name
 (defun code-review-repo--candidate-dirs (owner repo)
   "Return candidate directories that may host a clone of OWNER/REPO."
   (let* ((repo-name (file-name-nondirectory (directory-file-name repo)))
-         (cands (list (ignore-errors (magit-toplevel)))))
-    (when code-review-projects-root
-      (setq cands
-            (nconc cands
-                   (file-expand-wildcards
-                    (expand-file-name repo-name code-review-projects-root))
-                   (file-expand-wildcards
-                    (expand-file-name (concat "*/" repo-name)
-                                      code-review-projects-root)))))
-    (let ((clone (code-review-repo--clone-dir repo)))
-      (when (file-exists-p clone)
-        (setq cands (nconc cands (list clone)))))
-    (seq-uniq (delq nil cands) #'equal)))
+         (current-repo (ignore-errors (magit-toplevel))))
+    (-some--> code-review-projects-roots
+      (--map (append
+              (file-expand-wildcards
+               (expand-file-name repo-name it))
+              (file-expand-wildcards
+               (expand-file-name (concat "*/" repo-name) it)))
+             code-review-projects-roots)
+      ;; we keep the current repository first to optimize
+      (cons current-repo (-flatten it))
+      (-distinct it)
+      (-non-nil it))))
 
 (defun code-review-repo--find-existing (host owner repo)
   "Return a local directory of repository HOST/OWNER/REPO, or nil.

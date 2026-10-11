@@ -1282,7 +1282,7 @@ of the code."
         (pos (code-review--resolve-worktree-position)))
     (unless code-review-repo-worktree
       (user-error
-       "No local repo context for this review (check `code-review-projects-root')"))
+       "No local repo context for this review (check `code-review-projects-roots')"))
     (unless pos (user-error "No file at point in the diff"))
     (unless sym (user-error "No symbol at point"))
     (find-file-other-window (car pos))

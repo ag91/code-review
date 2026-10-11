@@ -251,25 +251,46 @@ CONTRIBUTOR decides; the reviewer never targets main."
 
 (defun code-review-criteria-regression--read-criterion (worktree)
   "The criterion to ship: the checklist row at point, else
-completing-read over the worktree's criteria ledger."
+completing-read over the worktree's criteria ledger.
+The candidates are the criteria FILE names alone (the name
+carries the id and the subject slug — one scannable token, the
+file IS the index); the EARS sentence rides as an ANNOTATION on
+its own indented line while choosing, the inline preview of what
+you would ship against (the full text is the file itself — C-u
+on the command opens it)."
   (or (code-review-criteria-regression--req-at-point)
-      (let* ((criteria (code-review-criteria--criteria worktree))
+      (let* ((criteria (or (code-review-criteria--criteria worktree) '()))
              (table (mapcar (lambda (req)
-                              (cons (format "%s  %s"
-                                            (plist-get req :id)
-                                            (truncate-string-to-width
-                                             (plist-get req :sentence) 56))
+                              (cons (file-name-nondirectory
+                                     (plist-get req :file))
                                     req))
-                            (or criteria '()))))
+                            criteria))
+             (sentences (mapcar (lambda (entry)
+                                  (cons (car entry)
+                                        (plist-get (cdr entry) :sentence)))
+                                table))
+             (annotate (lambda (name)
+                         ;; its own line, indented — a bare suffix
+                         ;; glues onto the candidate and reads as
+                         ;; one long wrapped token
+                         (let ((sentence (cdr (assoc name sentences))))
+                           (and sentence (concat "\n    " sentence)))))
+             (collection
+              (lambda (string pred action)
+                (cond
+                 ((eq action 'metadata)
+                  `(metadata (annotation-function . ,annotate)))
+                 ((eq action 'lambda) t)
+                 (t (complete-with-action action table string pred))))))
         (if (not table)
             (user-error "No criteria under %s — capture one with C-c C-t"
                         worktree)
-          (cdr (assoc (completing-read "Ship regression suite for: "
-                                       table nil t)
+          (cdr (assoc (completing-read "Ship regression suite for (file): "
+                                       collection nil t)
                       table))))))
 
 ;;;###autoload
-(defun code-review-criteria-request-regression (criterion)
+(defun code-review-criteria-request-regression (criterion criterion-prefix)
   "Ship the explored regression draft for CRITERION (C-c C-g,
 phase 27 approval step).  After C-c C-t (local strategy) handed
 the criterion to the reviewer's agent and the agent drafted the
@@ -296,11 +317,26 @@ approval keypress:
 
 The branch name prefix and the test-file regexp are defcustoms.
 CRITERION is the requirement plist (interactive: the checklist
-row at point, else completing-read over the worktree ledger)."
+row at point, else completing-read over the worktree ledger —
+candidates are the criteria FILE names, the EARS sentence shown
+as an annotation).  With a C-u prefix the command instead
+PREVIEWS the criterion: the full criteria file opens in another
+window and nothing ships — the read-before-ship step."
   (interactive
    (list (code-review-criteria-regression--read-criterion
           (or (bound-and-true-p code-review-repo-worktree)
-              (code-review-registry--repo-dir)))))
+              (code-review-registry--repo-dir)))
+         current-prefix-arg))
+  (when criterion-prefix
+    (find-file-other-window (plist-get criterion :file))
+    (message "code-review: previewing %s — press C-c C-g without a prefix to ship"
+             (plist-get criterion :id)))
+  (code-review-criteria-regression--ship criterion))
+
+(defun code-review-criteria-regression--ship (criterion)
+  "The shipping core of `code-review-criteria-request-regression':
+branch, commit (trailers), and per context push + stacked PR.
+Separated so the preview prefix is a thin branch above it."
   (let* ((worktree (file-name-as-directory
                     (or (bound-and-true-p code-review-repo-worktree)
                         (code-review-registry--repo-dir))))
