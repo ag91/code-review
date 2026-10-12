@@ -4265,7 +4265,7 @@ bare personal repo.
   personal repo, L2 links on a work PR.
 
 
-* Phase 27 — Reviewer-side AI: the criteria drafter and the grill :STATUS:todo:
+* Phase 27 — Reviewer-side AI: the criteria drafter and the grill :STATUS:done:
 
 RELEVANCE (preamble): defends the REVIEWED-BY-A-HUMAN-ONCE
 side of the unifying principle against AI's two failure modes
@@ -4438,11 +4438,38 @@ by what I am reading?" — never "what tool do I run now".
   =specs/2026-10-10-002= (approval/stacked PR), 8 ERT tests born
   tagged (276/276), autoloads regenerated the package.el way.
   Live daemon: the drafter auto-wired (agent-shell present),
-  C-c C-g patched into the shared keymap.  Still open for the
-  full phase: stations 1-2 (the brief pane, P1 budget), the
-  grill, the EARS->probe conversion, and the criteria-
-  granularity lift below.  STATUS stays TODO — the slice
-  completes nothing by itself.
+  C-c C-g patched into the shared keymap.
+- COMPLETION (2026-10-12): the four specs that name the phase
+  are live (=specs/2026-10-12-001..004=).  What shipped beyond
+  the slice:
+  - The ENGINE carries the front-matter priority (P1..P3) on
+    the requirement plist; the checklist row renders it and
+    =p= rewrites the file durably.
+  - STATION 1, THE BRIEF: priorities + verdict counting +
+    the one-next-action machine live in
+    =code-review-criteria-brief.el=; the =d= description
+    popup mounts the pane ABOVE the PR intent (judge the
+    claimed criteria before reading the diff).
+  - STATION 4, THE GRILL: the mechanical findings
+    (disagreement / vague / uncovered-p1) live in
+    =code-review-criteria-grill.el=, rendered as ledger
+    suggestions with =d= dismissal; the probe
+    (review-by-execution) converts a criterion to one
+    executable test and reads the HEAD/BASE outcomes.
+  - INCIDENTS STAY LOCAL: the registry submission writes the
+    entry and opens it for fill-and-edit; the drafter hook
+    (=code-review-registry-drafter-function=) drafts the
+    human body when wired; the out-of-context PR-comment path
+    is GONE.
+  - The reference drafters for all five hooks live in
+    =code-review-agents-shell.el= (pure prompt builders +
+    one thin worktree handoff), auto-wired only when
+    agent-shell is present and the slots are default-empty.
+  Verified: 284 tests green, live render with the priority
+  tokens and the pane.  Still honest: the loop has been
+  walked station by station, not yet end-to-end on a real
+  PR — the first real run may still teach the station ORDER
+  a lesson.
 - CRITERIA GRANULARITY (2026-10-11, the phase's completion
   work, from the reviewer's own reading of the ledger): the
   criteria written so far drift toward INTERFACE level — a

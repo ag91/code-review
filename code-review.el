@@ -48,6 +48,8 @@
 (require 'code-review-browse)
 (require 'code-review-registry)
 (require 'code-review-criteria-regression)
+(require 'code-review-criteria-brief)
+(require 'code-review-criteria-grill)
 (require 'code-review-agents-shell)
 (require 'code-review-dossier)
 (require 'code-review-local)
@@ -231,6 +233,10 @@ OUTDATED."
     ;; phase 27: ship the explored regression draft (stacked PR the
     ;; contributor decides on); the checklist row at point wins
     (define-key map (kbd "C-c C-g") 'code-review-criteria-request-regression)
+    ;; phase 27 station 4: the grill (AFTER verdicts) and the
+    ;; review-by-execution probe (HEAD/BASE via the T substrate)
+    (define-key map (kbd "g") 'code-review-criteria-grill)
+    (define-key map (kbd "C-c C-p") 'code-review-criteria-probe-run)
     (define-key map (kbd "G") 'code-review-reload)
     ;; Repository context: xref and worktree access from the diff
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)

@@ -534,17 +534,6 @@ cannot do.  nil when there is no diff."
                    (code-review-db--pullreq-raw-diff))))
     (and diff (mapcar #'car (code-review--diff--split-by-files diff)))))
 
-(defun code-review-registry--comment-text (incident)
-  "The PR-comment text for INCIDENT (strategy 3 of the chain)."
-  (format "## Incident registry entry\n\n\
-Please land this entry with the fix:\n\n```markdown\n%s```\n\n\
-and carry the trailers on the fix commit:\n\n```\nIncident: %s\nInvariant-Ref: %s\nRegression-Test: %s\nPaths: %s\n```\n"
-          (code-review-registry--entry-text incident)
-          (plist-get incident :id)
-          (or (plist-get incident :invariant) "<req id>")
-          (or (string-join (plist-get incident :tests) ", ") "<test names>")
-          (or (string-join (plist-get incident :paths) ", ") "<paths>")))
-
 (defun code-review-registry--write-entry (repo incident)
   "Write INCIDENT's registry entry file into REPO.
 Creates the incidents/ directory when missing.  Return the file
@@ -558,40 +547,45 @@ path."
     file))
 
 (defun code-review-registry--submit-entry (repo incident)
-  "Submit INCIDENT of REPO through the strategy chain.
-Strategies, tried in order; phase 22 ships (3) and (4):
-  (1) a PR-attached agent — arrives with phase 24;
-  (2) pushing a commit to the PR branch — arrives with phase 24;
-  (3) forge reviews: the entry is posted as ONE PR comment (the
-      file content plus the trailer conventions for the fix
-      commit);
-  (4) the entry file is written into the repository working tree
-      — the phase 12 local-review path, and the committable
-      deliverable for forge reviews.
-Return non-nil when anything was submitted."
-  (let ((submitted nil))
-    ;; (4) the durable artifact, always
-    (when repo
-      (let ((file (code-review-registry--write-entry repo incident)))
-        (message "code-review-registry: entry written: %s (commit it with the fix)"
-                 file)
-        (setq submitted t)))
-    ;; (3) the PR comment, for forge reviews (a live PR id only:
-    ;; never touch the db from a stray buffer)
-    (when (and code-review-db--pullreq-id
-               (fboundp 'code-review-db-local-pr-p)
-               (fboundp 'code-review-new-issue-comment)
-               (fboundp 'code-review-db-get-pullreq)
-               (not (code-review-db-local-pr-p)))
-      (let ((pr (code-review-db-get-pullreq)))
-        (when pr
-          (code-review-new-issue-comment
-           pr
-           (code-review-registry--comment-text incident)
-           (lambda (&rest _)
-             (message "code-review-registry: entry posted as a PR comment")))
-          (setq submitted t))))
-    submitted))
+  "Submit INCIDENT of REPO to the LOCAL registry (2026-10-12).
+The entry file is written into the repository working tree and
+OPENED FOR FILLING — the incident report is the reviewer's to
+edit and to share where it has context; a bare PR comment asks
+the contributor for an out-of-context read and evaporates
+besides.  With `code-review-registry-drafter-function' wired,
+the agent DRAFTS the entry's human body first (the reviewer
+edits the draft — the fill step is the review); a no-file section
+(`### Human notes') marks where the draft goes.  Nothing leaves
+the machine: the registry is committed (or not) BY the reviewer
+with the fix.  Return the entry file path, or nil."
+  (when repo
+    (let ((file (code-review-registry--write-entry repo incident)))
+      (message "code-review-registry: entry written LOCALLY: %s — fill it, \
+share it where it has context, commit it with the fix" file)
+      (when code-review-registry-drafter-function
+        (condition-case err
+            (funcall code-review-registry-drafter-function
+                     incident file repo)
+          (error
+           (code-review-utils--log
+            "code-review-registry"
+            (format "incident drafting failed: %S" err))
+           (message "code-review-registry: agent draft failed — fill %s by hand"
+                    file))))
+      (find-file-other-window file)
+      file)))
+
+(defcustom code-review-registry-drafter-function nil
+  "The incident-report DRAFTER hook (nil = fill by hand).
+Called with (INCIDENT FILE REPO): the agent drafts the entry's
+HUMAN BODY into FILE (below the front matter, under `### Human
+notes') — what happened, what invariant it broke, what guards it
+now — from the incident's metadata (title, paths, the PR).  The
+reviewer edits the draft and commits when ready: nothing is
+posted anywhere.  The mode CALLS this but never implements it
+\(the agent-shell reference implementation wires it)."
+  :type '(choice function (const nil))
+  :group 'code-review)
 
 ;;;###autoload
 (defun code-review-incident-tag ()

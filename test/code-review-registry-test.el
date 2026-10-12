@@ -471,3 +471,45 @@ incident file tag"))
        ;; FAILURE: a leaked buffer's async sentinel re-render can
        ;; delete the current LOCAL row and stall later tests
        (kill-buffer buf))))))
+
+;;; req-2026-10-12-004: the incident entry stays LOCAL
+
+(ert-deftest code-review-registry-test/req-2026-10-12-004-submit-entry-local-only ()
+  "The submission is the LOCAL registry: the entry file is
+written and returned, and with a drafter wired the agent drafts
+the human body — NEVER a PR comment (an out-of-context ping of
+the contributor evaporates; the reviewer shares the report
+where it has context)."
+  (let* ((repo (code-review-registry-test--make-repo
+                '(("fix: the thing\n\nIncident: 2026-001\nPaths: src/a.py\n"
+                   ("src/a.py" . "x=1\n")))))
+         (incident (list :id "2026-048" :title "the outage"
+                         :date "2026-10-12" :invariant "req-x"
+                         :tests '("test-a") :paths '("src/a.py")
+                         :pr "7"))
+         (calls nil)
+         ;; the PR-comment path would need a live forge PR; its
+         ;; absence is what this test asserts structurally: the
+         ;; submit function no longer references it
+         (code-review-registry-drafter-function
+          (lambda (inc file rp)
+            (push (list inc file rp) calls)
+            (with-temp-file file
+              (insert "### Human notes\ndrafted\n"))
+            file)))
+    (let ((file (code-review-registry--submit-entry repo incident)))
+      (should (and file (file-exists-p file)))
+      (should (equal (length calls) 1))
+      (should (equal (plist-get (car (car calls)) :id) "2026-048"))
+      (should (equal (car calls) (list incident file repo)))
+      ;; the drafter's fill landed in the entry file
+      (with-temp-buffer
+        (insert-file-contents file)
+        (should (search-forward "drafted" nil t))))))
+
+(ert-deftest code-review-registry-test/req-2026-10-12-004-submit-entry-no-repo-nil ()
+  "No repository: nothing is written, nil is returned, no
+signal (the drafters never fire)."
+  (should (null (code-review-registry--submit-entry
+                 nil (list :id "2026-049" :title "t" :date "d"
+                           :invariant "" :tests nil :paths nil :pr "")))))

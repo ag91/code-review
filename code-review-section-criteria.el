@@ -39,6 +39,7 @@
 (require 'code-review-db)
 (require 'code-review-utils)
 (require 'code-review-criteria)
+(require 'code-review-criteria-brief)
 
 (defvar code-review-repo-worktree)         ; code-review-repo.el
 (declare-function code-review-section--goto-file-section
@@ -54,8 +55,10 @@
 (defvar code-review-criteria-item-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-criteria-toggle)
+    (define-key map (kbd "p") 'code-review-criteria-priority-cycle)
     map)
-  "RET cycles the satisfied? state of the criteria item at point.")
+  "RET cycles the satisfied? state, `p' the P1..P3 priority
+\(durable, phase 27 station 1) of the criteria item at point.")
 
 (defvar-local code-review-criteria--states nil
   "Hash req-ID -> state of the current buffer's checklist.
@@ -122,6 +125,44 @@ verdict is the reviewer's own reading aid)."
                 (put-text-property
                  beg (+ beg 3) 'font-lock-face
                  (code-review-criteria--state-face next))))))))))
+
+(defun code-review-criteria-priority-cycle ()
+  "Cycle the P1..P3 priority of the criteria item at point (`p',
+phase 27 station 1).  The EDITING-THE-PANE ownership step: the
+priority lives in the criteria file's front matter (durable —
+it survives re-renders and rides the commit), the row's token is
+rewritten in place.  Nothing is submitted anywhere."
+  (interactive)
+  (let ((sec (magit-current-section)))
+    (when (and sec
+               (eq (eieio-object-class sec)
+                   'code-review-criteria-item-section))
+      (let* ((req (code-review-criteria-brief-cycle (oref sec req)))
+             (prio (plist-get req :priority))
+             ;; locate the token by its UNIQUE marker property
+             ;; (text-property-search-forward does NOT set match
+             ;; data — walk positions instead).  The property
+             ;; covers the WHOLE token piece INCLUDING its leading
+             ;; space (" P1".." P-", 3 chars): replace the full
+             ;; region, never assume a fixed length
+             (end (oref sec end))
+             (beg (and (< (oref sec start) end)
+                       (next-single-property-change
+                        (oref sec start) 'cr-priority nil end)))
+             (tok-end (and beg (< beg end)
+                           (next-single-property-change
+                            beg 'cr-priority nil end))))
+        (when (and beg tok-end (<= tok-end end))
+          (let ((props (text-properties-at beg))
+                (inhibit-read-only t))
+            (delete-region beg tok-end)
+            (goto-char beg)
+            (insert (concat " " (or prio "P-")))
+            (set-text-properties beg (point) props)
+            (put-text-property
+             beg (point) 'font-lock-face
+             (if (equal prio "P1") 'font-lock-warning-face
+               'magit-dimmed))))))))
 
 (defun code-review-section--criteria-insert (text &rest props)
   "Insert TEXT carrying the criteria item keymap (plus PROPS).
@@ -190,6 +231,15 @@ reference, on demand."
                                   (plist-get req :file) repo))))
        (code-review-section--criteria-insert
         (format " %s" (code-review-section--criteria-slug req)))
+       ;; the PRIORITY token (phase 27 station 1): exactly 2 chars,
+       ;; marked 'cr-priority for the in-place `p' rewrite; `P-'
+       ;; means unset.  P1 is the budget-carrying rank
+       (code-review-section--criteria-insert
+        (format " %s" (or (plist-get req :priority) "P-"))
+        'cr-priority t
+        'font-lock-face (if (equal (plist-get req :priority) "P1")
+                            'font-lock-warning-face
+                          'magit-dimmed))
        (dolist (p covered)
          (code-review-section--criteria-insert " ")
          (insert-button (file-name-nondirectory p)
@@ -233,6 +283,22 @@ pass with byte caps."
           (magit-insert-heading)
           (cond
            (matching
+            (let ((n-p1 (cl-count-if
+                         (lambda (m)
+                           (equal (plist-get (plist-get m :req)
+                                             :priority)
+                                  "P1"))
+                         matching)))
+              ;; the P1 budget line (phase 27 station 1): an
+              ;; uneditable P1 list is an UNDER-SPECIFIED change
+              (when (> n-p1 code-review-criteria-max-p1)
+                (insert "  ")
+                (insert (propertize
+                         (format "%d P1 criteria (budget %d): under-specified \
+change — edit the list down (p) or split the PR"
+                                 n-p1 code-review-criteria-max-p1)
+                         'font-lock-face 'font-lock-warning-face))
+                (insert ?\n)))
             (pcase-dolist (`(:req ,req :paths ,covered) matching)
               (code-review-section--insert-criteria-item req covered)))
            (t
@@ -244,6 +310,21 @@ pass with byte caps."
                      "  — M-x code-review-criteria-insert-template drafts one"
                      'font-lock-face 'magit-dimmed))
             (insert ?\n)))
+          ;; the loop's ONE next action (the state machine, swift)
+          (when matching
+            (insert "  ")
+            (insert (propertize
+                     (format "next: %s"
+                             (code-review-criteria-brief--next-action
+                              (length matching)
+                              (code-review-criteria-brief--verdicts
+                               code-review-criteria--states
+                               (mapcar (lambda (m)
+                                         (plist-get (plist-get m :req)
+                                                    :id))
+                                       matching))))
+                     'font-lock-face 'magit-dimmed))
+            (insert ?\n))
           (insert ?\n))))))
 
 (provide 'code-review-section-criteria)

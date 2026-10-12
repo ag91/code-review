@@ -167,19 +167,25 @@ sentence per file).  nil when the body is empty."
 
 (defun code-review-criteria--requirement-from-text (file text)
   "Requirement plist from criteria FILE content TEXT.  Pure.
-\(:id :file :sentence :paths :text), or nil when the file name
-carries no date-numbered ID or the text has no sentence."
+\(:id :file :sentence :paths :priority :text), or nil when the
+file name carries no date-numbered ID or the text has no
+sentence.  :priority is the optional front-matter P1/P2/P3
+\(phase 27 station 1: the reviewer's OWN ranking of what matters
+in this change — the P1 count is the under-specification signal
+consumed by the brief pane and the grill)."
   (let* ((id (code-review-criteria--id-from-file file))
          (split (code-review-criteria--split-front-matter text))
          (fm (car split))
          (sentence (code-review-criteria--sentence (cdr split))))
     (and id sentence
-         (list :id id
-               :file file
-               :sentence sentence
-               :paths (and fm (code-review-registry--split-values
-                               (plist-get fm :paths)))
-               :text text))))
+         (let ((prio (and fm (plist-get fm :priority))))
+           (list :id id
+                 :file file
+                 :sentence sentence
+                 :paths (and fm (code-review-registry--split-values
+                                 (plist-get fm :paths)))
+                 :priority (and (member prio '("P1" "P2" "P3")) prio)
+                 :text text)))))
 
 ;;; The scan (bounded, one git pass)
 

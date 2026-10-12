@@ -1011,6 +1011,8 @@ Dismiss with \\[quit-window] in the popup, or by running
   :type 'alist)
 
 (declare-function code-review--insert-html "code-review-section")
+(declare-function code-review-criteria-brief--insert-pane
+                  "code-review-criteria-brief")
 
 (defun code-review-pr-description-insert (pr)
   "Insert the title and description of PR into the current buffer.
@@ -1064,6 +1066,10 @@ buffer).  \\[quit-window] dismisses from inside the popup too."
           (let ((inhibit-read-only t))
             (special-mode)
             (erase-buffer)
+            ;; phase 27 station 1: the brief pane ABOVE the
+            ;; description — judge the change's claimed criteria
+            ;; before reading the code
+            (code-review-criteria-brief--insert-pane pr)
             (code-review-pr-description-insert pr)
             (goto-char (point-min))))
         (display-buffer (get-buffer code-review-pr-description-buffer-name)

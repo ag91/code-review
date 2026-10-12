@@ -67,14 +67,32 @@ THE SYSTEM SHALL keep the export pure (no network calls).
 
 In a local review, a `Criteria (solo loop)` section renders next to the diff
 with every requirement whose `paths:` cover the changed files — one scannable
-line per requirement (state marker, req id, subject, covered-path jump
-buttons), the full EARS sentence one `TAB` away:
+line per requirement (state marker, req id, subject, priority, covered-path
+jump buttons), the full EARS sentence one `TAB` away:
 
 - `RET` on a requirement row cycles its verdict: `[ ]` pending -> `[x]`
   satisfied -> `[!]` violated. Your own reading aid — nothing is submitted.
+- `p` on a row cycles its priority P1 -> P2 -> P3 -> unset (phase 27):
+  the ranking lives in the criteria file's front matter, so it rides the
+  commit. When the P1 list exceeds `code-review-criteria-max-p1` (7), the
+  checklist flags the change as under-specified.
 - `TAB` on a row expands its full EARS sentence in place.
 - `RET`/click on the req id jumps to the criteria file in the worktree;
   clicking a covered path jumps to that file's section in the review.
+- `d` shows the PR intent popup with THE BRIEF above it (phase 27 station 1):
+  the ranked criteria ledger, the P1 budget line, and the loop's one next
+  action — edit the brief BEFORE reading the diff.
+- `g` runs THE GRILL (phase 27 station 4, after verdicts are recorded):
+  ledger suggestions awaiting your disposition in the review buffer —
+  `[x]` criteria the evidence contradicts, unfalsifiable wording, P1
+  criteria nothing covers; `d` dismisses a row, buttons jump. With an
+  agent wired, the semantic cross-check (contradictions between
+  criteria) runs in the agent session.
+- `C-c C-p` converts the criterion at point to an executable probe and
+  runs it at HEAD and BASE (phase 27 review-by-execution): probe green
+  at HEAD + red at BASE = the criterion is met; red at HEAD = the code
+  contradicts it (flip the verdict or emit with `C-c C-t`); green at
+  BASE = a probe that detects nothing.
 - No requirement covers the change? `warn` mode (the default) shows a banner
   inviting `M-x code-review-criteria-insert-template`, which drafts a new
   criteria file (paths prefilled from your diff) and visits it in another
