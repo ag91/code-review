@@ -1,8 +1,8 @@
 ---
 paths: [code-review-criteria.el]
+priority: P1
 ---
 
-WHEN a criteria file carries a date-numbered id in its name
-and an EARS sentence in its body THE SYSTEM SHALL extract the
-requirement (id, sentence, declared paths) from bounded file
-reads, tracked and untracked alike.
+WHEN a repository's criteria are read THE SYSTEM SHALL extract
+each requirement (id, sentence, declared paths) completely and
+identically, whether the file is tracked or not.

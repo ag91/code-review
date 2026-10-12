@@ -1,5 +1,6 @@
 ---
 paths: [code-review-section-criteria.el]
+priority: P1
 ---
 
 WHEN a local review renders THE REVIEW BUFFER SHALL list every

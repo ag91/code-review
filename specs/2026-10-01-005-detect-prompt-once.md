@@ -1,5 +1,6 @@
 ---
 paths: [code-review-registry.el, code-review.el]
+priority: P2
 ---
 
 WHEN a review's title or description matches the incident

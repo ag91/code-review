@@ -1,5 +1,6 @@
 ---
 paths: [code-review-comment.el, code-review-criteria.el]
+priority: P1
 ---
 
 WHEN the reviewer records a regression verdict as a review

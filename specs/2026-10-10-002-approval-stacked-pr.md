@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria-regression.el]
+priority: P2
 ---
 
 WHEN the reviewer approves an explored regression draft THE

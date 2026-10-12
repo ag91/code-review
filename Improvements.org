@@ -4510,6 +4510,31 @@ by what I am reading?" — never "what tool do I run now".
   fails-before/passes-after red suite is several separately
   testable behaviors — it heads them.
 
+* Phase 28 — One tier per PR :todo:
+
+The dogfood wall (2026-10-13): a local diff that touches the
+criteria ENGINE matches all 22 criteria at once — every
+criterion governs the same three engine files.  The reviewer's
+time budget goes to reading the DIFF; a flat 22-row ledger is
+noise before the first hunk.  The durable ledger stays (criteria
+are repo-long invariants, stable ids outlive PRs — one-criterion-
+per-PR is a PR log, not a ledger); what changes is the SURFACE:
+
+- ONE TIER PER PR: the checklist renders the P1 rows first and
+  collapses every P2/P3 row into one foldable "reference"
+  child section (the phase 9 fold rules: heading + explicit
+  hide + hide-in-spec).  The reviewer dispositions the P1 tier;
+  the reference tier is one TAB away, never a filter (a
+  criterion this diff could break is exactly what the review
+  exists to judge — relevance is never decided mechanically).
+- TIER-GATED LOOP: the budget line and the one-next-action
+  machine gate on the P1 tier only (a P1-free ledger does not
+  gate: the reference tier does not block shipping).  The
+  machine's station-1 check stays keyed on the TOTAL ledger
+  (no criteria at all is still the draft-the-brief station).
+- The P1 budget (max 7) is the pressure that keeps the tier
+  small: over-budget = under-specified change (phase 25).
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N

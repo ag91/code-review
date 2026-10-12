@@ -1,5 +1,6 @@
 ---
 paths: [code-review-testimpact.el]
+priority: P3
 ---
 
 WHEN the no-test-coverage mapping extracts definitions from

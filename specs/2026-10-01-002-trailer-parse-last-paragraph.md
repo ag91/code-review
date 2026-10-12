@@ -1,5 +1,6 @@
 ---
 paths: [code-review-registry.el]
+priority: P2
 ---
 
 WHEN a commit message's last paragraph is a trailer block THE

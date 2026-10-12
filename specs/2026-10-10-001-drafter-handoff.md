@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria.el, code-review-agents-shell.el]
+priority: P2
 ---
 
 WHEN the `local' strategy fires with a reviewer-side drafter

@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria.el, code-review-section-analysis.el]
+priority: P2
 ---
 
 WHEN a reviewed diff modifies a criteria file whose req id no

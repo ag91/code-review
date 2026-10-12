@@ -1,5 +1,6 @@
 ---
 paths: [code-review-registry.el]
+priority: P1
 ---
 
 WHEN an incident is tagged THE SYSTEM SHALL write the registry

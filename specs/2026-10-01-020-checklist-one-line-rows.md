@@ -1,5 +1,6 @@
 ---
 paths: [code-review-section-criteria.el]
+priority: P2
 ---
 
 WHEN the criteria checklist renders THE REVIEW BUFFER SHALL keep

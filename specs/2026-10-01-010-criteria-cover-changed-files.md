@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria.el]
+priority: P1
 ---
 
 WHEN a change's files are matched against the repository's

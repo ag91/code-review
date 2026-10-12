@@ -1,5 +1,6 @@
 ---
 paths: [code-review-coupling.el]
+priority: P3
 ---
 
 WHEN a completeness finding's historically coupled peer is

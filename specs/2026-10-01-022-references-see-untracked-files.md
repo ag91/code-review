@@ -1,5 +1,6 @@
 ---
 paths: [code-review-analysis.el]
+priority: P2
 ---
 
 WHEN the analysis searches the worktree for references to a

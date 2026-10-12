@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria-grill.el]
+priority: P2
 ---
 
 WHEN a contested criterion converts to an executable probe THE

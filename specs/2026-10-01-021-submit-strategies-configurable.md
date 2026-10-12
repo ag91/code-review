@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria.el, code-review-comment.el]
+priority: P2
 ---
 
 WHEN a criterion is captured THE SYSTEM SHALL submit it through

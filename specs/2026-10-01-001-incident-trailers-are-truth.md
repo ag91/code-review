@@ -1,5 +1,6 @@
 ---
 paths: [code-review-registry.el]
+priority: P1
 ---
 
 WHEN a fix commit carries Incident, Invariant-Ref,

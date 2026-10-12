@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria.el, code-review-comment.el]
+priority: P3
 ---
 
 WHEN a criterion is captured from a review comment THE SYSTEM

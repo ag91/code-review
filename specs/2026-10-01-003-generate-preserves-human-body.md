@@ -1,5 +1,6 @@
 ---
 paths: [code-review-registry.el]
+priority: P2
 ---
 
 WHEN the incidents/ registry is regenerated THE SYSTEM SHALL

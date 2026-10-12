@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria-brief.el, code-review-section-criteria.el]
+priority: P1
 ---
 
 WHEN the reviewer edits the brief THE SYSTEM SHALL keep each

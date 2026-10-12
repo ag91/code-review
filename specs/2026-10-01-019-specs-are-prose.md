@@ -1,5 +1,6 @@
 ---
 paths: [code-review-testimpact.el]
+priority: P3
 ---
 
 WHEN a SPEC-classified criteria file mentions CI markers in its

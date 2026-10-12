@@ -1,5 +1,6 @@
 ---
 paths: [code-review-criteria.el, code-review-local.el]
+priority: P3
 ---
 
 WHEN a local review is requested with

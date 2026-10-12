@@ -1,5 +1,6 @@
 ---
 paths: [code-review-analysis.el, code-review-section-wash.el]
+priority: P2
 ---
 
 WHEN a hunk touches a path with registered incidents THE
