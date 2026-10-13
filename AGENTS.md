@@ -921,6 +921,21 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   bol.  The body overlays were correct all along (start = body
   bol, end = point after the insert); only the heading overlays
   were broken.
+- An interactive spec's condition-case handler whose last form
+  is `(message ...)` RETURNS THE MESSAGE STRING (a handler's
+  return value is the condition-case's value, which is the
+  interactive form's result): every manually typed
+  `code-review-start` URL failed far away as "Could not
+  identify the PR with the given URL: Not a valid url" because
+  a typo'd variable (`urk`) void-signaled into exactly such a
+  handler (2026-10-13).  Never let an input-validation handler
+  end in `message` — signal (`user-error`) or re-prompt so
+  garbage cannot become the command's argument.  And validate
+  by the RESULT of the parser, not by absence of error:
+  `code-review-utils-pr-from-url` returns NIL for a non-URL (it
+  does not signal), so a progn'd call whose return value is
+  discarded checks NOTHING — the typo was, absurdly, the only
+  thing making the old check fail loudly.
 
 <!-- code-review-conventions v1 -->
 

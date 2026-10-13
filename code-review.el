@@ -126,21 +126,34 @@ OUTDATED."
     (code-review-utils-build-obj pr-alist)
     (code-review--build-buffer)))
 
+(defun code-review--valid-pr-url-p (cand)
+  "Return CAND when it parses as a PR URL, nil otherwise.
+`code-review-utils-pr-from-url' returns NIL for a non-URL (it
+does not signal) — the RESULT is the verdict, never the absence
+of an error."
+  (and (stringp cand)
+       (code-review-utils-pr-from-url cand)
+       cand))
+
+(defun code-review--read-pr-url ()
+  "Read a pull request URL for `code-review-start'.
+The kill ring and the window-system selection come first (each
+validated by `code-review--valid-pr-url-p'), then the
+minibuffer.  A typed URL that does not parse signals `user-error'
+— the old interactive spec validated a typo'd variable (a void
+`urk'), caught the void-variable, and returned the error MESSAGE
+STRING as the URL, so every manually entered address failed far
+away with \"Could not identify the PR ...\"."
+  (or (code-review--valid-pr-url-p (car kill-ring))
+      (code-review--valid-pr-url-p (ignore-errors (gui-get-selection)))
+      (let ((url (read-string "URL to review: ")))
+        (or (code-review--valid-pr-url-p url)
+            (user-error "Not a valid pull request URL: %s" url)))))
+
 ;;;###autoload
 (defun code-review-start (url)
   "Start review given PR URL."
-  (interactive
-   (list
-    (cond
-     ((ignore-errors (code-review-utils-pr-from-url (car kill-ring))) (car kill-ring))
-     ((ignore-errors (code-review-utils-pr-from-url (gui-get-selection))) (gui-get-selection))
-     (t (let ((url (read-string "URL to review: ")))
-          (condition-case err
-              (progn
-                (code-review-utils-pr-from-url urk)
-                url)
-            (error
-             (message "Not a valid url" err))))))))
+  (interactive (list (code-review--read-pr-url)))
   (let ((code-review-section-full-refresh? t))
     (code-review-auth-source-debug)
     (code-review-utils-build-obj-from-url url)

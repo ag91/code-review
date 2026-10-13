@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'a)
 (require 'code-review-utils)
+(require 'code-review)
 
 (defconst code-review-utils-test--sample-grouped-comments
   (a-alist
@@ -134,5 +135,48 @@
     (dolist (cell pr)
       (should-not (and (stringp (cdr cell))
                        (text-properties-at 0 (cdr cell)))))))
+
+;;; PR URL input (code-review--read-pr-url)
+
+(ert-deftest code-review-utils-test/read-pr-url-kill-ring ()
+  "A valid PR URL in the kill ring is passed through unchanged."
+  (let ((kill-ring
+         (list "https://github.com/WriterInternal/be.service.billing/pull/1050")))
+    (should (equal (code-review--read-pr-url)
+                   "https://github.com/WriterInternal/be.service.billing/pull/1050"))))
+
+(ert-deftest code-review-utils-test/read-pr-url-valid-manual-entry ()
+  "A typed valid PR URL is validated and returned unchanged."
+  (let ((kill-ring (list "not a url"))
+        (old-read (symbol-function 'read-string))
+        (old-gui (symbol-function 'gui-get-selection)))
+    (unwind-protect
+        (progn
+          (fset 'read-string
+                (lambda (_prompt &rest _)
+                  "https://github.com/WriterInternal/be.service.billing/pull/1050"))
+          (fset 'gui-get-selection (lambda (&rest _) nil))
+          (should (equal (code-review--read-pr-url)
+                         "https://github.com/WriterInternal/be.service.billing/pull/1050")))
+      (fset 'read-string old-read)
+      (fset 'gui-get-selection old-gui))))
+
+(ert-deftest code-review-utils-test/read-pr-url-invalid-manual-entry ()
+  "A typed non-URL aborts with user-error, never a garbage string.
+The old interactive spec validated a typo'd variable (void
+`urk'), caught the void-variable, and returned the message
+string \"Not a valid url\" as the URL — the command then failed
+far away with \"Could not identify the PR ... Not a valid url\"."
+  (let ((kill-ring (list "not a url"))
+        (old-read (symbol-function 'read-string))
+        (old-gui (symbol-function 'gui-get-selection)))
+    (unwind-protect
+        (progn
+          (fset 'read-string (lambda (_prompt &rest _) "also not a url"))
+          (fset 'gui-get-selection (lambda (&rest _) nil))
+          (should-error (code-review--read-pr-url)
+                        :type 'user-error))
+      (fset 'read-string old-read)
+      (fset 'gui-get-selection old-gui))))
 
 ;;; code-review-utils-test.el ends here

@@ -3886,6 +3886,61 @@ the ratchet works alone, before any org buy-in.
     billing PR buffer: file hid, expanded, per-section states
     intact.
 
+* Fix (2026-10-13) — M-x code-review-start failed on every manually typed PR URL
+:PROPERTIES:
+:severity:  3
+:component: code-review.el
+:END:
+** Symptom
+  Pasting a PR link (e.g.
+  =https://github.com/WriterInternal/be.service.billing/pull/1050=)
+  into the =code-review-start= prompt always ended in "Could not
+  identify the PR with the given URL: Not a valid url" — for
+  every URL, valid or not.
+** Root cause (two holes stacked)
+  1. A one-character typo in the interactive spec: the manual
+     branch validated =(code-review-utils-pr-from-url URK)= —
+     a void variable (only occurrence in the package).  Every
+     typed URL signaled void-variable inside a condition-case
+     whose handler was =(message "Not a valid url" err))= —
+     and =message='s RETURN VALUE (the literal string "Not a
+     valid url") became the interactive form's result, so the
+     command proceeded with garbage as the URL and failed far
+     away in =build-obj-from-url=.
+  2. The =condition-case= validated by ABSENCE OF ERROR, but
+     =pr-from-url= never signals on a non-URL — it returns
+     NIL.  Had the typo not existed, the check would have been
+     a silent no-op: garbage typed at the prompt would have
+     sailed straight through.  The typo accidentally made
+     validation "work" by erroring on everything.
+** Fix
+  Extracted =code-review--read-pr-url= from the interactive
+  spec: kill-ring candidate, then window-system selection, then
+  the minibuffer — each through =code-review--valid-pr-url-p=
+  (a =stringp= guard + the PARSED RESULT as the verdict: =nil=
+  from =pr-from-url= means not a PR URL), and a typed URL that
+  fails validation signals =user-error= ("Not a valid pull
+  request URL: ...") so the command aborts at the prompt
+  instead of proceeding with garbage.
+** Verification
+  - Daemon probe ground truth before the fix: the URL parses
+    (=((num . "1050") (repo . "be.service.billing") (owner .
+    "WriterInternal") (forge . github) ...)=), the typo branch
+    reproduced the failure (the handler's return value was
+    captured as "Not a valid url"), and the build path with
+    the REAL URL errored nowhere — the typo was the sole cause.
+  - ERT: =code-review-utils-test/read-pr-url-kill-ring=,
+    =read-pr-url-valid-manual-entry=,
+    =read-pr-url-invalid-manual-entry= (the invalid-entry test
+    caught hole 2 red on the first fix attempt: the helper
+    validated by absence of error and returned the garbage
+    string).  Suite green 293/293.
+  - Live daemon: =code-review.elc= reloaded, the interactive
+    form verified to call the helper, a stubbed valid typed URL
+    returned unchanged and garbage typed at the (stubbed)
+    prompt aborted with the =user-error= message.  No prompts
+    touched the user's frame.
+
 * Phase 24 — Criteria surface, traceability, comment-to-criterion :STATUS:done:
 ** Done (2026-10-10)
 
