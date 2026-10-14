@@ -3623,6 +3623,12 @@ truth, the markdown registry is generated.
   248/248 with the keypress tests; documented as AGENTS.md
   gotchas.
 
+- CRITERIA HOME V2 (2026-10-14): the decision that supersedes
+  this phase's spec-FILE design (definition moves into the
+  test; specs/ collapses to ONE local index) is written up as
+  PHASE 29 — it is future work, not history; the shipped loop
+  keeps working as-is until then.
+
 RELEVANCE (preamble): implements the REVIEWED-BY-A-HUMAN-
 ONCE side at the place every user controls end-to-end:
 reviewing your OWN AI-generated changes before pushing, on
@@ -4589,6 +4595,126 @@ per-PR is a PR log, not a ledger); what changes is the SURFACE:
   (no criteria at all is still the draft-the-brief station).
 - The P1 budget (max 7) is the pressure that keeps the tier
   small: over-budget = under-specified change (phase 25).
+
+* Phase 29 — Criteria home v2: definition-in-test, single local index :todo:
+
+(Designed 2026-10-14, out of the review of the shipped
+phases 22-27 loop; it SUPERSEDES the spec-FILE design text of
+phases 23/24 — one hand-authored sentence file per requirement
+— while keeping every id, test name, and consumer seam.  Not
+started; the shipped loop keeps working as-is until this
+lands.)
+
+WHY: two weeks of dogfooding exposed the real cost of the
+second artifact (minting ids, two edits per requirement, the
+spec-file/test sync the trace lint exists to police) and one
+real hazard (path-touch-only triggering).  The fix is an
+ownership split, not another artifact:
+
+- IN THE TEST (committed, travels with every PR): the EARS
+  sentence, =covers:= (file or FUNCTION — function-level
+  covers match phase 5's added-def extraction and cut the
+  tripwire's false matches), =enforcement:= — as the
+  docstring in ERT (a =C-h f= bonus) and a standardized
+  comment block above the test in every other language
+  (id in the test NAME, sentence in the block: ERT
+  docstrings are elisp luck; munit/scalatest and
+  jest/vitest get =// req-<id>:= blocks).  Colleagues and
+  agents get clearer tests with ZERO tooling on their side
+  — the virality moves to the tests themselves, not to spec
+  files.  Per-language scanner front-ends follow the
+  hunkhighlight =language-map= defcustom pattern.
+- IN THE LOCAL INDEX (untracked tool state, ONE file,
+  =specs/index.md=): id -> priority, verdicts, personal
+  notes; generated skeleton from the test scan plus
+  hand-editable overrides; the brief and =p= cycling
+  mutate THIS, never test source.  The one-file-per-id
+  rule DIES with the definition (it existed because the
+  sentence was the reviewable unit; there is no sentence
+  in the shell anymore).  The 28 shipped spec files
+  migrate mechanically (sentence -> primary test block,
+  front matter -> index) via the EARS-anywhere scanner;
+  ids and test names DO NOT change.
+- ENFORCEMENT TAXONOMY (new lint rule): every criterion
+  declares =enforcement: test | runtime | convention=.  A
+  requirement with no declared enforcement point is a HOPE,
+  not a spec — hopes live in AGENTS.md / Improvements.org.
+  "Never freeze the daemon" and friends are =runtime=
+  (assertions, alarms — the phase 26 ladder), not
+  untestable orphans.  The grill gains a finding for
+  missing or unjustified =convention=.  This is the answer
+  to "a spec I cannot enforce by a test means I need the
+  whole codebase in my head": the taxonomy forces every
+  criterion to name where its enforcement LIVES.
+- TRIGGER TABLE (replaces touched-file-only display):
+  covers touched + test red = BREACH (loud); covers touched
+  + green = quiet GOVERNED marker plus "did this diff edit
+  the test?"; TEST EDITED = SPEC CHANGE (loud: editing the
+  definition IS editing the requirement — the phase 17
+  gaming detector at criterion granularity); test red +
+  covers untouched = cross-area breakage.  Composes with
+  phase 28: P1 tier first (priority from the local index),
+  execution evidence adds the row's state.  The path
+  tripwire STAYS: execution-only triggering is overfittable
+  by construction (a green test proves the ENUMERATED
+  cases, not conformance — an agent adding a path the test
+  never imagined stays green and silent);
+  green-but-governed is exactly where the human eye pays.
+- WORK-REPO OPERABILITY — THE LIFT COMMAND: the solo loop
+  must work on work repos where the AGENTS.md conventions
+  block cannot be installed.
+  =code-review-criteria-lift-test= (on a test section in
+  the phase 12 local review, or from the checklist banner):
+  draft the EARS sentence from the test body (the
+  =criteria-generate-function= hook), write the comment
+  block into the test file CO-LOCATED (it travels with the
+  PR — colleagues get clearer tests), mint the id, add the
+  index entry.  CO-LOCATION preferred; LOCAL-ONLY fallback
+  (definition stored in the index keyed by test name, flagged
+  not-co-located) when even test-file edits are unwelcome.
+  Lift detection: a local review touching tests with no
+  EARS blocks banners "N tests touched, 0 criteria — lift
+  candidates" with a one-key lift.  The =ert-skip=
+  skeleton pattern (EARS block + skipped body, reviewed,
+  then filled) preserves spec-first review.
+- INCIDENT SYMMETRY: incidents are EVENTS, not requirements
+  — the trailer stays the source of truth (phase 22
+  unchanged: the event happened in git history).  The
+  incident's INVARIANT becomes a criterion test like any
+  other, tagged =incident: <id>= in its block
+  (bidirectional with the =Regression-Test:= trailer), and
+  the per-incident markdown files collapse to ONE
+  GENERATED index (=incidents/index.md=, generated from
+  trailers, never curated — heat reads trailers first, index
+  as fallback, as shipped).
+- CONSUMER IMPACT: every sentence consumer (checklist row,
+  grill, probe, brief) reads through ONE seam —
+  =code-review-criteria--sentence= learns to read the test
+  block; the trace lint's strong direction FLIPS
+  (spec-file-changed-without-test dies; TEST-BLOCK-EDITED
+  becomes the loud signal); the grill's vague/level lints
+  move onto the blocks (the LEVEL RULE of 2026-10-11 becomes
+  a block lint).  The review-by-execution probe generalizes:
+  for =enforcement: test= criteria the checklist row can run
+  the test at HEAD/BASE and the brief's verdict counting
+  reads green/red.
+- MIGRATION: one pass of the EARS-anywhere scanner (treat
+  EARS-shaped text anywhere as a candidate) over the 28
+  specs and the tagged tests: move each sentence into its
+  primary test's block, carry the front matter into the
+  local index, delete the hand-authored =specs/*.md=.  No
+  id changes, no test renames, consumers untouched behind
+  the =--sentence= seam.
+- VERIFICATION: ERT for the scanner front-ends (per-language
+  comment syntax), the lift command (probes faked via
+  =fset= + =unwind-protect=, the =cl-letf= trap), the
+  local-only fallback, the trigger table rows, and the
+  28-file migration (ids and test names unchanged
+  before/after); batch emacs first, then the daemon reload
+  protocol; live acceptance = a work-repo local review with
+  a lifted agent test (no AGENTS.md, co-located block
+  travels with the PR) and the migrated dogfood ledger
+  rendering identically to the shipped one.
 
 * Future ideas
 
