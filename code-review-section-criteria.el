@@ -39,6 +39,7 @@
 (require 'code-review-db)
 (require 'code-review-utils)
 (require 'code-review-criteria)
+(require 'code-review-criteria-home)
 (require 'code-review-criteria-brief)
 
 (defvar code-review-repo-worktree)         ; code-review-repo.el
@@ -180,26 +181,38 @@ exception (insert-button sets its own keymap there)."
                  props)))
 
 (defun code-review-section--criteria-slug (req)
-  "The subject SLUG of REQ, from its file name (the stem after
-the stable date-numbered id).  The one-line checklist row shows
-the slug; the sentence is reference material on TAB."
-  (let* ((base (and (plist-get req :file)
-                    (file-name-nondirectory (plist-get req :file))))
-         (id (plist-get req :id))
-         (stem (and base id
-                    (string-remove-prefix (concat id "-") base))))
-    (or (and stem (file-name-sans-extension stem)) "")))
+  "The subject SLUG of REQ — the one-line checklist row shows
+the slug; the sentence is reference material on TAB.  A test
+block's TITLE (phase 29: the definition rides `;;; req-<id>:
+<title>' above the test) wins; a spec file's slug comes from
+its file name (the stem after the stable date-numbered id)."
+  (cond
+   ((and (plist-get req :title)
+         (not (string-empty-p (plist-get req :title))))
+    (plist-get req :title))
+   (t
+    (let* ((base (and (plist-get req :file)
+                      (file-name-nondirectory (plist-get req :file))))
+           (id (plist-get req :id))
+           (stem (and base id
+                      (string-remove-prefix (concat id "-") base))))
+      (or (and stem (file-name-sans-extension stem)) "")))))
 
-(defun code-review-section--insert-criteria-item (req covered)
+(defun code-review-section--insert-criteria-item (req covered diff-paths)
   "Insert one checklist row for REQ with its COVERED paths.
-ONE SCANNABLE LINE (2026-10-10, the density fix): the state
-marker (RET cycles), the req ID (a jump button into the criteria
-file), the subject SLUG, and the covered paths as JUMP BUTTONS
-into the review buffer's file sections — base names keep the
-row short.  The full EARS sentence is the section's BODY (the
-row is its heading), and the item is created HIDDEN — but the
-actual FOLD is explicit (`--hide-if-hidden', the documented
-code-review rule: magit only folds during
+DIFF-PATHS is the change's full file list (the trigger table's
+input).  ONE SCANNABLE LINE (2026-10-10, the density fix): the
+state marker (RET cycles), the req ID (a jump button into the
+criteria file), the subject SLUG, the covered paths as JUMP
+BUTTONS into the review buffer's file sections — base names
+keep the row short — and the phase 29 trigger-table token:
+[SPEC CHANGE] when the diff edits the requirement's DEFINITION
+file (its test block — editing the definition IS editing the
+requirement; the old touched-file-only display is replaced by
+covers+definition both visible).  The full EARS sentence is the
+section's BODY (the row is its heading), and the item is created
+HIDDEN — but the actual FOLD is explicit (`--hide-if-hidden',
+the documented code-review rule: magit only folds during
 `magit-refresh-buffer', this package renders directly), so TAB
 toggles the sentence in place, and the fold is inherited-
 visibility on re-renders (user expansion survives).  A heading-
@@ -211,6 +224,9 @@ A checklist row is scanned, not read; the sentence is the
 reference, on demand."
   (let* ((id (plist-get req :id))
          (state (code-review-criteria--state id))
+         (spec-change (and diff-paths
+                           (code-review-criteria-home--spec-change-p
+                            req diff-paths)))
          (repo code-review-repo-worktree))
     (code-review-section--hide-if-hidden
      (magit-insert-section
@@ -240,6 +256,14 @@ reference, on demand."
         'font-lock-face (if (equal (plist-get req :priority) "P1")
                             'font-lock-warning-face
                           'magit-dimmed))
+       ;; the trigger table's SPEC CHANGE token (phase 29): this
+       ;; diff edits the requirement's DEFINITION file
+       (when spec-change
+         (code-review-section--criteria-insert
+          " [SPEC CHANGE]"
+          'font-lock-face 'font-lock-warning-face
+          'help-echo "this diff edits the requirement's DEFINITION \
+\(its test block) — the requirement itself changed, review it as one"))
        (dolist (p covered)
          (code-review-section--criteria-insert " ")
          (insert-button (file-name-nondirectory p)
@@ -270,12 +294,13 @@ pass with byte caps."
   (when (and (code-review-db-local-pr-p) code-review-repo-worktree)
     (let* ((diff (code-review-db--pullreq-raw-diff))
            (paths (and diff (code-review-criteria--changed-paths diff)))
+           (fns (and diff (code-review-criteria--changed-fns diff)))
            (criteria (and paths
                          (code-review-criteria--criteria
                           code-review-repo-worktree)))
            (matching (and criteria
                           (code-review-criteria--matching
-                           criteria paths))))
+                           criteria paths fns))))
       (when (or matching (eq code-review-criteria-required 'warn))
         (magit-insert-section (code-review-criteria-section)
           (insert (propertize "Criteria" 'font-lock-face 'magit-section-heading))
@@ -300,7 +325,8 @@ change — edit the list down (p) or split the PR"
                          'font-lock-face 'font-lock-warning-face))
                 (insert ?\n)))
             (pcase-dolist (`(:req ,req :paths ,covered) matching)
-              (code-review-section--insert-criteria-item req covered)))
+              (code-review-section--insert-criteria-item
+               req covered paths)))
            (t
             (insert "  ")
             (insert (propertize
@@ -309,7 +335,23 @@ change — edit the list down (p) or split the PR"
             (insert (propertize
                      "  — M-x code-review-criteria-insert-template drafts one"
                      'font-lock-face 'magit-dimmed))
-            (insert ?\n)))
+            (insert ?\n)
+            ;; phase 29 lift detection: tests touched with no
+            ;; criteria — the work-repo banner (one-key lift)
+            (let ((lift (code-review-criteria-home--lift-candidates
+                         code-review-repo-worktree paths)))
+              (when lift
+                (insert "  ")
+                (insert-button
+                 (format "%d test file%s touched, 0 criteria — lift one"
+                         (length lift) (if (cdr lift) "s" ""))
+                 'face 'font-lock-warning-face
+                 'follow-link t
+                 'help-echo (format "Lift candidates: %s"
+                                    (string-join lift ", "))
+                 'action (lambda (&rest _)
+                           (code-review-criteria-lift-test)))
+                (insert ?\n)))))
           ;; the loop's ONE next action (the state machine, swift)
           (when matching
             (insert "  ")

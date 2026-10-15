@@ -937,17 +937,19 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   discarded checks NOTHING — the typo was, absurdly, the only
   thing making the old check fail loudly.
 
-<!-- code-review-conventions v1 -->
+
+
+<!-- code-review-conventions v3 -->
 
 ## Code review conventions
 
 ### Incident registry
 
-- Every production incident leaves a REGISTRY ENTRY under
-  `incidents/` and a regression test.  Entries are GENERATED
-  from commit trailers (`M-x code-review-registry-generate`) —
-  never hand-curated; edit only the human body below the
-  front matter.
+- Every production incident leaves a REGISTRY ENTRY in the
+  ONE generated `incidents/index.md` and a regression test.
+  The index is GENERATED from commit trailers (`M-x
+  code-review-registry-generate`) — never hand-curated; edit
+  only the human body below an entry's front matter.
 - Fix commits carry the trailers:
   `Incident: <year-numbered id>`, `Invariant-Ref: <req id>`,
   `Regression-Test: <test names>`, `Paths: <files the incident
@@ -958,24 +960,32 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
 
 ### Criteria (requirements)
 
-- Criteria live under `specs/` as markdown, one requirement
-  per file, EARS/Gherkin shape (`WHEN ... THE SYSTEM SHALL
-  ...`), with a stable date-numbered req id in the file name.
+- The EARS DEFINITION is the FIRST LINE of the test's own
+  DESCRIPTION: the docstring of the primary guard test in
+  ERT (`WHEN ... THE SYSTEM SHALL ...`) — a `C-h f` bonus,
+  readable with zero tooling; a standardized comment block
+  above the test carries the MACHINE KEYS only: `covers:`
+  (paths), `covers-fn:` (functions), `enforcement:`
+  (test|runtime|convention), `incident: <id>` tags.
 - Every requirement binds to its guard tests: the req id
   appears in the ERT test name (`file/req-<id>-description`)
-  or the test docstring.
+  and in the `;;; req-<id>:` block header above the primary
+  test.
+- The id is stable and date-numbered (`YYYY-MM-DD-NNN`);
+  local tool state (priorities, notes) lives in the untracked
+  `specs/index.md`, never in test source.
 - A criterion states a USER-VISIBLE SYSTEM OUTCOME, never an
   interface detail — no keybindings, command names, section
   shapes or faces in a criterion (those are documentation;
   the WHEN names what the user does or the state of the
   world, the SHALL names what the system does about it).
-  Lift the SENTENCE, never merge the files: one stable id per
-  file is what traceability tags, path matching and guard
-  tests bind on.
+  Editing the definition (the EARS docstring or the block)
+  IS editing the requirement: review diffs that touch `;;;
+  req-` blocks or EARS docstrings as SPEC CHANGES.
 
 ### If you are an AI agent working in this repository
 
-- Author registry entries, criteria files and test tags
+- Author req blocks in tests, registry entries and test tags
   yourself, in the formats above, as part of the change.
 - PRs touching incident paths get elevated review attention.
-<!-- end code-review-conventions v1 -->
+<!-- end code-review-conventions v2 -->

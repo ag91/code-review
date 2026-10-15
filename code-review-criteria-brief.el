@@ -45,6 +45,7 @@
 
 (require 'cl-lib)
 (require 'code-review-criteria)
+(require 'code-review-criteria-home)
 (require 'code-review-utils)
 
 (defvar code-review-repo-worktree)         ; code-review-repo.el
@@ -127,18 +128,28 @@ its `priority:' line.  The body is never touched."
      (t (concat "---\npriority: " priority "\n---\n\n" (or text ""))))))
 
 (defun code-review-criteria-brief-set (req priority)
-  "Set REQ's PRIORITY in its criteria file (durable) and return
-the updated plist.  The file is rewritten in place; a missing
-file (a criterion deleted under us) leaves everything alone and
-returns nil — never signals."
-  (let* ((file (plist-get req :file)))
-    (when (and file (file-exists-p file))
-      (let ((text (with-temp-buffer
-                    (insert-file-contents file)
-                    (buffer-string))))
-        (with-temp-file file
-          (insert (code-review-criteria-brief--rewrite text priority)))
-        (plist-put req :priority priority)))))
+  "Set REQ's PRIORITY durably and return the updated plist.
+Never signals.  The phase 29 ownership split: a test-block or
+index criterion (the definition lives in the TEST, the tool
+state in the LOCAL index) writes the INDEX — never test source;
+a legacy spec-file criterion rewrites its FILE's front matter
+in place.  A missing file (a criterion deleted under us) leaves
+everything alone and returns nil."
+  (cond
+   ;; phase 29: the local index owns the priority of every
+   ;; definition-in-test criterion
+   ((or (plist-get req :index)
+        (memq (plist-get req :source) '(test index)))
+    (code-review-criteria-home-set-priority req priority))
+   (t
+    (let ((file (plist-get req :file)))
+      (when (and file (file-exists-p file))
+        (let ((text (with-temp-buffer
+                      (insert-file-contents file)
+                      (buffer-string))))
+          (with-temp-file file
+            (insert (code-review-criteria-brief--rewrite text priority)))
+          (plist-put req :priority priority)))))))
 
 (defun code-review-criteria-brief-cycle (req)
   "Cycle REQ's priority P1 -> P2 -> P3 -> unset, write the
@@ -245,7 +256,9 @@ edit the P1 list down (p on checklist rows) or split the PR"
                          'help-echo "Open the criteria file"
                          'action (lambda (&rest _)
                                    (find-file-other-window
-                                    (plist-get req :file))))
+                                    (expand-file-name
+                                     (plist-get req :file)
+                                     (or worktree default-directory)))))
           (insert (propertize
                    (format " %s" (or (plist-get req :priority) "P-"))
                    'font-lock-face
@@ -263,7 +276,10 @@ edit the P1 list down (p on checklist rows) or split the PR"
                            'help-echo "Jump to the criterion file"
                            'action (lambda (&rest _)
                                      (find-file-other-window
-                                      (plist-get req :file)))))
+                                      (expand-file-name
+                                       (plist-get req :file)
+                                       (or worktree
+                                           default-directory))))))
           (insert ?\n))
         (insert (propertize
                  (format "  next: %s\n"

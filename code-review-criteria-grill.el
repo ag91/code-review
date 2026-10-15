@@ -108,7 +108,11 @@ STATES the id -> state hash (or nil: nothing dispositioned yet),
 DIFF-PATHS the change's file paths.  Returns (:kind :id :req
 :text :evidence) plists, kinds: `disagreement' (marked [x] but
 the evidence contradicts it), `vague' (unfalsifiable wording),
-`uncovered-p1' (the budget-carrying rank, nothing covers it)."
+`uncovered-p1' (the budget-carrying rank, nothing covers it),
+`enforcement' (a phase 29 test-block criterion with no declared
+enforcement point, or one enforced by an unnamed convention —
+a requirement with no declared enforcement point is a HOPE, not
+a spec)."
   (let ((res nil))
     (pcase-dolist (`(:req ,req :paths ,covered) matching)
       (let* ((id (plist-get req :id))
@@ -138,7 +142,26 @@ touches nothing it covers")
                       :text (plist-get req :sentence)
                       :evidence "unfalsifiable wording: no SHALL or a \
 vague qualifier — tighten the EARS sentence")
-                res))))
+                res))
+        ;; phase 29 enforcement taxonomy (test-block criteria
+        ;; only: legacy spec files predate the taxonomy and are
+        ;; never flagged)
+        (when (memq (plist-get req :source) '(test index))
+          (let ((enforcement (plist-get req :enforcement)))
+            (cond
+             ((string= enforcement "convention")
+              (push (list :kind 'enforcement :id id :req req
+                          :text (plist-get req :sentence)
+                          :evidence "enforcement: convention — name the \
+convention it rides (or justify it), an unnamed convention is a hope")
+                    res))
+             ((not (member enforcement '("test" "runtime" "convention")))
+              (push (list :kind 'enforcement :id id :req req
+                          :text (plist-get req :sentence)
+                          :evidence "no enforcement point declared \
+\(enforcement: test | runtime | convention) — a requirement with no \
+declared enforcement point is a hope, not a spec")
+                    res)))))))
     (nreverse res)))
 
 ;;; The grill command (on demand, after verdicts)
@@ -191,7 +214,11 @@ buttons jump)"
                            'help-echo "Open the criteria file"
                            'action (lambda (&rest _)
                                      (find-file-other-window
-                                      (plist-get req :file))))
+                                      (expand-file-name
+                                       (plist-get req :file)
+                                       (or (bound-and-true-p
+                                            code-review-repo-worktree)
+                                           default-directory)))))
             (insert (propertize (format " %s"
                                         (code-review-section--criteria-slug
                                          req))
@@ -250,12 +277,13 @@ row, buttons jump.  Never review comments."
     (user-error "The grill runs in a local review with a worktree"))
   (let* ((diff (code-review-db--pullreq-raw-diff))
          (paths (and diff (code-review-criteria--changed-paths diff)))
+         (fns (and diff (code-review-criteria--changed-fns diff)))
          (criteria (and paths
                         (code-review-criteria--criteria
                          code-review-repo-worktree)))
          (matching (and criteria
                         (code-review-criteria--matching
-                         criteria paths))))
+                         criteria paths fns))))
     (unless (and matching code-review-criteria--states
                  (cl-some (lambda (m)
                             (not (eq (gethash (plist-get

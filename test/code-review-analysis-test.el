@@ -639,10 +639,16 @@ list at `code-review-analysis-delicacy-top-k'."
                            '("a.py")))))
       (fset 'code-review-analysis-run orig))))
 
-;;; req-2026-10-01-022: the reference grep sees untracked files
-
+;;; req-2026-10-01-022: references-see-untracked-files
+;; covers: code-review-analysis.el
+;; enforcement: test
 (ert-deftest code-review-analysis-test/req-2026-10-01-022-grep-sees-untracked ()
-  "The worktree reference grep sees UNTRACKED-not-ignored files:
+  "WHEN the analysis searches the worktree for references to a changed
+definition THE SEARCH SHALL see untracked-not-ignored files too (tests
+are drafted before the commit, exactly like criteria) — a
+not-yet-committed test file counts as coverage.
+
+The worktree reference grep sees UNTRACKED-not-ignored files:
 tests (like criteria) are drafted before the commit, so a
 not-yet-committed test file counts as coverage — a tracked-only
 grep reported every new function of an in-flight change as

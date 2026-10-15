@@ -25,10 +25,16 @@
 tests: with these bound, EVERY `.md' file would be DOC (tagged,
 collapsed) — a criteria file must escape the rule entirely.")
 
-;;; req-2026-10-01-015: specs classified FIRST
-
+;;; req-2026-10-01-015: specs-classified-first
+;; covers: code-review-diff.el, code-review-section-wash.el, code-review-section.el
+;; enforcement: test
 (ert-deftest code-review-criteria-trace-test/req-2026-10-01-015-spec-classification ()
-  "A criteria file classifies SPEC — FIRST, before any noise rule
+  "WHEN a criteria file appears in a reviewed diff THE REVIEW BUFFER
+SHALL classify it SPEC (never DOC-tagged, collapsed or hidden by focus
+mode) and wash its blocks into a dedicated Specs section rendered
+above Files changed.
+
+A criteria file classifies SPEC — FIRST, before any noise rule
 (every `.md' would otherwise be DOC: tagged, collapsed), and with
 neither :collapse nor :hide (focus mode never hides the
 reviewed-once artifact).  A non-criteria `.md' stays DOC under
@@ -68,17 +74,29 @@ newlines (a block missing one glues onto the next header)."
       (should (not (string-match-p "[^\n]diff --git " reordered)))
       (should (string-suffix-p "\n" reordered)))))
 
-;;; req-2026-10-01-016: the traceability pass
-
+;;; req-2026-10-01-016: traceability-findings
+;; covers: code-review-criteria.el, code-review-section-analysis.el
+;; enforcement: test
 (ert-deftest code-review-criteria-trace-test/req-2026-10-01-016-strong-and-hint ()
-  "STRONG: a criteria file in the diff no test hunk references.
-HINT: a test hunk referencing a req id whose criteria file the
-diff does not touch.  A criteria file AND its referencing test
-together: no finding at all."
+  "WHEN a reviewed diff modifies a criteria file whose req id no test
+hunk of the diff references THE ANALYSIS SECTION SHALL flag a strong
+traceability finding, and WHEN a test hunk references a req id whose
+criteria file the diff does not touch THE ANALYSIS SECTION SHALL flag
+a hint traceability finding; both with jump buttons, and never as a
+signal into the render.
+
+STRONG (flipped in phase 29): the requirement's DEFINITION is
+edited — a legacy criteria file in the diff, or an EDITED `;;;
+req-' block header line (TEST EDITED = SPEC CHANGE).  HINT: a
+test hunk referencing a req id whose definition the diff does
+not touch.  A definition edit is loud EVEN when a test hunk
+references the id (the old spec-changed-without-test direction
+died with phase 29)."
   (let* ((spec-block "diff --git a/specs/2026-10-01-001-atomic.md b/specs/2026-10-01-001-atomic.md\n--- a/specs/2026-10-01-001-atomic.md\n+++ b/specs/2026-10-01-001-atomic.md\n@@ -1 +1 @@\n-WHEN a\n+WHEN b\n")
          (code-block "diff --git a/src/x.py b/src/x.py\n--- a/src/x.py\n+++ b/src/x.py\n@@ -1 +1 @@\n-a\n+b\n")
-         (test-block "diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1 +1 @@\n-def test_old():\n+def test_new():  # req-2026-10-01-001\n+    pass\n"))
-    ;; spec modified, no test references it: STRONG
+         (test-block "diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1 +1 @@\n-def test_old():\n+def test_new():  # req-2026-10-01-001\n+    pass\n")
+         (block-edit "diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1 +1 @@\n-;;; req-2026-10-01-001: atomic\n+;;; req-2026-10-01-001: atomic\n+;; EARS: WHEN an export runs THE SYSTEM SHALL write it atomically.\n"))
+    ;; spec modified (legacy): the definition edited, STRONG
     (should (equal (code-review-criteria--traceability
                     (concat code-block spec-block))
                    '((:kind strong :id "2026-10-01-001"
@@ -88,9 +106,18 @@ together: no finding at all."
                     (concat code-block test-block))
                    '((:kind hint :id "2026-10-01-001"
                             :path "tests/test_x.py"))))
-    ;; spec AND its test change together: no finding
-    (should (null (code-review-criteria--traceability
-                   (concat spec-block test-block))))
+    ;; definition edited AND referenced: still the loud SPEC
+    ;; CHANGE (the flip)
+    (should (equal (code-review-criteria--traceability
+                    (concat spec-block test-block))
+                   '((:kind strong :id "2026-10-01-001"
+                            :path "specs/2026-10-01-001-atomic.md"))))
+    ;; an EDITED `;;; req-' header line: TEST EDITED = SPEC
+    ;; CHANGE, STRONG
+    (should (equal (code-review-criteria--traceability
+                    (concat code-block block-edit))
+                   '((:kind strong :id "2026-10-01-001"
+                            :path "tests/test_x.py"))))
     ;; nil diff: nothing
     (should (null (code-review-criteria--traceability nil)))))
 
@@ -130,9 +157,16 @@ with `fset' and counted; `fset' + `unwind-protect', never
       (fset 'code-review-criteria--traceability real))))
 
 ;;; req-2026-10-01-017: comment-to-criterion
-
+;; covers: code-review-comment.el, code-review-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-trace-test/req-2026-10-01-017-from-comment ()
-  "`--from-comment': the first paragraph becomes the SHALL clause
+  "WHEN the reviewer records a regression verdict as a review comment THE
+SYSTEM SHALL capture it as a durable criterion (EARS sentence, stable
+date-numbered req id, the comment's path anchored) and submit it to
+the author through the configured strategy chain — the reviewer
+authors criteria, never code.
+
+`--from-comment': the first paragraph becomes the SHALL clause
 (assumed: the comment states the gap, the criterion states the
 invariant), the id is date-numbered from the worktree (computed
 from TODAY, never hardcoded — a hardcoded date passes on the day
@@ -199,8 +233,19 @@ still records the sidecar).  The sub-strategies are faked with
       (fset 'code-review-criteria--submit-via-agent real-agent)
       (fset 'code-review-criteria--submit-via-push real-push))))
 
+;;; req-2026-10-01-021: submit-strategies-configurable
+;; covers: code-review-criteria.el, code-review-comment.el
+;; enforcement: test
 (ert-deftest code-review-criteria-trace-test/req-2026-10-01-021-local-strategy ()
-  "The `local' strategy (the UNVERSIONED solo model): the
+  "WHEN a criterion is captured THE SYSTEM SHALL submit it through the
+first firing strategy of code-review-criteria-submit-strategies (the
+strategies spanning: the author's agent, a push to the author's
+branch, a suggestion block for the author to apply, and a local-only
+write for criteria directories that are not version controlled), and
+WHEN no strategy fires THE SYSTEM SHALL still record the verdict
+sidecar.
+
+The `local' strategy (the UNVERSIONED solo model): the
 criteria file lands in the worktree, NOTHING ELSE happens (no
 git add, no commit, no push), and it always fires.  The criteria
 directory is not under version control in this model."
@@ -238,10 +283,16 @@ buffer to the command that runs the chain."
   (should (eq (lookup-key code-review-comment-mode-map (kbd "C-c C-t"))
               'code-review-comment-to-criterion)))
 
-;;; req-2026-10-01-018: the verdict sidecar
-
+;;; req-2026-10-01-018: verdict-sidecar
+;; covers: code-review-criteria.el, code-review-comment.el
+;; enforcement: test
 (ert-deftest code-review-criteria-trace-test/req-2026-10-01-018-verdict-sidecar ()
-  "Every captured criterion leaves a GREPPABLE verdict entry in
+  "WHEN a criterion is captured from a review comment THE SYSTEM SHALL
+record a greppable verdict entry (date, req id, file:line, sentence,
+original comment) in the criteria verdicts sidecar, whatever
+submission strategy fired.
+
+Every captured criterion leaves a GREPPABLE verdict entry in
 the sidecar: date, req id, file:line anchor, the sentence, the
 original comment.  Entries APPEND (nothing is overwritten); the
 call never signals."
@@ -282,10 +333,15 @@ call never signals."
                (insert-file-contents file)
                (buffer-string))))))
 
-;;; req-2026-10-01-019: specs are prose to the CI-gaming detector
-
+;;; req-2026-10-01-019: specs-are-prose
+;; covers: code-review-testimpact.el
+;; enforcement: test
 (ert-deftest code-review-criteria-trace-test/req-2026-10-01-019-specs-are-prose ()
-  "A SPEC-classified criteria file counts as a DOC file to the
+  "WHEN a SPEC-classified criteria file mentions CI markers in its prose
+THE CI-GAMING DETECTOR SHALL skip it, like DOC files — a requirement
+is a claim, not code.
+
+A SPEC-classified criteria file counts as a DOC file to the
 CI-gaming detector: a requirements file is prose, its CI-marker
 mentions are claims, not code (the detector once flagged its own
 release notes)."

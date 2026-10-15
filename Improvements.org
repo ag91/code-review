@@ -4596,14 +4596,14 @@ per-PR is a PR log, not a ledger); what changes is the SURFACE:
 - The P1 budget (max 7) is the pressure that keeps the tier
   small: over-budget = under-specified change (phase 25).
 
-* Phase 29 — Criteria home v2: definition-in-test, single local index :todo:
+* Phase 29 — Criteria home v2: definition-in-test, single local index :STATUS:done:
 
 (Designed 2026-10-14, out of the review of the shipped
 phases 22-27 loop; it SUPERSEDES the spec-FILE design text of
 phases 23/24 — one hand-authored sentence file per requirement
-— while keeping every id, test name, and consumer seam.  Not
-started; the shipped loop keeps working as-is until this
-lands.)
+— while keeping every id, test name, and consumer seam.
+DONE 2026-10-15 — see the implementation notes at the end of
+this phase.)
 
 WHY: two weeks of dogfooding exposed the real cost of the
 second artifact (minting ids, two edits per requirement, the
@@ -4715,6 +4715,159 @@ ownership split, not another artifact:
   a lifted agent test (no AGENTS.md, co-located block
   travels with the PR) and the migrated dogfood ledger
   rendering identically to the shipped one.
+
+DONE (implementation notes, 2026-10-15) — shipped as
+designed, one pass; ids and test names unchanged throughout.
+
+- =code-review-criteria-home.el= (new): the =;;; req-<id>:=
+  block parser (prefix-strip =";; "= after =";;"= — order
+  matters), the bounded test-file scanner (docstring fallback
+  for pre-block EARS text, =cl-sort= hoisted out of the
+  loop), the local index machinery (line-based
+  parse/rewrite/set, append-only =--index-ensure= stanzas —
+  a sync never clobbers a priority or a hand edit), the
+  merged provider, and the lift command.
+- The seam: =code-review-criteria--home-criteria-function=
+  (defvar, nil default).  =--criteria= merges home AFTER the
+  legacy scan and home WINS on a shared id (the migrated
+  block is the truth; a leftover spec file is the fossil).
+  Consumers stayed behind the plist seam: brief priority
+  writes dispatch on =:source=/:index= to the index, the
+  checklist gains the =covers-fn= match and the
+  =[SPEC CHANGE]= token, the grill the =enforcement= finding.
+- =--traceability= FLIPPED as designed: strong = a definition
+  edited (a legacy spec file in the diff OR an edited
+  =+/- ;;; req-= header line); the old
+  spec-without-test direction is gone.  Two existing tests
+  updated to the flipped semantics
+  (=req-2026-10-01-016-strong-and-hint=,
+  =req-2026-10-01-003-generate-preserves=).
+- The lift: candidates = the review's changed test files,
+  else the repo's; the sentence seeds from the SELECTED
+  test's docstring via a plain any-string-literal reader
+  (the definition scanner is SHALL-gated BY DESIGN — the
+  seed is not: a docstring is already behavior prose and is
+  reshaped into WHEN/SHALL when it carries no SHALL), then
+  the phase 23 AI hook, then the skeleton.  Co-located
+  writes =--insert-block=, which walks the contiguous =;;=
+  run above the deftest and REPLACES it only when it opens
+  with =;;; req-= (replace mode drops the old block's
+  region — see the gotcha below); LOCAL-ONLY stores the
+  definition in the index flagged =not-colocated= and never
+  touches the test file.  The index stanza is ensured either
+  way.
+- Incident symmetry: =incidents/index.md= (defcustom,
+  generated from trailers, human bodies preserved
+  verbatim; the legacy per-file reader stays as fallback).
+  Conventions text v2 (definition-in-test); the installer now
+  REPLACES an older-version block in place (a version bump
+  must not leave two generations of the text behind — v1
+  repos update cleanly).  This repo's AGENTS.md carries v2.
+- Migration: all 30 spec files became blocks above their
+  primary guard tests in 9 test files + 30 stanzas into
+  =specs/index.md=; the =specs/*.md= files deleted.
+  =specs/index.md= and =incidents/index.md= are gitignored
+  local tool state (regenerated skeletons + personal
+  priorities; =code-review-criteria-home-index-sync= /
+  =code-review-registry-generate= rebuild them on a fresh
+  clone).
+- ERT: =test/code-review-criteria-home-test.el= (15 tests:
+  parse, scan, index, merge+seam, changed-fns+matching,
+  spec-change-p, lift candidates, lift co-located and
+  local-only, insert-block migration shape, migration
+  invariants over THIS repo).  Suite 306/306, batch; daemon
+  reload left to the user per the protocol.
+
+Gotchas (this phase's harvest — the split-symbol trap now
+has FOUR confirmed instances, and the stale-.elc family
+grew two new members):
+
+- The SPLIT-SYMBOL trap struck twice on the same day:
+  =code-review-criteria-home--= newline =first-string-literal=
+  (and once before, on =deftest-docstring=).  A byte-compile
+  warning ("function not known to be defined") is the tell;
+  the fix that "kept the split" on the retry is the
+  documented second face.  Stop hand-editing big blocks:
+  splice by line range with boundary assertions, or replace
+  the whole defun from a script.
+- The stale-.elc family, new members: (1) a LEXICAL local
+  never appears in the =.elc= — grepping the bytecode for a
+  local binding name proves NOTHING; probe for a new DEFUN
+  name instead; (2) a fresh =.elc= mtime still serves stale
+  semantics when the compile you ran happened BEFORE the last
+  source edit (mtime ordering lied because the edit and the
+  compile were both after the check).  The protocol stands:
+  grep the log for Error, then grep the =.elc= for a symbol
+  only the new source defines.
+- =--insert-block= replace mode: the first version spliced
+  =[0..at) + block + text[at..]= — with =at= = run-start it
+  INSERTED the new block above and KEPT the old one below it
+  (the old header survived; every replace test failed while
+  the insert tests passed).  Replace mode must continue from
+  LINE-START, not from =at=.
+- ERT lift tests MUST let-bind =code-review-repo-worktree=
+  (the lift's repo resolution): in the batch suite
+  =default-directory= resolves the repo to the REAL
+  code-review repo, and the lift wrote its test stanzas into
+  the real =specs/index.md= — a pollution that surfaced as
+  the migration-invariants test counting 31 ids and was
+  twice misread as a scanner bug.  A stray stanza in the real
+  index after =make test= is a fixture leaking through repo
+  resolution, not a cleanup miss.
+- =code-review-criteria-home.el= landed at ~895 lines, over
+  the 500-800 file-size guideline.  Flagged for a split when
+  next touched: the scanner, the index machinery and the
+  lift command are three cohesive seams (the phase 15c
+  facade split is the template).
+
+CORRECTION (2026-10-15, the user's review of the migrated
+shape): the EARS sentence is the FIRST LINE of the test's own
+DESCRIPTION — the docstring — never a comment line.  "No need
+of modifying the test, just describe it with the EARS syntax
+that is readable enough to stand for a test description."  The
+v1 landing had put the sentence in =;; EARS:= block lines (the
+comment-block shape the design text reserved for OTHER
+languages).  Reshaped:
+
+- SCANNER: the sentence source order is the following
+  deftest's DOCSTRING FIRST PARAGRAPH (SHALL-gated —
+  canonical), then the block's =ears:= key (other languages,
+  explicit override), then the legacy whole-test search.
+- BLOCK: the =;;; req-<id>:= header + machine keys only
+  (covers, covers-fn, enforcement, incident) — no sentence.
+- LIFT: =--set-docstring-sentence= makes the sentence the
+  docstring's first paragraph (an existing first paragraph is
+  REPLACED — the lift seeded the sentence FROM it, same prose
+  in WHEN/SHALL shape; a docstring-less deftest gets one).
+- MIGRATED AGAIN: all 30 blocks slimmed, all 30 sentences
+  moved into their deftests' docstrings as the first
+  paragraph (the old prose survives below it, verbatim).
+- CONVENTIONS: sentinel v3 (the installer REPLACES older
+  blocks in place — a version bump must not leave two
+  generations behind); this repo's AGENTS.md carries v3.
+
+Gotchas (the correction's harvest — the fixture-splice bug
+was the phase's meanest):
+
+- A docstring detector that takes "the first string literal
+  after the deftest name" is WRONG for docstring-less tests:
+  the first literal is a BODY FIXTURE (a path string, a diff
+  block), and the migration spliced the sentence INTO IT —
+  a corrupted =src/payments/export.py= path fixture, a
+  sentence-prefixed diff block.  Two of the three corrupted
+  tests still PASSED (the engines tolerate a mangled
+  fixture) — the corruption was invisible to the suite.
+  Detect the docstring by POSITION (the literal opening at
+  the line after the arglist), never by proximity; and
+  never trust a green suite over a diff review of migrated
+  FIXTURES: read the changed hunks, the tests exercise the
+  engines, not the fixtures' prose.
+- The restore path was the STAGED blob: =git show
+  :test/file.el= is the pre-migration content of a staged
+  file — re-running a corrected script over it beats
+  hand-repairing three fixtures.  (Worked because the file
+  was staged but uncommitted; commit checkpoints before
+  bulk migrations.)
 
 * Future ideas
 

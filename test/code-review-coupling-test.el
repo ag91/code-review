@@ -192,10 +192,16 @@ finds the left-behind coupled test file."
 
 ;;; code-review-coupling-test.el ends here
 
-;;; req-2026-10-01-023: DOC peers are never findings
-
+;;; req-2026-10-01-023: coupling-ignores-doc-peers
+;; covers: code-review-coupling.el
+;; enforcement: test
 (ert-deftest code-review-coupling-test/req-2026-10-01-023-doc-peers-never-findings ()
-  "A DOC-classified file on EITHER side never becomes a
+  "WHEN a completeness finding's historically coupled peer is
+DOC-classified THE COUPLING CHECK SHALL emit no finding — prose
+co-changes with code by nature and is never an incomplete refactor
+signal.
+
+A DOC-classified file on EITHER side never becomes a
 completeness finding: prose co-changes with code by nature — a
 100% degree against the changelog is a tautology, not an
 incomplete refactor, and \"is the refactor complete?\" is

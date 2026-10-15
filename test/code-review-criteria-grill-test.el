@@ -21,10 +21,17 @@
   (list :id id :priority prio :sentence sentence
         :file (format "specs/%s-x.md" id) :paths '("src/a.el") :text "T"))
 
-;;; req-2026-10-12-002: the mechanical grill
-
+;;; req-2026-10-12-002: the-grill
+;; covers: code-review-criteria-grill.el
+;; enforcement: test
 (ert-deftest code-review-criteria-grill-test/req-2026-10-12-002-vague-p ()
-  "Vague = no SHALL clause or a vague qualifier in the sentence."
+  "WHEN verdicts are recorded and the reviewer runs the grill THE SYSTEM
+SHALL report ledger suggestions awaiting disposition —
+satisfied-but-contradicted criteria, unfalsifiable wording,
+budget-carrying criteria nothing covers — in the review buffer, never
+as review comments.
+
+Vague = no SHALL clause or a vague qualifier in the sentence."
   (should (code-review-criteria-grill--vague-p
            "WHEN x the system handles errors appropriately."))
   (should (code-review-criteria-grill--vague-p
@@ -92,10 +99,16 @@ findings (the grill must not manufacture signal)."
     (should (null (code-review-criteria-grill--findings
                    matching states '("src/a.el"))))))
 
-;;; req-2026-10-12-003: review-by-execution interpretation
-
+;;; req-2026-10-12-003: review-by-execution
+;; covers: code-review-criteria-grill.el
+;; enforcement: test
 (ert-deftest code-review-criteria-grill-test/req-2026-10-12-003-probe-interpretation ()
-  "The two-outcome reading: HEAD pass + BASE fail = met; HEAD
+  "WHEN a contested criterion converts to an executable probe THE SYSTEM
+SHALL run it at HEAD and at the BASE rev on the bounded fake-fix
+substrate and interpret the two outcomes (met / contradicts — flip the
+verdict or emit / probe does not detect).
+
+The two-outcome reading: HEAD pass + BASE fail = met; HEAD
 fail = the code contradicts the criterion (flip or emit); BASE
 pass = a probe that detects nothing."
   (should (string-match-p

@@ -49,7 +49,13 @@ Paths: src/payments/export.py
 
 ;;; Trailer parsing (git's own rule: last paragraph only)
 
+;;; req-2026-10-01-002: trailer-parse-last-paragraph
+;; covers: code-review-registry.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-002-parse-trailers ()
+  "WHEN a commit message's last paragraph is a trailer block THE SYSTEM
+SHALL parse it with continuation lines folded into the value, and
+SHALL NOT parse a prose last paragraph or a lone subject line."
   ;; the last paragraph, all `Key: value' lines
   (should (equal (code-review-registry--parse-trailers
                   "Fix the export race
@@ -215,7 +221,13 @@ body
 
 ;;; Detection (keywords, once per PR)
 
+;;; req-2026-10-01-005: detect-prompt-once
+;; covers: code-review-registry.el, code-review.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-005-keyword-detection ()
+  "WHEN a review's title or description matches the incident keywords THE
+SYSTEM SHALL offer incident tagging exactly once per PR, and SHALL NOT
+prompt in batch emacs."
   (should (code-review-registry--keyword-match-p "Fix outage in payments"))
   (should (code-review-registry--keyword-match-p "chore" "cleanup after SEV1"))
   (should (code-review-registry--keyword-match-p "CVE-2026-1234 fixed"))
@@ -230,7 +242,12 @@ body
 
 ;;; Conventions installer (idempotent, sentinel-marked)
 
+;;; req-2026-10-01-008: conventions-install-idempotent
+;; covers: code-review-registry.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-008-conventions-idempotent ()
+  "WHEN the conventions block is installed into a file a second time THE
+SYSTEM SHALL leave the file unchanged."
   (let* ((dir (make-temp-file "cr-registry-conventions-" t))
          (file (expand-file-name "AGENTS.md" dir)))
     (with-temp-file file (insert "# Project\n\nSome rules.\n"))
@@ -250,7 +267,14 @@ body
 
 ;;; Git integration: the trailer scan, generation, cache
 
+;;; req-2026-10-01-001: incident-trailers-are-truth
+;; covers: code-review-registry.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-001-log-incidents ()
+  "WHEN a fix commit carries Incident, Invariant-Ref, Regression-Test and
+Paths trailers THE SYSTEM SHALL extract one incident carrying its
+invariant, its regression tests and its touched paths from one bounded
+git log pass."
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py" . "def export():\n    pass\n"))))))
@@ -263,32 +287,46 @@ body
     (should (equal (plist-get (car incidents) :paths)
                    '("src/payments/export.py")))))
 
+;;; req-2026-10-01-003: generate-preserves-human-body
+;; covers: code-review-registry.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-003-generate-preserves ()
+  "WHEN the incidents/ registry is regenerated THE SYSTEM SHALL leave an
+existing entry file with the same incident id untouched and SHALL
+rewrite only stale ones.
+
+Generation writes ONE index (phase 29 incident symmetry:
+`incidents/index.md'), one `---'-delimited entry per
+trailer-carrying commit; the human body inside an existing
+same-id entry is NEVER clobbered by a regeneration."
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py" . "def export():\n    pass\n"))))))
-         (dir (expand-file-name code-review-registry-dir repo)))
-    ;; first generate: the entry is written from the trailers
-    (should (= 1 (code-review-registry-generate repo)))
-    (let* ((inc (car (code-review-registry--log-incidents repo)))
-           (file (expand-file-name
-                  (code-review-registry--entry-file-name inc) dir)))
-      (should (file-exists-p file))
-      (let ((fm (code-review-registry--file-front-matter file)))
-        (should (equal (plist-get fm :id) "2026-047"))
-        (should (equal (plist-get fm :invariant) "req-14")))
-      ;; the human body is never clobbered: edit it, regenerate,
-      ;; same id -> the file is left alone
-      (with-temp-file file
-        (insert-file-contents file)
-        (goto-char (point-max))
-        (insert "\nPostmortem notes by a human.\n"))
-      (should (= 0 (code-review-registry-generate repo)))
-      (with-temp-buffer
-        (insert-file-contents file)
-        (should (search-forward "Postmortem notes by a human." nil t))))))
+         (dir (expand-file-name code-review-registry-dir repo))
+         (index (expand-file-name code-review-registry-index-file dir)))
+    ;; first generate: the index is written from the trailers
+    (should (equal (code-review-registry-generate repo) index))
+    (with-temp-buffer
+      (insert-file-contents index)
+      (should (search-forward "id: 2026-047" nil t))
+      (should (search-forward "invariant: req-14" nil t)))
+    ;; the human body is never clobbered: edit it, regenerate,
+    ;; same id -> the entry is carried verbatim
+    (with-temp-file index
+      (insert-file-contents index)
+      (goto-char (point-max))
+      (insert "\nPostmortem notes by a human.\n"))
+    (should (equal (code-review-registry-generate repo) index))
+    (with-temp-buffer
+      (insert-file-contents index)
+      (should (search-forward "Postmortem notes by a human." nil t)))))
 
+;;; req-2026-10-01-004: cache-keys-on-head
+;; covers: code-review-registry.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-004-cache-invalidation ()
+  "WHEN a new commit lands in a repository THE SYSTEM SHALL report a new
+incident without a restart."
   (let* ((repo (code-review-registry-test--make-repo
                 (list (cons code-review-registry-test--msg
                             '(("src/payments/export.py" . "def export():\n    pass\n")))))))
@@ -334,7 +372,14 @@ body
 
 ;;; Consumption wiring
 
+;;; req-2026-10-01-006: incident-heat-on-hunks
+;; covers: code-review-analysis.el, code-review-section-wash.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-006-hunk-entry-heat ()
+  "WHEN a hunk touches a path with registered incidents THE SYSTEM SHALL
+add incident heat to the hunk score (a single incident clearing the
+delicacy threshold alone) and SHALL show the incident count on the
+file and hunk headings."
   ;; incidents are permanent review heat: a single incident clears
   ;; the phase 15 delicacy threshold on its own, and the badge
   ;; carries the incident count.  The added line is definition-free
@@ -366,7 +411,12 @@ body
       (should-not (code-review-analysis--hunk-reasons entry3))
       (should-not (code-review-analysis--hunk-badge entry3)))))
 
+;;; req-2026-10-01-007: dead-never-flags-incident-paths
+;; covers: code-review-analysis.el
+;; enforcement: test
 (ert-deftest code-review-registry/req-2026-10-01-007-dead-never-flags ()
+  "WHEN a path has registered incidents THE SYSTEM SHALL NOT report
+definitions in it as possibly dead."
   ;; phase 5: an incident-touched path is never reported possibly
   ;; dead — an unreferenced definition there is heat, not death
   (let* ((refs (make-hash-table :test #'equal))
@@ -472,10 +522,16 @@ incident file tag"))
        ;; delete the current LOCAL row and stall later tests
        (kill-buffer buf))))))
 
-;;; req-2026-10-12-004: the incident entry stays LOCAL
-
+;;; req-2026-10-12-004: incidents-stay-local
+;; covers: code-review-registry.el
+;; enforcement: test
 (ert-deftest code-review-registry-test/req-2026-10-12-004-submit-entry-local-only ()
-  "The submission is the LOCAL registry: the entry file is
+  "WHEN an incident is tagged THE SYSTEM SHALL write the registry entry
+to the LOCAL registry and open it for the reviewer to fill (and, when
+a drafter is wired, have the agent draft the human body first) — never
+post it as an out-of-context PR comment.
+
+The submission is the LOCAL registry: the entry file is
 written and returned, and with a drafter wired the agent drafts
 the human body — NEVER a PR comment (an out-of-context ping of
 the contributor evaporates; the reviewer shares the report

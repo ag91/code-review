@@ -31,10 +31,15 @@ Return its directory (with trailing slash)."
     (call-process "git" nil nil nil "commit" "-m" "init")
     dir))
 
-;;; req-2026-10-01-009: requirement extraction
-
+;;; req-2026-10-01-009: requirement-extraction
+;; covers: code-review-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-009-requirement-extraction ()
-  "Requirement extraction from criteria file text: the id from
+  "WHEN a repository's criteria are read THE SYSTEM SHALL extract each
+requirement (id, sentence, declared paths) completely and identically,
+whether the file is tracked or not.
+
+Requirement extraction from criteria file text: the id from
 the file NAME (the date-numbered stem head), the EARS sentence
 from the first body paragraph (lines joined), declared paths
 from the front matter."
@@ -93,10 +98,17 @@ non-criteria paths."
                            #'string<)
                      '("2026-10-01-001" "2026-10-01-003"))))))
 
-;;; req-2026-10-01-010: criteria cover changed files
-
+;;; req-2026-10-01-010: criteria-cover-changed-files
+;; covers: code-review-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-010-covers-and-matching ()
-  "Coverage rules: a declared path exact, a declared parent
+  "WHEN a change's files are matched against the repository's criteria
+THE SYSTEM SHALL list exactly the requirements that cover a changed
+path (a declared path matching exactly or as a parent directory, or an
+undeclared text mention of the path or its base name), in
+oldest-id-first order.
+
+Coverage rules: a declared path exact, a declared parent
 directory, an undeclared text mention of the path or its base
 name; a DECLARED-but-uncovering requirement never falls back
 to the heuristic.  The matching list keeps only covering
@@ -134,10 +146,14 @@ requirements, oldest id first, with exactly the covered paths."
                     "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+x\n")
                    '("a.py")))))
 
-;;; req-2026-10-01-011: template stable ids
-
+;;; req-2026-10-01-011: template-stable-ids
+;; covers: code-review-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-011-template-ids ()
-  "Template insertion: the id is date-numbered past the
+  "WHEN a criteria template is inserted THE SYSTEM SHALL assign it a
+stable date-numbered id past the existing criteria of the same date.
+
+Template insertion: the id is date-numbered past the
 existing criteria of the SAME date (a template file already
 carries its id, so drafting never collides), the file name
 carries it as the stem head, the skeleton is EARS-shaped with
@@ -182,10 +198,15 @@ the paths prefilled."
       (should buf)
       (kill-buffer buf))))
 
-;;; req-2026-10-01-012: the require-mode refusal
-
+;;; req-2026-10-01-012: require-refusal
+;; covers: code-review-criteria.el, code-review-local.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-012-require-refusal ()
-  "REQUIRE mode: a change no criteria cover refuses the local
+  "WHEN a local review is requested with criteria-required = require and
+no criteria file covers a changed path THE SYSTEM SHALL refuse to open
+the review with a user-error.
+
+REQUIRE mode: a change no criteria cover refuses the local
 review with a user-error; a covered change opens; the nil/warn
 modes never refuse."
   (let* ((repo (code-review-criteria-test--make-repo
@@ -236,8 +257,15 @@ errors."
 
 ;;; End-to-end: local review renders
 
+;;; req-2026-10-01-013: warn-banner
+;; covers: code-review-section-criteria.el, code-review.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-013-warn-banner ()
-  "warn mode with no covering criteria: the local review
+  "WHEN a local review renders with criteria-required = warn and no
+criteria file covers a changed path THE REVIEW BUFFER SHALL show a
+warning banner naming the template escape hatch.
+
+warn mode with no covering criteria: the local review
 renders a warning banner naming the template escape hatch.
 (render-level: worktree setup on, isolated db.)"
   (let* ((repo (code-review-criteria-test--make-repo
@@ -281,8 +309,16 @@ renders a warning banner naming the template escape hatch.
          ;; delete the current LOCAL row and stall later tests
          (kill-buffer buf))))))
 
+;;; req-2026-10-01-014: checklist-next-to-diff
+;; covers: code-review-section-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-014-checklist-next-to-diff ()
-  "A local review renders the criteria checklist next to the
+  "WHEN a local review renders THE REVIEW BUFFER SHALL list every
+requirement covering the changed files next to the diff, each
+dispositionable in place (pending, satisfied, violated) and navigable
+to its criteria file.
+
+A local review renders the criteria checklist next to the
 diff: the covering requirement with its id (jump button), EARS
 sentence, covered paths, and the pending state marker — which
 RET cycles pending -> satisfied -> violated -> pending.
@@ -364,10 +400,15 @@ RET cycles pending -> satisfied -> violated -> pending.
          ;; render tests (one LOCAL row exists at a time)
          (kill-buffer buf))))))
 
-;;; req-2026-10-01-020: one-line checklist rows
-
+;;; req-2026-10-01-020: checklist-one-line-rows
+;; covers: code-review-section-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-test/req-2026-10-01-020-one-line-rows-and-tab ()
-  "The checklist row is ONE SCANNABLE LINE: marker, req id, the
+  "WHEN the criteria checklist renders THE REVIEW BUFFER SHALL keep each
+requirement to a scannable single line by default, with the full EARS
+sentence available on demand — a checklist row is scanned, not read.
+
+The checklist row is ONE SCANNABLE LINE: marker, req id, the
 subject SLUG, the covered paths as jump buttons — the full EARS
 sentence is the section's BODY, actually FOLDED by default (the
 invisible overlay, not just the `hidden' slot — the first

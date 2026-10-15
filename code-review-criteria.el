@@ -75,6 +75,16 @@
 (declare-function code-review-db--pullreq-raw-diff "code-review-db")
 (declare-function code-review-db--pullreq-raw-infos "code-review-db")
 
+;; phase 29 def extraction (the covers-fn seam) rides the phase 5
+;; engine when it is loaded (the render always has analysis; pure
+;; ERT runs may not)
+(declare-function code-review-analysis--split-hunks
+                  "code-review-analysis")
+(declare-function code-review-analysis--definitions-in
+                  "code-review-analysis")
+(declare-function code-review-testimpact--variable-def-line-p
+                  "code-review-testimpact")
+
 (defcustom code-review-criteria-file-regexp
   "\\`\\(?:specs?\\|requirements?\\)/.+\\.\\(?:md\\|feature\\)\\'"
   "Regexp matching repository files recognized as CRITERIA.
@@ -210,12 +220,28 @@ failed scan reads as no criteria, never as a signal)."
           (cl-subseq files 0 (min (length files)
                                    code-review-criteria-max-entries)))))))
 
+(defvar code-review-criteria--home-criteria-function nil
+  "The phase 29 definition-in-test provider seam (nil = spec
+files only).  `code-review-criteria-home.el' sets it at load to
+`code-review-criteria-home--criteria': the v2 requirements (the
+EARS `;;; req-' blocks in TEST files, plus the LOCAL index
+priority overlays and local-only definitions).
+`code-review-criteria--criteria' APPENDS its result to the
+legacy spec-file scan; on a SHARED id the home entry (the
+definition in the test) WINS — the definition-in-test ownership
+split, migration-period safe.  criteria.el only CALLS the seam
+(never requires the file: home requires criteria, the other
+direction would loop the reader).")
+
 (defun code-review-criteria--criteria (repo)
   "The requirements (criteria) of REPO as plists.  Never signals.
 Each file read is byte-capped
 (`code-review-criteria-max-entry-bytes'), the file list
 count-capped; an oversized or unparseable file is logged and
-skipped, never fatal.  NOT cached on purpose: the solo loop
+skipped, never fatal.  The phase 29 home provider (test blocks +
+local index) appends through
+`code-review-criteria--home-criteria-function' — a shared id
+keeps the HOME entry.  NOT cached on purpose: the solo loop
 drafts criteria and immediately re-renders the local review —
 freshness beats the one cheap `git ls-files' pass."
   (ignore-errors
@@ -239,7 +265,18 @@ freshness beats the one cheap `git ls-files' pass."
               (let ((req (code-review-criteria--requirement-from-text
                           file text)))
                 (when req (push req res))))))))
-      (nreverse res))))
+      ;; phase 29: the home provider (test blocks + local index)
+      ;; appends; on a shared id the home entry WINS (the
+      ;; definition lives in the test now — a same-id spec file is
+      ;; the migration-period shadow)
+      (let* ((home (and code-review-criteria--home-criteria-function
+                        (funcall code-review-criteria--home-criteria-function
+                                 repo)))
+             (home-ids (mapcar (lambda (r) (plist-get r :id)) (or home ()))))
+        (append home
+                (cl-remove-if
+                 (lambda (r) (member (plist-get r :id) home-ids))
+                 (nreverse res)))))))
 
 ;;; Matching criteria to a change (pure)
 
@@ -263,18 +300,65 @@ plain literal search, no globbing."
                  (string-search (file-name-nondirectory path) text))
              t))))
 
-(defun code-review-criteria--matching (requirements paths)
-  "The requirements covering PATHS: ((:req R :paths COVERED)...),
-ID order (oldest requirement first).  Pure — the checklist's
-input: every requirement that covers at least one changed
-path, with exactly the changed paths it covers."
+(defun code-review-criteria--changed-fns (diff)
+  "The ADDED-side definition names of raw DIFF text (pure) —
+the covers-fn seam of phase 29: a criterion's `covers-fn:'
+function names match the change at FUNCTION granularity,
+cutting the path tripwire's false matches (a touched file is
+not a touched requirement when the untouched def is the one
+that changed).  Rides the phase 5 def extraction when analysis
+is loaded (the render always has it); nil otherwise.  DOC and
+criteria files are skipped (prose mentions no behavior); elisp
+VARIABLE definitions are excluded when testimpact is loaded
+(the phase 17 rule: data, not behavior).  Bounded by the
+engine's own caps; never signals."
+  (and diff
+       (fboundp 'code-review-analysis--split-hunks)
+       (fboundp 'code-review-analysis--definitions-in)
+       (ignore-errors
+        (let ((res nil))
+          (pcase-dolist (`(,path . ,block)
+                         (code-review--diff--split-by-files diff))
+            (unless (string-match-p code-review-criteria-file-regexp path)
+              (dolist (hu (code-review-analysis--split-hunks block))
+                (dolist (item (plist-get hu :added))
+                  (let ((elisp-var-p
+                         (and (string-match-p "\\.el\\'" path)
+                              (fboundp
+                               'code-review-testimpact--variable-def-line-p)
+                              (code-review-testimpact--variable-def-line-p
+                               (cdr item)))))
+                    (unless elisp-var-p
+                      (dolist (d (mapcar
+                                  #'car
+                                  (code-review-analysis--definitions-in
+                                   path (list item))))
+                        (cl-pushnew d res :test #'string=))))))))
+          res))))
+
+(defun code-review-criteria--covers-fn-p (req fns)
+  "Non-nil when REQ's `covers-fn:' functions include any of FNS
+(the changed definitions, phase 29).  Pure, exact-name."
+  (and fns
+       (let ((mine (plist-get req :fns)))
+         (and mine (cl-some (lambda (fn) (member fn mine)) fns)))))
+
+(defun code-review-criteria--matching (requirements paths &optional fns)
+  "The requirements covering PATHS (and, at function granularity,
+the changed definitions FNS — phase 29 covers-fn): ((:req R
+:paths COVERED)...), ID order (oldest requirement first).  Pure
+— the checklist's input: every requirement that covers at least
+one changed path (or declares a changed FUNCTION in covers-fn),
+with exactly the changed paths it covers (a function-only match
+covers no path: its row shows the sentence, no path buttons)."
   (let ((res nil))
     (dolist (req (or requirements ()))
       (let ((covered (cl-remove-if-not
                       (lambda (p)
                         (code-review-criteria--covers-p req p))
                       (or paths ()))))
-        (when covered
+        (when (or covered
+                  (code-review-criteria--covers-fn-p req fns))
           (push (list :req req :paths covered) res))))
     (cl-sort (nreverse res) #'string<
              :key (lambda (m) (plist-get (plist-get m :req) :id)))))
@@ -441,34 +525,48 @@ The pass is pure diff-text analysis; this bounds it."
      (downcase path)))))
 
 (defun code-review-criteria--traceability (diff)
-  "Traceability findings for raw DIFF text (phase 24).  Pure.
-STRONG: a criteria file in the diff whose req ID no test hunk in
-the diff references — a spec change with no test change is
-almost always a real gap.  HINT: a test hunk referencing a req
-ID whose criteria file the diff does not touch (weaker,
-hint-grade).  Each finding: (:kind strong|hint :id ID :path
-PATH), PATH being the criteria file (strong) or the referencing
-test file (hint).  Bounded by
+  "Traceability findings for raw DIFF text (phase 24, flipped in
+phase 29).  Pure.  STRONG: the DEFINITION is edited — a legacy
+criteria file in the diff, or an EDITED `;;; req-<id>:' block
+header line in a test hunk (TEST EDITED = SPEC CHANGE: editing
+the definition IS editing the requirement, the loud signal; the
+old spec-changed-without-test direction died with phase 29).
+HINT: a test hunk referencing a req ID whose definition the
+diff does not touch (weaker, hint-grade).  Each finding:
+(:kind strong|hint :id ID :path PATH).  Bounded by
 `code-review-criteria-max-trace-lines'."
   (ignore-errors
-    (let ((modified nil)     ; ((ID . PATH)...) criteria in diff
+    (let ((modified nil)     ; ((ID . PATH)...) definitions in diff
           (referenced nil)   ; ((ID . PATH)...) ids in test hunks
           (lines 0))
       (dolist (blk (and diff (code-review--diff--split-by-files diff)))
         (let* ((path (car blk))
-               (spec-p (string-match-p
-                        code-review-criteria-file-regexp path))
+               (spec-id (and (string-match-p
+                              code-review-criteria-file-regexp path)
+                             (code-review-criteria--id-from-file path)))
                (test-p (code-review-criteria--test-file-p path)))
-          (when (or spec-p test-p)
+          (when (or spec-id test-p)
             (dolist (line (split-string (cdr blk) "\n" t))
               (when (<= (cl-incf lines)
                         code-review-criteria-max-trace-lines)
                 (cond
-                 (spec-p
-                  (let ((id (code-review-criteria--id-from-file path)))
-                    (when (and id (not (assoc id modified)))
+                 ;; legacy: a criteria FILE in the diff is the
+                 ;; definition edited, whole
+                 (spec-id
+                  (when (not (assoc spec-id modified))
+                    (push (cons spec-id path) modified)))
+                 ;; phase 29: an EDITED block header (an added or
+                 ;; removed `;;; req-' line; context lines do not
+                 ;; count) is the definition edited
+                 ((string-match
+                   "^[+-][ \t]*;;;+[ \t]req-\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}-[0-9]\\{3\\}\\)"
+                   line)
+                  (let ((id (match-string 1 line)))
+                    (when (not (assoc id modified))
                       (push (cons id path) modified))))
-                 ;; test hunks: every req-ID mention counts
+                 ;; references: req-ID mentions in test hunks
+                 ;; (test names, docstrings) — the header lines
+                 ;; are consumed by the branch above
                  ((string-match
                    "req-\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}-[0-9]\\{3\\}\\)"
                    line)
@@ -476,12 +574,11 @@ test file (hint).  Bounded by
                     (when (not (assoc id referenced))
                       (push (cons id path) referenced))))))))))
       (append
-       ;; strong: modified but never referenced by a test hunk
+       ;; strong: the definition is edited (spec change)
        (mapcar (lambda (m)
                  (list :kind 'strong :id (car m) :path (cdr m)))
-               (cl-remove-if (lambda (m) (assoc (car m) referenced))
-                             modified))
-       ;; hint: referenced but its criteria file not touched
+               modified)
+       ;; hint: referenced but its definition not touched
        (mapcar (lambda (r)
                  (list :kind 'hint :id (car r) :path (cdr r)))
                (cl-remove-if (lambda (r) (assoc (car r) modified))

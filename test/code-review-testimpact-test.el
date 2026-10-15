@@ -565,11 +565,18 @@ def test_used():
 
 ;;; code-review-testimpact-test.el ends here
 
-;;; req-2026-10-01-024: variables are data, not behavior
 ;;; data, not behavior
 
+;;; req-2026-10-01-024: variable-defs-are-not-behavior
+;; covers: code-review-testimpact.el
+;; enforcement: test
 (ert-deftest code-review-testimpact/req-2026-10-01-024-variable-defs-not-coverage-gaps ()
-  "Elisp VARIABLE definition lines (defvar/defconst/defcustom/
+  "WHEN the no-test-coverage mapping extracts definitions from elisp
+hunks THE MAPPING SHALL drop variable definitions (defvar, defconst,
+defcustom, defface) before classification — configuration and data are
+not behavior and never need a covering test.
+
+Elisp VARIABLE definition lines (defvar/defconst/defcustom/
 defface) are dropped before def extraction: configuration and
 data never need a covering test, and a defcustom with no test
 grepping its NAME is not a coverage gap (the phase 24 defcustoms

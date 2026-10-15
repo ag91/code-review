@@ -17,10 +17,16 @@
 (require 'code-review-criteria-brief)
 (require 'code-review-agents-shell)
 
-;;; req-2026-10-12-001: priorities are durable ledger state
-
+;;; req-2026-10-12-001: criteria-priorities
+;; covers: code-review-criteria-brief.el, code-review-section-criteria.el
+;; enforcement: test
 (ert-deftest code-review-criteria-brief-test/req-2026-10-12-001-priority-cycle ()
-  "The priority cycle: unset -> P1 -> P2 -> P3 -> unset.  Pure."
+  "WHEN the reviewer edits the brief THE SYSTEM SHALL keep each
+criterion's P1..P3 priority in the criteria file's front matter
+(durable, re-prioritizable in place) and WHEN the P1 list exceeds the
+configured budget THE SYSTEM SHALL flag the change as under-specified.
+
+The priority cycle: unset -> P1 -> P2 -> P3 -> unset.  Pure."
   (should (equal (code-review-criteria-brief--next nil) "P1"))
   (should (equal (code-review-criteria-brief--next "P1") "P2"))
   (should (equal (code-review-criteria-brief--next "P2") "P3"))

@@ -90,6 +90,18 @@ hand-curating it only drifts."
   :type 'directory
   :group 'code-review)
 
+(defcustom code-review-registry-index-file "index.md"
+  "Repo-relative, INSIDE `code-review-registry-dir': the ONE
+GENERATED index of phase 29 (incident symmetry — the
+per-incident markdown files collapse into it).  One `---'-
+delimited entry per Incident-trailer commit; the human body
+under an entry's front matter is preserved verbatim by
+`code-review-registry-generate', everything else is regenerated
+wholesale.  Trailers stay the source of truth; the index is the
+browsable rendering and the byte-capped fallback."
+  :type 'file
+  :group 'code-review)
+
 (defcustom code-review-registry-max-entry-bytes 65536
   "Byte cap per incidents/ registry entry file.
 Oversized files are skipped (data, not incident entries)."
@@ -117,8 +129,14 @@ One bounded pass either way; incidents sit in recent history."
   "The fix-commit trailer keys of the incident convention.")
 
 (defconst code-review-registry--conventions-sentinel
-  "<!-- code-review-conventions v1 -->"
-  "Sentinel marking an installed conventions block (idempotency).")
+  "<!-- code-review-conventions v3 -->"
+  "Sentinel marking an installed conventions block (idempotency).
+v3 (phase 29 final shape): the EARS sentence is the FIRST LINE
+of the test's own description (the docstring), the `;;; req-`
+block carries the machine keys only.  v2 described the
+sentence-in-comment-block shape; v1 the spec-file shape.  The
+installer REPLACES an older version's block in place (a bump
+must not leave two generations behind).")
 
 ;;; Pure parsing
 
@@ -287,21 +305,52 @@ are the source of truth."
     (and log (code-review-registry--incidents-from-log log))))
 
 (defun code-review-registry--read-file-incidents (repo)
-  "Incident plists from the incidents/ markdown files of REPO.
-The FALLBACK source (trailers first): byte-capped per file and in
-total, entry-count capped, front matter must close.  Never
-signals."
+  "Incident plists from the incidents/ files of REPO.
+The FALLBACK source (trailers first): the phase 29 INDEX
+\(`incidents/index.md') parsed entry-by-entry, then any legacy
+per-incident .md files — byte-capped per entry and in total,
+entry-count capped, front matter must close.  Never signals."
   (let* ((dir (expand-file-name code-review-registry-dir repo))
+         (index (and (file-directory-p dir)
+                     (expand-file-name code-review-registry-index-file
+                                       dir)))
          (files (and (file-directory-p dir)
-                    (directory-files dir t "\\.md\\'"))))
-    (when files
-      (let ((budget code-review-registry-max-total-bytes)
-            (incidents nil))
-        (cl-block scan
-          (dolist (file files)
-            (when (>= (length incidents)
-                      code-review-registry-max-entries)
-              (cl-return))
+                     (directory-files dir t "\\.md\\'"))))
+    (let ((budget code-review-registry-max-total-bytes)
+          (incidents nil))
+      (cl-block scan
+        ;; the phase 29 index: one file, many entries
+        (when (and index (file-exists-p index))
+          (let ((size (or (file-attribute-size
+                           (file-attributes index))
+                          0)))
+            (if (> size budget)
+                (code-review-utils--log
+                 "code-review-registry"
+                 (format "registry index skipped (byte cap): %s" index))
+              (setq budget (- budget size))
+              (with-temp-buffer
+                (insert-file-contents index)
+                (dolist (entry
+                         (code-review-registry--split-entries
+                          (buffer-substring-no-properties
+                           (point-min) (point-max))))
+                  (when (>= (length incidents)
+                            code-review-registry-max-entries)
+                    (cl-return))
+                  (let ((fm (code-review-registry--parse-front-matter
+                             entry)))
+                    (let ((inc
+                           (and fm
+                                (code-review-registry--incident-from-front-matter
+                                 fm))))
+                      (when inc (push inc incidents)))))))))
+        (dolist (file (or files ()))
+          (when (>= (length incidents)
+                    code-review-registry-max-entries)
+            (cl-return))
+          ;; the index is consumed above, entry by entry
+          (unless (and index (file-equal-p file index))
             (let ((size (or (file-attribute-size (file-attributes file))
                             0)))
               (cond
@@ -318,9 +367,10 @@ signals."
                              (buffer-substring-no-properties
                               (point-min) (point-max)))))
                     (let ((inc (and fm
-                                    (code-review-registry--incident-from-front-matter fm))))
-                      (when inc (push inc incidents))))))))))
-        (nreverse incidents)))))
+                                    (code-review-registry--incident-from-front-matter
+                                     fm))))
+                      (when inc (push inc incidents)))))))))))
+      (nreverse incidents))))
 
 (defvar code-review-registry--cache (make-hash-table :test #'equal)
   "Incident plists keyed by (REPO . HEAD-SHA).
@@ -422,6 +472,80 @@ plus a short human body template.  Pure."
    (format "- Criteria: %s\n"
            (or (plist-get incident :invariant) "<req id>"))))
 
+(defun code-review-registry--split-entries (text)
+  "The `---'-delimited ENTRY texts of index TEXT (pure).
+An entry opens with a `---' line and its front matter closes at
+the next `---' line; its body runs to the next entry's opening
+delimiter (or end of text).  The generated bodies use `##'
+headings, never stray `---' rules."
+  (let* ((text (or text ""))
+         (positions nil)
+         (scan 0))
+    (while (and scan (< scan (length text)))
+      (let ((pos (string-match "^---$" text scan)))
+        (if (not pos)
+            (setq scan nil)
+          (push pos positions)
+          (setq scan (match-end 0)))))
+    (setq positions (nreverse positions))
+    (let ((res nil))
+      (while positions
+        (let ((open (pop positions)))
+          (when positions
+            ;; consume the closing delimiter; the body runs to
+            ;; the NEXT entry's opening delimiter (a trailing
+            ;; blank included, carried verbatim on preserve)
+            (pop positions)
+            (let ((end (or (car positions) (length text))))
+              (push (substring text open end) res)))))
+      (nreverse res))))
+
+(defun code-review-registry--entry-id (entry-text)
+  "The `id:' of ENTRY-TEXT's front matter, or nil (pure)."
+  (let ((fm (code-review-registry--parse-front-matter entry-text)))
+    (and fm (plist-get fm :id))))
+
+(defun code-review-registry--index-text (incidents existing-text)
+  "The incidents index text for INCIDENTS (pure): a generated
+header, then one `---'-delimited entry per incident in log
+order.  An EXISTING same-id entry (split out of EXISTING-TEXT)
+is carried VERBATIM — the human body is never clobbered; a new
+id gets the entry template."
+  (let* ((existing nil))
+    (dolist (entry (code-review-registry--split-entries
+                    (or existing-text "")))
+      (let ((id (code-review-registry--entry-id entry)))
+        (when id (push (cons id entry) existing))))
+    (concat
+     "# incidents index — GENERATED from commit trailers (phase 29).\n"
+     "# One `---'-delimited entry per Incident-trailer commit; the\n"
+     "# human body under an entry's front matter is preserved.\n"
+     "# M-x code-review-registry-generate regenerates everything else.\n\n"
+     (string-join
+      (mapcar (lambda (inc)
+                (or (cdr (assoc (plist-get inc :id) existing))
+                    (code-review-registry--entry-text inc)))
+              (or incidents ()))
+      "\n"))))
+
+(defun code-review-registry--index-add (text entry-text id)
+  "Index TEXT with ID's entry replaced by ENTRY-TEXT — appended
+when no same-id entry exists (the capture flow of a NEW
+incident).  Pure."
+  (let ((kept nil)
+        (replaced nil))
+    (dolist (entry (code-review-registry--split-entries (or text "")))
+      (if (equal (code-review-registry--entry-id entry) id)
+          (progn (push entry-text kept) (setq replaced t))
+        (push entry kept)))
+    (if replaced
+        (string-join (nreverse kept) "\n")
+      (concat (if (string-empty-p (string-trim (or text "")))
+                  ""
+                  (if (string-suffix-p "\n" (or text "")) text
+                    (concat text "\n")))
+              entry-text))))
+
 (defun code-review-registry--next-id (incidents year)
   "The next incident ID for YEAR: YEAR-NNN.
 The sequence is counted from the existing INCIDENTS of the same
@@ -455,38 +579,44 @@ else nil."
 
 ;;;###autoload
 (defun code-review-registry-generate (&optional repo)
-  "Generate the incidents/ registry entries of REPO from trailers.
-REPO defaults to the review buffer's worktree, else the
-repository of `default-directory'.  One entry per Incident-
-trailer commit; an existing file with the SAME id is left alone
-(the human body is never clobbered), a stale one is rewritten.
-Return the number of entries written."
+  "Generate the incidents/ INDEX of REPO from trailers (phase 29
+incident symmetry: ONE file, `incidents/index.md' — the
+per-incident markdown files collapse into it).  REPO defaults
+to the review buffer's worktree, else the repository of
+`default-directory'.  One entry per Incident-trailer commit; an
+existing same-id entry is carried VERBATIM (the human body is
+never clobbered), new ids get the template, everything else is
+regenerated wholesale.  Return the index path, or nil when
+nothing was generated."
   (interactive)
   (let* ((root (or repo (code-review-registry--repo-dir)))
-         (incidents (and root (code-review-registry--log-incidents root)))
-         (dir (and root (expand-file-name code-review-registry-dir root)))
-         (written 0))
+         (incidents (and root (code-review-registry--log-incidents root))))
     (cond
-     ((not root) (user-error "No repository here"))
+     ((not root)
+      (user-error "No repository here")
+      nil)
      ((not incidents)
-      (message "code-review-registry: no Incident trailers; nothing generated"))
+      (message "code-review-registry: no Incident trailers; nothing generated")
+      nil)
      (t
-      (make-directory dir t)
-      (dolist (inc incidents)
-        (let* ((file (expand-file-name
-                      (code-review-registry--entry-file-name inc) dir))
-               (existing (and (file-exists-p file)
-                              (code-review-registry--file-front-matter
-                               file))))
-          (unless (and existing
-                       (equal (plist-get existing :id)
-                              (plist-get inc :id)))
-            (with-temp-file file
-              (insert (code-review-registry--entry-text inc)))
-            (setq written (1+ written)))))
-      (message "code-review-registry: %d entr%s written under %s"
-               written (if (= written 1) "y" "ies") dir)))
-    written))
+      (let* ((path (expand-file-name
+                    code-review-registry-index-file
+                    (expand-file-name code-review-registry-dir root)))
+             (old (and (file-exists-p path)
+                       (with-temp-buffer
+                         (insert-file-contents path)
+                         (buffer-substring-no-properties
+                          (point-min) (point-max)))))
+             (new (code-review-registry--index-text incidents (or old ""))))
+        (make-directory (file-name-directory path) t)
+        (if (and old (equal old new))
+            (message "code-review-registry: index up to date (%d entries)"
+                     (length incidents))
+          (with-temp-file path
+            (insert new))
+          (message "code-review-registry: %d entries written to %s"
+                   (length incidents) path))
+        path)))))
 
 ;;; Detection and tagging
 
@@ -535,16 +665,27 @@ cannot do.  nil when there is no diff."
     (and diff (mapcar #'car (code-review--diff--split-by-files diff)))))
 
 (defun code-review-registry--write-entry (repo incident)
-  "Write INCIDENT's registry entry file into REPO.
-Creates the incidents/ directory when missing.  Return the file
-path."
-  (let* ((dir (expand-file-name code-review-registry-dir repo))
-         (file (expand-file-name
-                (code-review-registry--entry-file-name incident) dir)))
-    (make-directory dir t)
-    (with-temp-file file
-      (insert (code-review-registry--entry-text incident)))
-    file))
+  "Write INCIDENT's entry into REPO's incidents INDEX (phase 29:
+ONE file, `incidents/index.md' — the per-incident files
+collapsed).  A same-id entry is REPLACED (the capture flow
+refreshes the machine keys; the human body follows below the
+front matter), otherwise the entry is APPENDED.  Return the
+index path."
+  (let* ((path (expand-file-name
+                code-review-registry-index-file
+                (expand-file-name code-review-registry-dir repo)))
+         (old (and (file-exists-p path)
+                   (with-temp-buffer
+                     (insert-file-contents path)
+                     (buffer-substring-no-properties
+                      (point-min) (point-max))))))
+    (make-directory (file-name-directory path) t)
+    (with-temp-file path
+      (insert (code-review-registry--index-add
+               (or old "")
+               (code-review-registry--entry-text incident)
+               (plist-get incident :id))))
+    path))
 
 (defun code-review-registry--submit-entry (repo incident)
   "Submit INCIDENT of REPO to the LOCAL registry (2026-10-12).
@@ -615,8 +756,7 @@ own changed files) and submits it through the
 (defun code-review-registry-conventions-text ()
   "The conventions block appended to AGENTS.md/CONTRIBUTING.md.
 Factual for what exists today (the incident registry, trailers,
-the review-risk behavior); forward-referencing for the criteria
-files (phases 23/24 install them next).  Pure."
+the phase 29 definition-in-test criteria model).  Pure."
   (concat
    code-review-registry--conventions-sentinel "\n"
    "\n"
@@ -624,11 +764,11 @@ files (phases 23/24 install them next).  Pure."
    "\n"
    "### Incident registry\n"
    "\n"
-   "- Every production incident leaves a REGISTRY ENTRY under\n"
-   "  `incidents/` and a regression test.  Entries are GENERATED\n"
-   "  from commit trailers (`M-x code-review-registry-generate`) —\n"
-   "  never hand-curated; edit only the human body below the\n"
-   "  front matter.\n"
+   "- Every production incident leaves a REGISTRY ENTRY in the\n"
+   "  ONE generated `incidents/index.md` and a regression test.\n"
+   "  The index is GENERATED from commit trailers (`M-x\n"
+   "  code-review-registry-generate`) — never hand-curated; edit\n"
+   "  only the human body below an entry's front matter.\n"
    "- Fix commits carry the trailers:\n"
    "  `Incident: <year-numbered id>`, `Invariant-Ref: <req id>`,\n"
    "  `Regression-Test: <test names>`, `Paths: <files the incident\n"
@@ -639,55 +779,83 @@ files (phases 23/24 install them next).  Pure."
    "\n"
    "### Criteria (requirements)\n"
    "\n"
-   "- Criteria live under `specs/` as markdown, one requirement\n"
-   "  per file, EARS/Gherkin shape (`WHEN ... THE SYSTEM SHALL\n"
-   "  ...`), with a stable date-numbered req id in the file name.\n"
+   "- The EARS DEFINITION is the FIRST LINE of the test's own\n"
+   "  DESCRIPTION: the docstring of the primary guard test in\n"
+   "  ERT (`WHEN ... THE SYSTEM SHALL ...`) — a `C-h f` bonus,\n"
+   "  readable with zero tooling; a standardized comment block\n"
+   "  above the test carries the MACHINE KEYS only: `covers:`\n"
+   "  (paths), `covers-fn:` (functions), `enforcement:`\n"
+   "  (test|runtime|convention), `incident: <id>` tags.\n"
    "- Every requirement binds to its guard tests: the req id\n"
    "  appears in the ERT test name (`file/req-<id>-description`)\n"
-   "  or the test docstring.\n"
+   "  and in the `;;; req-<id>:` block header above the primary\n"
+   "  test.\n"
+   "- The id is stable and date-numbered (`YYYY-MM-DD-NNN`);\n"
+   "  local tool state (priorities, notes) lives in the untracked\n"
+   "  `specs/index.md`, never in test source.\n"
    "- A criterion states a USER-VISIBLE SYSTEM OUTCOME, never an\n"
    "  interface detail — no keybindings, command names, section\n"
    "  shapes or faces in a criterion (those are documentation;\n"
    "  the WHEN names what the user does or the state of the\n"
    "  world, the SHALL names what the system does about it).\n"
-   "  Lift the SENTENCE, never merge the files: one stable id per\n"
-   "  file is what traceability tags, path matching and guard\n"
-   "  tests bind on.\n"
+   "  Editing the definition (the EARS docstring or the block)\n"
+   "  IS editing the requirement: review diffs that touch `;;;\n"
+   "  req-` blocks or EARS docstrings as SPEC CHANGES.\n"
    "\n"
    "### If you are an AI agent working in this repository\n"
    "\n"
-   "- Author registry entries, criteria files and test tags\n"
+   "- Author req blocks in tests, registry entries and test tags\n"
    "  yourself, in the formats above, as part of the change.\n"
    "- PRs touching incident paths get elevated review attention.\n"
-   "<!-- end code-review-conventions v1 -->\n"))
-
-(defun code-review-registry--file-has-sentinel-p (file)
-  "Non-nil when FILE exists and carries the conventions sentinel.
-Byte-capped (a monster file is not read whole)."
-  (let ((size (or (file-attribute-size (file-attributes file)) 0)))
-    (and (< size code-review-registry-max-total-bytes)
-         (file-exists-p file)
-         (with-temp-buffer
-           (insert-file-contents file)
-           (string-match-p
-            (regexp-quote code-review-registry--conventions-sentinel)
-            (buffer-substring-no-properties
-             (point-min) (point-max)))))))
+   "<!-- end code-review-conventions v2 -->\n"))
 
 (defun code-review-registry--install-into (file)
-  "Append the conventions block to FILE (idempotent).
-Return `installed', `present' or `skipped' (byte cap)."
-  (cond
-   ((not (code-review-registry--file-has-sentinel-p file))
-    (with-temp-file file
-      (when (file-exists-p file)
-        (insert-file-contents file))
-      (goto-char (point-max))
-      (unless (or (zerop (buffer-size)) (eq (char-before) ?\n))
-        (insert "\n"))
-      (insert "\n" (code-review-registry-conventions-text)))
-    'installed)
-   (t 'present)))
+  "Install the conventions block into FILE (idempotent).
+A file carrying the CURRENT sentinel is left alone (`present');
+a file carrying an OLDER version's block is UPDATED in place
+(the stale block is replaced — a version bump must not leave two
+generations of the text behind); otherwise the block is
+appended.  Return `installed', `updated', `present' or
+`skipped' (byte cap)."
+  (let ((size (or (file-attribute-size (file-attributes file)) 0)))
+    (if (>= size code-review-registry-max-total-bytes)
+        'skipped
+      (with-temp-file file
+        (when (file-exists-p file)
+          (insert-file-contents file))
+        (cond
+         ;; current version: nothing to do
+         ((string-match-p
+           (regexp-quote code-review-registry--conventions-sentinel)
+           (buffer-string))
+          'present)
+         ;; an OLDER conventions block: replace it in place
+         ((progn
+            (goto-char (point-min))
+            (re-search-forward
+             "<!-- code-review-conventions[[:space:]]" nil t))
+          (let ((beg (match-beginning 0))
+                (end (progn
+                       (re-search-forward
+                        "<!-- end code-review-conventions[^>]*-->"
+                        nil t)
+                       (match-end 0))))
+            ;; drop the stale block plus ONE blank line after it
+            (when (eq (char-after end) ?\n)
+              (setq end (1+ end)))
+            (delete-region beg end)
+            (goto-char beg)
+            (unless (or (zerop (buffer-size)) (eq (char-before) ?\n))
+              (insert "\n"))
+            (insert "\n" (code-review-registry-conventions-text)))
+          'updated)
+         ;; fresh install: append
+         (t
+          (goto-char (point-max))
+          (unless (or (zerop (buffer-size)) (eq (char-before) ?\n))
+            (insert "\n"))
+          (insert "\n" (code-review-registry-conventions-text))
+          'installed))))))
 
 ;;;###autoload
 (defun code-review-install-conventions (&optional arg)

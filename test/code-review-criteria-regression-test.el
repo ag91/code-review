@@ -49,10 +49,18 @@ directory (trailing slash)."
           :paths '("src/a.el")
           :text "---\npaths: [src/a.el]\n---\n\nWHEN x THE SYSTEM SHALL y\n")))
 
-;;; req-2026-10-10-001: the local strategy hands off to the drafter
-
+;;; req-2026-10-10-001: drafter-handoff
+;; covers: code-review-criteria.el, code-review-agents-shell.el
+;; enforcement: test
 (ert-deftest code-review-criteria-regression-test/req-2026-10-10-001-local-strategy-fires-drafter ()
-  "The local strategy fires the REVIEWER-SIDE drafter AFTER the
+  "WHEN the `local' strategy fires with a reviewer-side drafter wired THE
+SYSTEM SHALL hand the criterion to the drafter after the ledger file
+has landed (a drafter failure never loses the criterion) with a
+DRAFT-NOT-PUSH contract — the regression suite is drafted as
+uncommitted changes in the review worktree, and no login probe gates
+the handoff.
+
+The local strategy fires the REVIEWER-SIDE drafter AFTER the
 ledger file has landed: the criterion never evaporates on a
 drafter failure, and no login probe gates the handoff (the
 phase 27 drafter/transport split)."
@@ -94,10 +102,21 @@ and the ship command the reviewer presses after exploring."
     (should (string-match-p "code-review-criteria-request-regression"
                             prompt))))
 
-;;; req-2026-10-10-002: the approval ships the explored draft
-
+;;; req-2026-10-10-002: approval-stacked-pr
+;; covers: code-review-criteria-regression.el
+;; enforcement: test
 (ert-deftest code-review-criteria-regression-test/req-2026-10-10-002-pure-parts ()
-  "Branch name, commit message trailers, and the stacked-PR
+  "WHEN the reviewer approves an explored regression draft THE SYSTEM
+SHALL branch `review/req-<id>' off the PR head, commit the criteria
+file and the drafted tests with `Invariant-Ref:' and
+`Regression-Test:' trailers, and on a GitHub PR open a STACKED PR
+whose base is the contributor's PR branch (the contributor decides;
+never the reviewer's push to the contributor's branch, never main) —
+while a local review ships L0-only, staging the criteria file and
+test-matching files rather than a blanket add on the user's own
+working tree.
+
+Branch name, commit message trailers, and the stacked-PR
 payload: base is the CONTRIBUTOR's PR branch (never main), head
 is the shipped suite branch, the body carries the EARS sentence
 and the Invariant-Ref, and the contributor may modify."

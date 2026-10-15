@@ -220,13 +220,14 @@ findings).  Cached per (PR, diff) by the engine
     findings))
 
 (defun code-review-section--insert-criteria-trace ()
-  "Insert the phase 24 criteria traceability findings.
-STRONG: a criteria file in this diff whose req ID no test hunk of
-the diff references (a spec change without a test change is
-almost always a real gap).  HINT: a test hunk referencing a req
-ID whose criteria file the diff does not touch (weaker).  Both
-files are in the diff, so the jump button goes to the file
-section INSIDE the review buffer."
+  "Insert the phase 24 criteria traceability findings (flipped
+in phase 29).  STRONG: the requirement's DEFINITION is edited by
+this diff — a legacy criteria file, or an edited `;;; req-<id>:'
+block header line (TEST EDITED = SPEC CHANGE: editing the
+definition IS editing the requirement).  HINT: a test hunk
+referencing a req ID whose definition the diff does not touch
+(weaker).  Both files are in the diff, so the jump button goes
+to the file-section INSIDE the review buffer."
   (dolist (f (code-review-section--criteria-trace-findings))
     (let* ((kind (plist-get f :kind))
            (id (plist-get f :id))
