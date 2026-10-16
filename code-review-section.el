@@ -379,9 +379,15 @@ If you want to display a minibuffer MSG in the end."
   ;; phase 13: re-derive the new-since-last-review value from the
   ;; persisted infos on every render.  Local reviews carry no
   ;; infos blob: their internal-build stashed the value directly.
-  (when-let (infos (code-review-db--pullreq-raw-infos))
-    (setq code-review-section--new-since-last-review
-          (a-get infos 'new-since-last-review)))
+  ;; COMMIT-FOCUS buffers are excluded AND cleared: the value is
+  ;; PR-scoped (the whole PR's new files), meaningless for a
+  ;; single-commit diff, and a stale value from the last PR render
+  ;; would leak its NEW tag/reorder/fold into the commit buffer.
+  (if commit-focus?
+      (setq code-review-section--new-since-last-review nil)
+    (when-let* ((infos (code-review-db--pullreq-raw-infos)))
+      (setq code-review-section--new-since-last-review
+            (a-get infos 'new-since-last-review))))
   (with-current-buffer (get-buffer-create buff-name)
     (code-review-section--setup-worktree)
     (let* ((window (get-buffer-window buff-name))

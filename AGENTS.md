@@ -952,6 +952,27 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   buffer's build overwrites the PR snapshot with the COMMIT diff
   (existing behavior): the PR's next full refresh then reports
   everything as NEW once and self-heals on the following one.
+- Phase 13's new-since-last-review defvar is PR-SCOPED and must
+  not leak into COMMIT-FOCUS renders: `--trigger-hooks` now
+  CLEARS it when COMMIT-FOCUS? is set (a skip alone leaves the
+  previous PR render's value bound — the commit buffer would
+  grow [NEW] tags, the new-first reorder and auto-folding over a
+  single-commit diff, 2026-10-15).
+- A MAGIT UPGRADE while a daemon is running gives the worst kind
+  of mixed state: the daemon keeps the OLD magit-section runtime
+  (native-compiled, so no recompile fixes it) while the package's
+  fresh .elc was compiled against the NEW one.  The symptom is a
+  render that works in batch (`make test`) and CORRUPTS in the
+  daemon — the commit buffer for ec7378d washed 2 of 6 files,
+  one file section spanning 20KB into the following blocks (the
+  instrumented washer left point mid-next-block-header), the
+  rest raw text.  90 minutes of forensics ended at `(disassemble
+  'magit-wash-sequence)` showing ARM64 code for a defun the
+  disk's magit-20260911 no longer defines (it lives in the split
+  magit-section package; the daemon had an older one in memory).
+  Restarting the daemon picks up the new magit and the render
+  self-heals — do this BEFORE debugging a wash that only breaks
+  in the daemon (2026-10-15).
 
 
 

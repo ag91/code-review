@@ -1654,6 +1654,48 @@ unviewed when a new contributor commit touches it.
      behavior), so the next full refresh of the PR computes
      everything as NEW once (tags on every file, no folding) and
      self-heals on the following refresh.
+   - Fix (2026-10-15, same day): the PR-scoped news defvar
+     LEAKED into COMMIT-FOCUS buffers — `--trigger-hooks`
+     re-derived it from the persisted infos on every render with
+     no commit-focus gate, so a commit buffer built after a PR
+     render carried the PR's news list ([NEW] tags, new-first
+     reorder, auto-folding over a single-commit diff).  The fix
+     CLEARS the defvar when COMMIT-FOCUS? is set (a skip alone
+     would leave the previous render's value bound).  Found
+     while diagnosing the ec7378d commit buffer (below).
+
+** Fix (2026-10-15) — commit buffer ec7378d "not all hunks display" = stale daemon magit runtime
+   Symptom: the =*Code Review Commit ec7378d …*= buffer showed
+   2 of the commit's 6 files as proper sections; the other 4
+   were raw uncolored diff text.  Diagnosis, layer by layer:
+   - The db snapshot had been clobbered by the PR's full 474KB
+     diff (the known wrinkle above) — a fresh batch reproduction
+     with the CURRENT code washed everything perfectly (control
+     diff, the real 6-file =git show= diff, the 63-block PR
+     diff), so the washer and the phase 13 render were exonerated.
+   - A fresh daemon re-render (re-pinning the sha slot and
+     rebuilding) reproduced the corruption: 2 files washed, 4
+     raw, with one file section spanning 20KB into the FOLLOWING
+     blocks (its hunk loop consumed the next file's header lines
+     and hunks) and the wash sequence stopping at a =+++= header.
+   - The same text, the same washer, even the exact render
+     context (insert-section + narrow + hooks + wash-sequence)
+     ran 6/6 clean in a daemon temp buffer AND in batch — only
+     the LIVE buffer render corrupted.
+   - Root cause: the daemon predates the magit upgrade on disk
+     (=magit-20260911.1701= on disk; the daemon holds an older
+     native-compiled =magit-section= runtime —
+     =(disassemble 'magit-wash-sequence)= shows ARM64 code for a
+     defun the disk's magit no longer defines there; it now
+     lives in the split =magit-section= package).  The package's
+     fresh .elc (compiled against the NEW magit) runs against
+     the OLD runtime, and point/section bookkeeping diverges
+     mid-wash.  See the AGENTS.md gotcha (magit upgrade +
+     long-lived daemon).
+   - Remedy: restart the daemon; the render self-heals (the db
+     snapshot was already healed to the real 6-block commit diff
+     during diagnosis).  Also fixed en route: the phase 13 news
+     leak into commit buffers (above).
    - The =v= marking / GitHub Viewed sync (the plan below) is
      still the right completion for HUNK granularity and for
      cross-machine sync — the inference covers the 90% case with
