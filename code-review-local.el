@@ -223,11 +223,21 @@ stops responding to G (full reload)."
   ;; switched to another buffer's PR meanwhile, so re-assert it.
   (setq code-review-db--pullreq-id (oref obj id))
   (progress-reporter-update progress 3)
-  (oset obj raw-diff
-        (code-review-utils--clean-diff-prefixes (a-get (-first-item res) 'message)))
-  (closql-insert (code-review-db) obj t)
+  (let* ((new-diff (code-review-utils--clean-diff-prefixes
+                    (a-get (-first-item res) 'message)))
+         ;; phase 13: local reviews have no infos blob — the diff
+         ;; comparison still applies (re-reviewing a working tree
+         ;; highlights what changed since the last run); the news
+         ;; value is stashed in the render-time defvar because
+         ;; trigger-hooks only re-derives it from persisted infos.
+         (news (code-review-section--compute-new-since-last-review
+                new-diff nil)))
+    (setq code-review-section--new-since-last-review news)
+    (oset obj raw-diff new-diff)
+    (closql-insert (code-review-db) obj t))
   (progress-reporter-update progress 5)
-  (code-review--trigger-hooks buff-name nil msg)
+  (let ((code-review-section--just-refetched t))
+    (code-review--trigger-hooks buff-name nil msg))
   (progress-reporter-done progress))
 
 (provide 'code-review-local)

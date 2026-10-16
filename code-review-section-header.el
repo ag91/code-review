@@ -81,6 +81,24 @@
                               'help-echo "Visit PR url"
                               'keymap 'code-review-url-section-map))
           (insert ?\n))))))
+(defclass code-review-files-summary-section (magit-section)
+  ())
+(defun code-review-section-insert-files-summary ()
+  "Insert the one-line change summary right under the PR url.
+The same numbers the \"Files changed\" heading reports, but at
+the top of the buffer: the main signal for whether this PR can be
+reviewed quickly (the phase 25 review-budget view)."
+  (let-alist (code-review-db--pullreq-raw-infos)
+    (when .files.nodes
+      (magit-insert-section (code-review-files-summary-section)
+        (insert (format "%-17s" "Changes: "))
+        (insert (propertize
+                 (format "%d files; %s additions, %s deletions"
+                         (length .files.nodes)
+                         (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .files.nodes))
+                         (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .files.nodes)))
+                 'font-lock-face 'code-review-url-header-face))
+        (insert ?\n)))))
 (defun code-review-section-insert-author ()
   "Insert the author of the PR in the buffer."
   (let-alist (code-review-db--pullreq-raw-infos)
@@ -400,7 +418,12 @@ requested or with an opinionated review."
 (defclass code-review-commit-section (magit-section)
   ((keymap :initform 'code-review-commit-section-map)
    (sha    :initarg :sha)
-   (msg    :initarg :msg)))
+   (msg    :initarg :msg)
+   (date   :initarg :date)))
+(defun code-review-section-header--format-commit-date (iso)
+  "Format the ISO8601 commit date ISO as a compact local timestamp."
+  (when iso
+    (format-time-string "%Y-%m-%d %H:%M" (date-to-time iso))))
 (defvar code-review-commit-section-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'code-review-commit-at-point)
@@ -468,9 +491,14 @@ requested or with an opinionated review."
 (defun code-review-section--insert-commit-with-checks (obj state contexts)
   "Insert the commit OBJ heading with its CI checks subtree.
 STATE is the rollup state, CONTEXTS the checks list."
-  (insert (format "%s%s %s "
+  (insert (format "%s%s%s %s "
                   (propertize (format "%-6s " (oref obj sha))
                               'font-lock-face 'magit-hash)
+                  (if-let ((date (oref obj date)))
+                      (propertize (format "[%s] "
+                                          (code-review-section-header--format-commit-date date))
+                                  'font-lock-face 'magit-dimmed)
+                    "")
                   (car (split-string (oref obj msg) "\n"))
                   (if (string-equal state "SUCCESS")
                       ":white_check_mark:"
@@ -483,9 +511,13 @@ STATE is the rollup state, CONTEXTS the checks list."
     (insert "\n"))
   (code-review-section--insert-commit-checks contexts))
 (defun code-review-section--insert-plain-commit (obj)
-  "Insert the commit OBJ (no CI checks): sha and message only."
+  "Insert the commit OBJ (no CI checks): sha, date and message."
   (insert (propertize (format "%-6s " (oref obj sha))
                       'font-lock-face 'magit-hash))
+  (when-let ((date (oref obj date)))
+    (insert (propertize (format "[%s] "
+                                (code-review-section-header--format-commit-date date))
+                        'font-lock-face 'magit-dimmed)))
   (insert (oref obj msg))
   (insert ?\n))
 (defun code-review-section--insert-commit (pr c obj)
@@ -516,7 +548,8 @@ section starts collapsed and carries the CI checks subtree."
           (let-alist c
             (let* ((sha (a-get-in c (list 'commit 'abbreviatedOid)))
                    (msg (a-get-in c (list 'commit 'message)))
-                   (obj (code-review-commit-section :sha sha :msg msg)))
+                   (date (a-get-in c (list 'commit 'committedDate)))
+                   (obj (code-review-commit-section :sha sha :msg msg :date date)))
               (code-review-section--insert-commit pr c obj))))
         (insert ?\n))))))
 

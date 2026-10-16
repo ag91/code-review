@@ -1587,6 +1587,10 @@ Gotchas:
 
 * Phase 13 — Read tracking: mark files/hunks as reviewed      :STATUS:todo:
 
+Slice 1 DONE (2026-10-15): INFERRED new-since-last-review — see
+below.  The manual =v= marking and the GitHub Viewed sync remain
+todo.
+
 Problem: folding a hunk once you have read it is the natural
 review workflow, but magit's visibility state lives only in the
 session: re-renders, restarts and =G= keep the folding only by
@@ -1599,7 +1603,79 @@ un-marks itself when the diff changes underneath it — exactly
 like the GitHub web UI, where a viewed file flips back to
 unviewed when a new contributor commit touches it.
 
-Design:
+** Slice 1 (DONE 2026-10-15) — infer "new since last review" from the db snapshots
+   The reviewer's real question on reopening is "what changed
+   since I last looked?", and the db ALREADY persists the answer's
+   ingredients: the raw diff + raw infos of the LAST fetch.  The
+   stored snapshot IS "what the reviewer last saw" — so diffing
+   the fresh fetch against it needs NO new table, NO viewed
+   state, and NO GitHub schema probing:
+   - `code-review-diff--new-since-last-review' (pure, diff.el):
+     splits both snapshots into per-file blocks
+     (`--split-by-files') and reports the files whose block
+     CHANGED (full-block equality: a new path, different hunks or
+     shifted context all count) + the commits missing from the
+     snapshot.  Returns `((files . PATHS) (commits . SHAS))' —
+     an EMPTY alist when nothing changed (the "no new changes"
+     signal), nil only when no snapshot existed.
+   - Every `--internal-build' computes it BEFORE overwriting the
+     db snapshot and persists the result INSIDE the raw-infos
+     blob (key `new-since-last-review') — no schema change, and
+     the value survives re-renders and restarts.  Local reviews
+     (no infos blob) stash it in the render-time defvar only.
+   - Render: the NEW files get a =[NEW]= tag that WINS over the
+     noise/heat tags and is NEVER hidden by focus mode
+     (`code-review-diff--mark-new-files'), they sort AHEAD of
+     everything else (first comparator clause in
+     `--maybe-reorder-diff'), the "Files changed" heading gains
+     "N file(s) changed since your last review (K new commits)"
+     (or "no new changes since your last review"), and
+     `--fold-and-mark' folds every reviewed file (only on the
+     first render of a buffer or right after a fetch — re-renders
+     never re-fold, so deliberately expanded sections stay
+     expanded; `code-review-fold-reviewed-files', default t).
+     Nothing-new fetches fold NOTHING.
+   - Verification: unit tests for the pure comparison
+     (added/changed/untouched/no-snapshot/nothing-changed), the
+     tag-over-noise marking, the new-first reorder, and a
+     RENDER-LEVEL test (`code-review-section-test/
+     new-since-last-review-tag-order-fold`: [NEW] tag, new file
+     first, reviewed file folded after a fetch).  316/317 green
+     (the one failure is the pre-existing criteria-home
+     migration-invariants: it reads specs/index.md, which commit
+     074d9ae expects but the repo does not contain — fails at
+     clean HEAD too).  Live daemon: PR 1050's first fetch (no
+     snapshot: everything visible, no tags), a second refresh
+     (empty news persisted; the heading reports "no new changes";
+     no folding), and the "Changes:" header line + commit dates
+     render (see the two bonuses below).
+   - Known wrinkle: a COMMIT-buffer build overwrites the PR's
+     stored raw-diff snapshot with the commit's diff (existing
+     behavior), so the next full refresh of the PR computes
+     everything as NEW once (tags on every file, no folding) and
+     self-heals on the following refresh.
+   - The =v= marking / GitHub Viewed sync (the plan below) is
+     still the right completion for HUNK granularity and for
+     cross-machine sync — the inference covers the 90% case with
+     one pure function.
+
+** While in there (2026-10-15) — two header improvements
+   - Commit DATES: the Commits section showed only sha + message,
+     so the order (oldest-first, GitHub's PR commit order) was
+     invisible.  Both GraphQL queries now request
+     =committedDate= and the commit lines render a dimmed
+     =[YYYY-MM-DD HH:MM]= between the sha and the message.  The
+     dates appear after the next full refresh (G): the daemon's
+     cached infos lack the field until then.
+   - "Changes:" summary line: the same numbers the "Files
+     changed" heading reports (files/additions/deletions), now
+     rendered directly under the PR url
+     (=code-review-section-insert-files-summary= in
+     =code-review-headers-hook=): the main "can I review this
+     quickly?" signal at the top of the buffer, the phase 25
+     review-budget view.
+
+Design (remaining):
 
 - SOURCE OF TRUTH for forge PRs: GitHub itself.  The web UI's
   "Viewed" checkbox is file-level and already has the wanted

@@ -281,6 +281,63 @@ tags, collapses and hides: it never replaces the diff itself."
         (puthash path info table)))
     table))
 
+(defun code-review-diff--new-since-last-review (old-diff new-diff old-shas new-shas)
+  "Compare the PREVIOUS review snapshot with the freshly fetched one.
+OLD-DIFF/NEW-DIFF are raw unified diff texts, OLD-SHAS/NEW-SHAS
+the abbreviated commit oids of the previous and the fresh
+raw-infos commit lists.  Return an alist
+`((files . PATHS) (commits . SHAS))' describing what a returning
+reviewer has not seen yet: files whose diff block changed (a new
+path, different hunks or different context) and commits missing
+from the snapshot.  Nil only when there is no previous snapshot
+(OLD-DIFF nil): an existing snapshot yields the alist even when
+nothing changed (an EMPTY files/commits list is the \"no new
+changes\" signal for the render).  Phase 13: the db's stored diff
+IS \"what the reviewer last saw\", so diffing the snapshots needs
+no per-file viewed state."
+  (when (and (stringp old-diff) (stringp new-diff))
+    (let* ((old-blocks (code-review--diff--split-by-files old-diff))
+           (new-blocks (code-review--diff--split-by-files new-diff))
+           (old-map (make-hash-table :test 'equal))
+           (new-files nil))
+      (dolist (blk old-blocks)
+        (puthash (car blk) (cdr blk) old-map))
+      (dolist (blk new-blocks)
+        (unless (equal (gethash (car blk) old-map) (cdr blk))
+          (push (car blk) new-files)))
+      (let ((files (nreverse new-files))
+            ;; commits ≤ 100 per PR query: `member' is fine here and
+            ;; keeps this file free of a cl-lib dependency
+            (commits (let ((new nil))
+                       (dolist (s new-shas)
+                         (unless (member s old-shas)
+                           (push s new)))
+                       (nreverse new))))
+        `((files . ,files) (commits . ,commits))))))
+
+(defun code-review-diff--mark-new-files (classifications new-paths)
+  "Tag the NEW-PATHS files in the CLASSIFICATIONS hash.
+The NEW tag wins over the noise/heat tags and is never hidden by
+focus mode: the returning reviewer must see these files even
+when the phase 3 rules would file them under DOC/GEN."
+  (when (and (hash-table-p classifications) new-paths)
+    (dolist (path new-paths)
+      (let ((info (gethash path classifications)))
+        (setq info (plist-put info :tag "NEW")
+              info (plist-put info :new t)
+              info (plist-put info :hide nil))
+        (puthash path info classifications)))))
+
+(defun code-review--diff--any-new-p (classifications)
+  "Return t when any entry in the CLASSIFICATIONS hash is :new."
+  (let ((found nil))
+    (when (hash-table-p classifications)
+      (maphash (lambda (_path info)
+                 (when (plist-get info :new)
+                   (setq found t)))
+               classifications))
+    found))
+
 (defun code-review--diff--file-order-index (path)
   "Return the ordering index for PATH.
 User rules come first (in their order); files matching no user
@@ -318,7 +375,9 @@ buffer; they remain counted in the \"Files changed\" heading."
            (not code-review-diff-noise-rules)
            (not code-review-focus-mode)
            (not (and code-review-history-order-diff-by-heat
-                     code-review-history--order)))
+                     code-review-history--order))
+           ;; phase 13: new-since-last-review files jump the queue
+           (not (code-review--diff--any-new-p classifications)))
       diff-text
     (let* ((first-pos (string-match "^diff --git .+$" diff-text 0))
            (prefix (if (and first-pos (> first-pos 0))
@@ -329,8 +388,19 @@ buffer; they remain counted in the \"Files changed\" heading."
            (sorted (sort blocks
                          (lambda (a b)
                            (let* ((ia (code-review--diff--file-order-index (car a)))
-                                  (ib (code-review--diff--file-order-index (car b))))
+                                  (ib (code-review--diff--file-order-index (car b)))
+                                  (na (plist-get (and classifications
+                                                      (gethash (car a)
+                                                               classifications))
+                                                 :new))
+                                  (nb (plist-get (and classifications
+                                                      (gethash (car b)
+                                                               classifications))
+                                                 :new)))
                              (cond
+                              ;; phase 13: the returning reviewer reads
+                              ;; the new files first
+                              ((not (eq (null na) (null nb))) (null nb))
                               ((/= ia ib) (< ia ib))
                               ;; phase 14: equally-ranked (unmatched)
                               ;; files read in heat order, hottest

@@ -58,6 +58,25 @@
 
 (defclass code-review-files-report-section (magit-section)
   (()))
+;; phase 13 (render-time value owned by code-review-section.el):
+;; the new-since-last-review alist, NIL forward-declaration — a
+;; valued defvar here would pre-bind it and shadow the owner
+(defvar code-review-section--new-since-last-review)
+
+(defun code-review-section--new-since-last-review-suffix ()
+  "One-line report for the Files changed heading.
+Exported for the tests."
+  (let ((news code-review-section--new-since-last-review))
+    (when news
+      (let ((files (a-get news 'files))
+            (commits (a-get news 'commits)))
+        (if (and (null files) (null commits))
+            "  --  no new changes since your last review"
+          (format "  --  %d file%s changed since your last review (%d new commit%s)"
+                  (length files)
+                  (if (= (length files) 1) "" "s")
+                  (length commits)
+                  (if (= (length commits) 1) "" "s")))))))
 ;; specs report (phase 24: the criteria files of the diff render
 ;; ABOVE "Files changed" - the reviewed-once artifact gets the
 ;; top of the buffer; the code diff is supporting evidence)
@@ -218,6 +237,8 @@ in the diff nothing changes (no empty section, no heading)."
                                  (length .nodes)
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .nodes))
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .nodes))))
+                       ;; phase 13: what a returning reviewer needs
+                       (code-review-section--new-since-last-review-suffix)
                        (when code-review-focus-mode
                          (or (code-review-section--focus-summary)
                              "  --  focus: no noise files to hide")))

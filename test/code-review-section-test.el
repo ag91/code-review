@@ -720,4 +720,98 @@ the body bol reads a HUNK line)."
                                    (overlays-in (point-min)
                                                 (point-max))))))))))))
 
+;;; Phase 13: the files-changed heading suffix + commit dates
+
+(ert-deftest code-review-section-test/new-since-last-review-suffix ()
+  "The heading suffix reports files and commits since last review."
+  (let ((code-review-section--new-since-last-review
+         '((files . ("a.py" "b.py")) (commits . ("c1")))))
+    (should (equal (code-review-section--new-since-last-review-suffix)
+                   "  --  2 files changed since your last review (1 new commit)"))
+    (setq code-review-section--new-since-last-review
+          '((files . ("a.py")) (commits . nil)))
+    (should (equal (code-review-section--new-since-last-review-suffix)
+                   "  --  1 file changed since your last review (0 new commits)"))
+    (setq code-review-section--new-since-last-review
+          '((files . nil) (commits . nil)))
+    (should (equal (code-review-section--new-since-last-review-suffix)
+                   "  --  no new changes since your last review"))
+    (setq code-review-section--new-since-last-review nil)
+    (should (null (code-review-section--new-since-last-review-suffix)))))
+
+(ert-deftest code-review-section-test/format-commit-date ()
+  "Commit dates render as a compact \"YYYY-MM-DD HH:MM\" stamp."
+  (should (string-match-p
+           "^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]$"
+           (code-review-section-header--format-commit-date
+            "2026-10-12T09:33:00Z")))
+  (should (null (code-review-section-header--format-commit-date nil))))
+
+(ert-deftest code-review-section-test/new-since-last-review-tag-order-fold ()
+  "The new-since-last-review render end to end: the changed file
+gets the [NEW] tag, sorts ahead of the already-reviewed files,
+and the reviewed file folds after a fetch while the new one stays
+open."
+  (code-review-section-test--with-section-env
+    (let* ((diff-text
+            (concat
+             "diff --git a/a.el b/a.el\n"
+             "index 111..222 100644\n"
+             "--- a/a.el\n"
+             "+++ b/a.el\n"
+             "@@ -1,2 +1,2 @@\n"
+             " context\n"
+             "-old\n"
+             "+new\n"
+             "diff --git a/b.el b/b.el\n"
+             "index 333..444 100644\n"
+             "--- a/b.el\n"
+             "+++ b/b.el\n"
+             "@@ -1,2 +1,3 @@\n"
+             " context\n"
+             "+added\n"))
+           ;; the snapshot comparison already ran upstream (in
+           ;; --internal-build): b.el is the new file
+           (code-review-section--new-since-last-review
+            '((files . ("b.el")) (commits . ("ccc")))))
+      (code-review-db--pullreq-raw-diff-update diff-text)
+      (with-temp-buffer
+        (magit-section-mode)
+        (let ((inhibit-read-only t)
+              (code-review-fold-reviewed-files t)
+              (code-review-section--just-refetched t)
+              (code-review-history-enabled nil))
+          (code-review-section--insert-pr-text)
+          (goto-char (point-min))
+          (magit-insert-section (code-review--root-section)
+            (magit-insert-section (code-review-files-chnged)
+              (save-restriction
+                (narrow-to-region (point) (point-max))
+                (magit-wash-sequence #'code-review-wash-diff))))
+          (let* ((text (buffer-string))
+                 (b-pos (string-match "b\\.el" text))
+                 (a-pos (string-match "a\\.el" text)))
+            ;; the NEW file sorts ahead of the reviewed one
+            (should (and b-pos a-pos (< b-pos a-pos)))
+            (should (string-match-p "\\[NEW\\]" text)))
+          ;; the reviewed file folded, the new one open: the fold
+          ;; walk runs as part of --fold-and-mark after a fetch
+          (code-review-section--fold-and-mark t)
+          (let ((a-section nil)
+                (b-section nil))
+            (dolist (c (oref magit-root-section children))
+              (dolist (f (oref c children))
+                (when (cl-typep f 'magit-file-section)
+                  ;; the section value keeps the b/ prefix
+                  (let ((path (if (string-prefix-p "b/" (oref f value))
+                                  (substring (oref f value) 2)
+                                (oref f value))))
+                    (if (string-prefix-p "a.el" path)
+                        (setq a-section f)
+                      (setq b-section f))))))
+            (should a-section)
+            (should b-section)
+            (should (oref a-section hidden))
+            (should-not (oref b-section hidden))))))))
+
 ;;; code-review-section-test.el ends here

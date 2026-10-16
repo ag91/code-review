@@ -206,6 +206,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
         nodes {
           commit {
             abbreviatedOid
+            committedDate
             message
             statusCheckRollup {
               state
@@ -407,6 +408,7 @@ https://github.com/wandersoncferreira/code-review#configuration"))
         nodes {
           commit {
             abbreviatedOid
+            committedDate
             message
             statusCheckRollup {
               state

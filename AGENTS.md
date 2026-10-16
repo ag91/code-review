@@ -936,6 +936,22 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   does not signal), so a progn'd call whose return value is
   discarded checks NOTHING — the typo was, absurdly, the only
   thing making the old check fail loudly.
+- The `a` alist library has NO `a-cons` (it has a-get/a-assoc/
+  a-alist/a-assoc-in): calling it compiles fine (declare-free
+  call sites) and dies at RUNTIME with void-function — in
+  phase 13 the call sat in `--internal-build`'s deferred timer,
+  so every build that reached the new code failed as the
+  user-visible "Got an error from your VC provider" while the
+  first (news-nil) build stayed green (2026-10-15).  Check the
+  lib's actual surface (`a-keys`, `a-get-in`...) before using
+  an `a-` name you haven't grepped.  The alist-entry idiom is
+  plain `(cons (cons KEY VALUE) alist)`.
+- A build that REPLACES the db's stored diff snapshot must
+  compare against it FIRST (`--internal-build` computes the
+  phase 13 news before `raw-diff-update`) — and note the commit
+  buffer's build overwrites the PR snapshot with the COMMIT diff
+  (existing behavior): the PR's next full refresh then reports
+  everything as NEW once and self-heals on the following one.
 
 
 

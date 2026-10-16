@@ -64,6 +64,7 @@
 (defcustom code-review-headers-hook
   '(code-review-section-insert-header-title
     code-review-section-insert-url
+    code-review-section-insert-files-summary
     code-review-section-insert-author
     code-review-section-insert-title
     code-review-section-insert-state

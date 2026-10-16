@@ -73,6 +73,28 @@ stay open at once."
   :group 'code-review
   :type 'string)
 
+;; Phase 13, slice 1: infer "new since last review" from the db's
+;; own snapshots.  `code-review-section--new-since-last-review' is
+;; the render-time value: an alist ((files . PATHS) (commits .
+;; SHAS)) computed by `--internal-build' BEFORE it overwrites the
+;; stored snapshot, persisted inside the raw-infos blob (no new
+;; table), and re-derived from there on every render.
+(defvar code-review-section--new-since-last-review nil)
+;; bound t by every `--internal-build' around its render: the only
+;; renders that follow a FETCH (a full refresh re-folded the
+;; reviewed files even in a long-lived buffer)
+(defvar code-review-section--just-refetched nil)
+
+(defcustom code-review-fold-reviewed-files t
+  "Fold the files a returning reviewer already reviewed.
+When a snapshot from a previous fetch exists, only the files
+changed since it (the [NEW] tag) stay unfolded; everything else
+folds to its heading, one TAB away.  Applies on the first render
+of a buffer and right after a refresh (G); re-renders never
+re-fold, so sections you deliberately expanded stay expanded."
+  :group 'code-review
+  :type 'boolean)
+
 (defvar-local code-review-review-buffer-pr-id nil
   "Database id of the pull request displayed in this review buffer.")
 (put 'code-review-review-buffer-pr-id 'permanent-local t)
@@ -209,6 +231,26 @@ head; for a local diff review the repository itself is the worktree."
     (setq default-directory
           (file-name-as-directory code-review-repo-worktree))))
 
+(defun code-review-section--commit-shas (infos)
+  "Return the abbreviated commit oids of the raw-infos ALIST INFOS."
+  (let-alist infos
+    (mapcar (lambda (n) (a-get-in n (list 'commit 'abbreviatedOid)))
+            .commits.nodes)))
+
+(defun code-review-section--compute-new-since-last-review (new-diff new-infos)
+  "Compare the freshly fetched NEW-DIFF/NEW-INFOS against the db's
+previous snapshot.  Must run BEFORE this build overwrites the
+stored raw-diff/raw-infos: the snapshot IS \"what the reviewer
+last saw\".  Returns the `new-since-last-review' alist or nil."
+  (let ((old-diff (code-review-db--pullreq-raw-diff))
+        (old-infos (code-review-db--pullreq-raw-infos)))
+    (when (and (stringp new-diff)
+               (or (stringp old-diff) old-infos))
+      (code-review-diff--new-since-last-review
+       old-diff new-diff
+       (code-review-section--commit-shas old-infos)
+       (code-review-section--commit-shas new-infos)))))
+
 (defun code-review-section--insert-pr-text ()
   "Insert the (reordered) raw PR diff text into the review buffer.
 Phase 14 heat is computed (or loaded) before the wash: a cold
@@ -220,6 +262,11 @@ cache kicks the async harvest and stays nil here."
     (setq code-review-section--file-classifications
           (code-review--diff--classify-diff
            (code-review-db--pullreq-raw-diff)))
+    ;; phase 13: the new-since-last-review files get the NEW tag
+    ;; (over noise/heat) and sort first in the reorder pass
+    (code-review-diff--mark-new-files
+     code-review-section--file-classifications
+     (a-get code-review-section--new-since-last-review 'files))
     (erase-buffer)
     (insert (code-review-section--specs-first
              (code-review--maybe-reorder-diff
@@ -249,6 +296,21 @@ washed diff under the files-report container."
           (magit-wash-sequence
            #'code-review-wash-diff))))))
 
+(defun code-review-section--fold-reviewed-files (section new-paths)
+  "Fold every file section under SECTION whose path is not in NEW-PATHS.
+The returning reviewer opens the buffer on the new changes; the
+already-reviewed files stay one TAB away under their headings."
+  (dolist (c (oref section children))
+    (if (cl-typep c 'magit-file-section)
+        (let ((path (oref c value)))
+          (when (stringp path)
+            (setq path (if (string-prefix-p "b/" path)
+                           (substring path 2)
+                         path))
+            (unless (member path new-paths)
+              (magit-section-hide c))))
+      (code-review-section--fold-reviewed-files c new-paths))))
+
 (defun code-review-section--fold-and-mark (fresh-render?)
   "Fold bot-authored comment threads (AI chatter) and add the
 fringe markers on diff lines carrying a thread.  The fold runs
@@ -261,6 +323,19 @@ be worth it."
   (when (and code-review-collapse-bot-comments
              fresh-render?)
     (code-review--collapse-bot-comments magit-root-section))
+  ;; phase 13: fold the already-reviewed files after a fetch (or on
+  ;; a buffer's first render) so only the [NEW] files show through.
+  ;; The `--just-refetched' flag covers G in a long-lived buffer,
+  ;; where FRESH-RENDER? is nil.  Nothing new -> fold nothing (the
+  ;; heading's "no new changes" line carries the signal instead).
+  (when (and code-review-fold-reviewed-files
+             (or fresh-render? code-review-section--just-refetched)
+             code-review-section--new-since-last-review
+             (a-get code-review-section--new-since-last-review 'files)
+             magit-root-section)
+    (code-review-section--fold-reviewed-files
+     magit-root-section
+     (a-get code-review-section--new-since-last-review 'files)))
   (when code-review-comment-fringe-markers
     (code-review--mark-comment-lines)))
 
@@ -301,6 +376,12 @@ If you want to display a minibuffer MSG in the end."
          (code-review-db--pullreq-raw-comments))
         code-review-section-hold-written-comment-count nil
         code-review-section-hold-written-comment-ids nil)
+  ;; phase 13: re-derive the new-since-last-review value from the
+  ;; persisted infos on every render.  Local reviews carry no
+  ;; infos blob: their internal-build stashed the value directly.
+  (when-let (infos (code-review-db--pullreq-raw-infos))
+    (setq code-review-section--new-since-last-review
+          (a-get infos 'new-since-last-review)))
   (with-current-buffer (get-buffer-create buff-name)
     (code-review-section--setup-worktree)
     (let* ((window (get-buffer-window buff-name))
@@ -373,19 +454,28 @@ If you want to display a minibuffer MSG in the end."
 
     ;; 1. save raw diff data
     (progress-reporter-update progress 3)
-    (code-review-db--pullreq-raw-diff-update
-     (code-review-utils--clean-diff-prefixes
-      (a-get (-first-item res) 'message)))
+    (let* ((new-diff (code-review-utils--clean-diff-prefixes
+                      (a-get (-first-item res) 'message)))
+           (fixed-infos (code-review-github-fix-infos raw-infos))
+           ;; phase 13: compare against the PREVIOUS snapshot before
+           ;; this fetch overwrites it
+           (news (code-review-section--compute-new-since-last-review
+                  new-diff fixed-infos)))
+      (code-review-db--pullreq-raw-diff-update new-diff)
 
-    ;; 1.1 save raw info data e.g. data from GraphQL API
-    (progress-reporter-update progress 4)
-    (code-review-db--pullreq-raw-infos-update
-     (code-review-github-fix-infos raw-infos))
+      ;; 1.1 save raw info data e.g. data from GraphQL API
+      (progress-reporter-update progress 4)
+      (code-review-db--pullreq-raw-infos-update
+       (if news
+           ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
+           (cons (cons 'new-since-last-review news) fixed-infos)
+         fixed-infos))
 
-    ;; 1.2 trigger renders
-    (progress-reporter-update progress 5)
-    (code-review--trigger-hooks buff-name nil msg)
-    (progress-reporter-done progress)))
+      ;; 1.2 trigger renders
+      (progress-reporter-update progress 5)
+      (let ((code-review-section--just-refetched t))
+        (code-review--trigger-hooks buff-name nil msg))
+      (progress-reporter-done progress))))
 
 (cl-defmethod code-review--internal-build ((obj code-review-gitlab-repo) progress res &optional buff-name msg)
   "Helper function to build process for GITLAB based on the fetched RES informing PROGRESS."
@@ -400,26 +490,32 @@ If you want to display a minibuffer MSG in the end."
 
   ;; 1. save raw diff data
   (progress-reporter-update progress 3)
-  (code-review-db--pullreq-raw-diff-update
-   (code-review-gitlab-fix-diff
-    (a-get (-first-item res) 'changes)))
+  (let* ((new-diff (code-review-gitlab-fix-diff
+                    (a-get (-first-item res) 'changes)))
+         (fixed-infos (code-review-gitlab-fix-infos
+                       (code-review-github-fix-infos
+                        (a-get-in (-second-item res) (list 'data 'repository 'pullRequest)))))
+         (news (code-review-section--compute-new-since-last-review
+                new-diff fixed-infos)))
+    (code-review-db--pullreq-raw-diff-update new-diff)
 
-  ;; 1.1. compute position line numbers to diff line numbers
-  (progress-reporter-update progress 4)
-  (code-review-gitlab-pos-line-number->diff-line-number
-   (a-get (-first-item res) 'changes))
+    ;; 1.1. compute position line numbers to diff line numbers
+    (progress-reporter-update progress 4)
+    (code-review-gitlab-pos-line-number->diff-line-number
+     (a-get (-first-item res) 'changes))
 
-  ;; 1.2. save raw info data e.g. data from GraphQL API
-  (progress-reporter-update progress 5)
-  (code-review-db--pullreq-raw-infos-update
-   (code-review-gitlab-fix-infos
-    (code-review-github-fix-infos
-     (a-get-in (-second-item res) (list 'data 'repository 'pullRequest)))))
+    ;; 1.2. save raw info data e.g. data from GraphQL API
+    (progress-reporter-update progress 5)
+    (code-review-db--pullreq-raw-infos-update
+     (if news
+         (a-cons 'new-since-last-review news fixed-infos)
+       fixed-infos))
 
-  ;; 1.3. trigger renders
-  (progress-reporter-update progress 6)
-  (code-review--trigger-hooks buff-name nil msg)
-  (progress-reporter-done progress))
+    ;; 1.3. trigger renders
+    (progress-reporter-update progress 6)
+    (let ((code-review-section--just-refetched t))
+      (code-review--trigger-hooks buff-name nil msg))
+    (progress-reporter-done progress)))
 
 (cl-defmethod code-review--internal-build ((obj code-review-bitbucket-repo) progress res &optional buff-name msg)
   "Helper function to build process for BITBUCKET based on the fetched RES informing PROGRESS."
@@ -445,24 +541,33 @@ If you want to display a minibuffer MSG in the end."
 
     ;; 1. save raw diff data
     (progress-reporter-update progress 3)
-    (code-review-db--pullreq-raw-diff-update
-     (code-review-utils--clean-diff-prefixes
-      (a-get (-first-item res) 'message)))
+    (let* ((new-diff (code-review-utils--clean-diff-prefixes
+                      (a-get (-first-item res) 'message)))
+           (fixed-infos (code-review-bitbucket--fix-diff-comments raw-infos))
+           ;; phase 13: compare against the PREVIOUS snapshot before
+           ;; this fetch overwrites it
+           (news (code-review-section--compute-new-since-last-review
+                  new-diff fixed-infos)))
+      (code-review-db--pullreq-raw-diff-update new-diff)
 
-    ;; 1.1. compute position line numbers to diff line numbers
-    (progress-reporter-update progress 4)
-    (code-review-bitbucket-pos-line-number->diff-line-number
-     (a-get (-first-item res) 'message))
+      ;; 1.1. compute position line numbers to diff line numbers
+      (progress-reporter-update progress 4)
+      (code-review-bitbucket-pos-line-number->diff-line-number
+       (a-get (-first-item res) 'message))
 
-    ;; 1.2 save raw info data e.g. data from GraphQL API
-    (progress-reporter-update progress 4)
-    (code-review-db--pullreq-raw-infos-update
-     (code-review-bitbucket--fix-diff-comments raw-infos))
+      ;; 1.2 save raw info data e.g. data from GraphQL API
+      (progress-reporter-update progress 4)
+      (code-review-db--pullreq-raw-infos-update
+       (if news
+           ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
+           (cons (cons 'new-since-last-review news) fixed-infos)
+         fixed-infos))
 
-    ;; 1.3 trigger renders
-    (progress-reporter-update progress 5)
-    (code-review--trigger-hooks buff-name nil msg)
-    (progress-reporter-done progress)))
+      ;; 1.3 trigger renders
+      (progress-reporter-update progress 5)
+      (let ((code-review-section--just-refetched t))
+        (code-review--trigger-hooks buff-name nil msg))
+      (progress-reporter-done progress))))
 
 (defcustom code-review-log-raw-request-responses nil
   "Log the Raw request responses from your VC provider."
