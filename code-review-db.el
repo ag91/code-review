@@ -120,7 +120,7 @@
    (object-class :initform 'code-review-db-pullreq)
    (file         :initform 'code-review-db-database-file)
    (schemata     :initform 'code-review-db-table-schema)
-   (version      :initform 10)))
+   (version      :initform 11)))
 
 (defvar code-review-db--override-connection-class nil)
 
@@ -225,7 +225,17 @@
       identifiers]
      (:foreign-key
       [path] :references path [id]
-      :on-delete :cascade))))
+      :on-delete :cascade))
+
+    ;; No cascading FK: closql's INSERT OR REPLACE of a pullreq
+    ;; deletes its old row, which would silently erase review progress.
+    (reviewed
+     [(class :not-null)
+      (id :not-null :primary-key)
+      pullreq
+      path
+      hunk-key
+      created-at])))
 
 (defconst code-review-db--v10-canonical-columns
   '(class id base_ref_name head_ref_name finished finished_at
@@ -319,8 +329,7 @@ classes carried a slot for."
     (emacsql db [:pragma (= foreign-keys on)])))
 
 (cl-defmethod closql--db-update-schema ((db code-review-db-database))
-  (let ((code-version (oref-default 'code-review-db-database version))
-        (version (closql--db-get-version db)))
+  (let ((version (closql--db-get-version db)))
     (closql-with-transaction db
       (when (= version 7)
         (message "Upgrading Code Review database from version 7 to 8...")
@@ -338,7 +347,22 @@ classes carried a slot for."
     (when (= version 9)
       (message "Upgrading Code Review database from version 9 to 10...")
       (code-review-db--migrate-v10 db)
+      (setq version 10) ; --migrate-v10 set the db's; keep the local in step
       (message "Upgrading Code Review database from version 9 to 10...done"))
+    ;; v11 (phase 13 slice 2): the read-tracking table.  New TABLE,
+    ;; not new columns: the pullreq schema is fixed and closql
+    ;; serializes slots positionally.  Raw SQL with IF NOT EXISTS:
+    ;; idempotent, and existing user DBs migrate transparently on
+    ;; connect.  Column order MUST match the
+    ;; `code-review-db-reviewed' class slot order (positional
+    ;; serialization, the v9/v10 lesson).
+    (when (= version 10)
+      (message "Upgrading Code Review database from version 10 to 11...")
+      (emacsql db
+               [:create-table :if-not-exists reviewed $S1]
+               (cdr (assq 'reviewed code-review-db-table-schema)))
+      (closql--db-set-version db (setq version 11))
+      (message "Upgrading Code Review database from version 10 to 11...done"))
     (cl-call-next-method)))
 
 ;;; Core
@@ -348,12 +372,13 @@ classes carried a slot for."
 ;; Helper
 
 (defun code-review-db--delete-pullreq-tree (db id)
-  "Delete the pullreq row ID and its buffer/path/comment children.
+  "Delete pullreq ID, its reviewed rows and buffer/path/comment children.
 FK enforcement is off on emacsql connections (nothing cascades),
 so the children are deleted explicitly, child-most first."
   (emacsql db "DELETE FROM comment WHERE path IN (SELECT id FROM path WHERE buffer IN (SELECT id FROM buffer WHERE pullreq = $s1))" id)
   (emacsql db "DELETE FROM path WHERE buffer IN (SELECT id FROM buffer WHERE pullreq = $s1)" id)
   (emacsql db "DELETE FROM buffer WHERE pullreq = $s1" id)
+  (emacsql db [:delete :from reviewed :where (= pullreq $s1)] id)
   (emacsql db "DELETE FROM pullreq WHERE id = $s1" id))
 
 (defun code-review-db-update (obj)
@@ -475,20 +500,39 @@ VACUUMs the file at the end."
 One row per (OWNER REPO NUMBER) exists at any time: rows for the
 same PR left over from earlier opens (and their
 buffer/path/comment children) are deleted first, so opening a PR
-always starts from fresh path bookkeeping."
+always starts from fresh path bookkeeping.  Carry the previous
+diff snapshot and viewed marks into the new row for the same review."
   (let* ((db (code-review-db))
-         (pr-id (uuidgen-4)))
-    (dolist (row (emacsql db [:select [id] :from pullreq
-                                    :where (and (= owner $s1)
-                                                (= repo $s2)
-                                                (= number $s3))]
-                          (oref obj owner)
-                          (oref obj repo)
-                          (oref obj number)))
-      (code-review-db--delete-pullreq-tree db (car row)))
-    (oset obj id pr-id)
-    (closql-insert db obj t)
-    (setq code-review-db--pullreq-id pr-id)))
+         (pr-id (uuidgen-4))
+         (rows (emacsql db [:select [id] :from pullreq
+                                   :where (and (= owner $s1)
+                                               (= repo $s2)
+                                               (= number $s3))
+                                   :order-by [(desc rowid)]]
+                         (oref obj owner) (oref obj repo) (oref obj number)))
+         (previous (and rows (closql-get db (caar rows)
+                                        'code-review-db-pullreq)))
+         (same-review
+          (and previous
+               (eq (eieio-object-class previous) (eieio-object-class obj))
+               (equal (oref previous host) (oref obj host))
+               (or (not (equal (oref previous state) "LOCAL"))
+                   (equal (oref previous base-ref-name)
+                          (oref obj base-ref-name)))))
+         (viewed (and same-review
+                      (code-review-db--reviewed-rows (oref previous id)))))
+    (when same-review
+      (oset obj raw-diff (oref previous raw-diff))
+      (oset obj raw-infos (oref previous raw-infos)))
+    (closql-with-transaction db
+      (dolist (row rows)
+        (code-review-db--delete-pullreq-tree db (car row)))
+      (oset obj id pr-id)
+      (closql-insert db obj t)
+      (setq code-review-db--pullreq-id pr-id)
+      (dolist (row viewed)
+        (code-review-db--reviewed-insert
+         (plist-get row :path) (plist-get row :hunk-key))))))
 
 (defun code-review-db--pullreq-sha-update (sha-value)
   "Update pullreq obj of ID with value SHA-VALUE."
@@ -664,6 +708,8 @@ IDENTIFIER can be our local 'internal-id' (string UUID) or the provider
            (oref pr raw-comments))))
     (oset pr raw-comments new-comments)
     (closql-insert (code-review-db) pr t)))
+
+(require 'code-review-db-reviewed)
 
 (provide 'code-review-db)
 ;;; code-review-db.el ends here

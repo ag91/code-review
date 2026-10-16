@@ -316,17 +316,32 @@ no per-file viewed state."
         `((files . ,files) (commits . ,commits))))))
 
 (defun code-review-diff--mark-new-files (classifications new-paths)
-  "Tag the NEW-PATHS files in the CLASSIFICATIONS hash.
-The NEW tag wins over the noise/heat tags and is never hidden by
-focus mode: the returning reviewer must see these files even
-when the phase 3 rules would file them under DOC/GEN."
+  "Flag NEW-PATHS in CLASSIFICATIONS without changing their classification.
+The additional NEW badge does not replace existing tags or override
+their collapse and focus-mode rules."
   (when (and (hash-table-p classifications) new-paths)
     (dolist (path new-paths)
-      (let ((info (gethash path classifications)))
-        (setq info (plist-put info :tag "NEW")
-              info (plist-put info :new t)
-              info (plist-put info :hide nil))
-        (puthash path info classifications)))))
+      (let ((info (gethash path classifications 'missing)))
+        (unless (eq info 'missing)
+          (puthash path (plist-put info :new t) classifications))))))
+
+(defun code-review-diff--mark-viewed-files (classifications index)
+  "Flag the phase 13 read-viewed files in the CLASSIFICATIONS hash.
+INDEX is the render index (`code-review-viewed--index'): path ->
+plist (:file FILE-ROW-P :hunks VIEWED-KEYS :all-hunks ALL-P).
+A file gets :viewed t when explicitly marked (the file row) or
+when ALL its hunks are marked read (the rollup).  Only entries
+present in CLASSIFICATIONS are flagged: a stale row for a path
+that left the diff must not create a classification."
+  (when (and (hash-table-p classifications) (hash-table-p index))
+    (maphash (lambda (path vinfo)
+               (when (or (plist-get vinfo :file)
+                         (plist-get vinfo :all-hunks))
+                 (let ((info (gethash path classifications 'missing)))
+                   (unless (eq info 'missing)
+                     (puthash path (plist-put info :viewed t)
+                              classifications)))))
+             index)))
 
 (defun code-review--diff--any-new-p (classifications)
   "Return t when any entry in the CLASSIFICATIONS hash is :new."
@@ -337,6 +352,30 @@ when the phase 3 rules would file them under DOC/GEN."
                    (setq found t)))
                classifications))
     found))
+
+(defun code-review-diff--hunk-keys (diff-text)
+  "Map every file path of DIFF-TEXT to its hunk keys.
+Phase 13 slice 2 read tracking: the hunk key is the raw
+`@@ -a,b +c,d @@' MIDDLE text (group 1 of the washer's hunk
+header match, byte-identical to the hunk section's `ranges'),
+which survives re-renders and expires when the diff changes the
+hunk.  Returns an alist ((PATH . KEYS))."
+  (let ((map (make-hash-table :test 'equal)))
+    (dolist (blk (code-review--diff--split-by-files diff-text))
+      (let ((path (car blk))
+            (text (cdr blk))
+            (keys nil)
+            (pos 0))
+        (while (and (stringp text)
+                    (string-match
+                     "^@@ \\(-[0-9]+\\(?:,[0-9]+\\)? \\+[0-9]+\\(?:,[0-9]+\\)?\\) @@"
+                     text pos))
+          (push (match-string 1 text) keys)
+          (setq pos (match-end 0)))
+        (puthash path (nreverse keys) map)))
+    (let ((alist nil))
+      (maphash (lambda (path keys) (push (cons path keys) alist)) map)
+      alist)))
 
 (defun code-review--diff--file-order-index (path)
   "Return the ordering index for PATH.

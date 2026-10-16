@@ -54,6 +54,7 @@
 (require 'code-review-github)
 (require 'code-review-gitlab)
 (require 'code-review-bitbucket)
+(require 'code-review-viewed)
 
 ;;; Part files (phase 15c split): required here so every
 ;;; `code-review-section' require site sees all of it.
@@ -84,14 +85,23 @@ stay open at once."
 ;; renders that follow a FETCH (a full refresh re-folded the
 ;; reviewed files even in a long-lived buffer)
 (defvar code-review-section--just-refetched nil)
+;; phase 13 slice 2: the explicit read tracking (the `v' marks),
+;; re-read from the db's `reviewed' table on every render: a hash
+;; path -> plist (:file :hunks :all-hunks), see
+;; `code-review-viewed--index'
+(defvar-local code-review-section--viewed nil)
+(put 'code-review-section--viewed 'permanent-local t)
 
 (defcustom code-review-fold-reviewed-files t
   "Fold the files a returning reviewer already reviewed.
-When a snapshot from a previous fetch exists, only the files
-changed since it (the [NEW] tag) stay unfolded; everything else
-folds to its heading, one TAB away.  Applies on the first render
-of a buffer and right after a refresh (G); re-renders never
-re-fold, so sections you deliberately expanded stay expanded."
+When a snapshot from a previous fetch exists, unchanged files fold
+to their headings, one TAB away.  Changed files get a [NEW] badge
+without overriding their classification's default folds.
+Applies on the first render of a buffer and right after a
+refresh (G); re-renders never
+re-fold, so sections you deliberately expanded stay expanded.
+Explicitly viewed files and hunks also start folded.  Marking or
+unmarking a target updates its fold immediately."
   :group 'code-review
   :type 'boolean)
 
@@ -251,10 +261,11 @@ last saw\".  Returns the `new-since-last-review' alist or nil."
        (code-review-section--commit-shas old-infos)
        (code-review-section--commit-shas new-infos)))))
 
-(defun code-review-section--insert-pr-text ()
+(defun code-review-section--insert-pr-text (&optional commit-focus?)
   "Insert the (reordered) raw PR diff text into the review buffer.
 Phase 14 heat is computed (or loaded) before the wash: a cold
-cache kicks the async harvest and stays nil here."
+cache kicks the async harvest and stays nil here.
+COMMIT-FOCUS? excludes PR-scoped read tracking."
   (save-excursion
     (code-review-history-prepare
      (code-review-db--pullreq-raw-diff)
@@ -262,16 +273,28 @@ cache kicks the async harvest and stays nil here."
     (setq code-review-section--file-classifications
           (code-review--diff--classify-diff
            (code-review-db--pullreq-raw-diff)))
-    ;; phase 13: the new-since-last-review files get the NEW tag
-    ;; (over noise/heat) and sort first in the reorder pass
+    ;; Phase 13: NEW is an additional badge, not a replacement
+    ;; classification.  New files still sort first.
     (code-review-diff--mark-new-files
      code-review-section--file-classifications
      (a-get code-review-section--new-since-last-review 'files))
+    ;; phase 13 slice 2: the explicit read tracking (the `v' marks)
+    ;; flags the viewed files for the [VIEWED] tag and drives the
+    ;; viewed-count in the "Files changed" heading
+    (setq code-review-section--viewed
+          (unless commit-focus? (code-review-viewed--index)))
+    (code-review-diff--mark-viewed-files
+     code-review-section--file-classifications
+     code-review-section--viewed)
     (erase-buffer)
-    (insert (code-review-section--specs-first
-             (code-review--maybe-reorder-diff
-              (code-review-db--pullreq-raw-diff)
-              code-review-section--file-classifications)))
+    (let ((code-review-hide-viewed-files
+           (and (not commit-focus?) code-review-hide-viewed-files)))
+      (insert (code-review-section--specs-first
+               (code-review-viewed--filter-diff
+                (code-review--maybe-reorder-diff
+                 (code-review-db--pullreq-raw-diff)
+                 code-review-section--file-classifications)
+                code-review-section--file-classifications))))
     (insert ?\n)))
 
 (defun code-review-section--render-diff-tree (commit-focus?)
@@ -302,16 +325,13 @@ The returning reviewer opens the buffer on the new changes; the
 already-reviewed files stay one TAB away under their headings."
   (dolist (c (oref section children))
     (if (cl-typep c 'magit-file-section)
-        (let ((path (oref c value)))
-          (when (stringp path)
-            (setq path (if (string-prefix-p "b/" path)
-                           (substring path 2)
-                         path))
+        (let ((path (plist-get (code-review-viewed--target-at c) :path)))
+          (when path
             (unless (member path new-paths)
               (magit-section-hide c))))
       (code-review-section--fold-reviewed-files c new-paths))))
 
-(defun code-review-section--fold-and-mark (fresh-render?)
+(defun code-review-section--fold-and-mark (fresh-render? &optional commit-focus?)
   "Fold bot-authored comment threads (AI chatter) and add the
 fringe markers on diff lines carrying a thread.  The fold runs
 only on a FRESH render (FRESH-RENDER? non-nil): on re-render magit
@@ -324,18 +344,26 @@ be worth it."
              fresh-render?)
     (code-review--collapse-bot-comments magit-root-section))
   ;; phase 13: fold the already-reviewed files after a fetch (or on
-  ;; a buffer's first render) so only the [NEW] files show through.
+  ;; a buffer's first render).  NEW files keep their classification's
+  ;; default folds, rather than forcing documentation open.
   ;; The `--just-refetched' flag covers G in a long-lived buffer,
   ;; where FRESH-RENDER? is nil.  Nothing new -> fold nothing (the
   ;; heading's "no new changes" line carries the signal instead).
-  (when (and code-review-fold-reviewed-files
+  ;; Explicit viewed marks and commit-focus exclusions live in
+  ;; the read-tracking visibility helper below.
+  (when (and (not commit-focus?)
+             code-review-fold-reviewed-files
              (or fresh-render? code-review-section--just-refetched)
-             code-review-section--new-since-last-review
-             (a-get code-review-section--new-since-last-review 'files)
              magit-root-section)
-    (code-review-section--fold-reviewed-files
+    (when (a-get code-review-section--new-since-last-review 'files)
+        (code-review-section--fold-reviewed-files
+         magit-root-section
+         (a-get code-review-section--new-since-last-review 'files))))
+  (unless commit-focus?
+    (code-review-viewed--apply-visibility
      magit-root-section
-     (a-get code-review-section--new-since-last-review 'files)))
+     (and code-review-fold-reviewed-files
+          (or fresh-render? code-review-section--just-refetched))))
   (when code-review-comment-fringe-markers
     (code-review--mark-comment-lines)))
 
@@ -396,9 +424,9 @@ If you want to display a minibuffer MSG in the end."
            ;; before the render replaces it: t when this buffer
            ;; has never been rendered before
            (fresh-render? (not magit-root-section)))
-      (code-review-section--insert-pr-text)
+      (code-review-section--insert-pr-text commit-focus?)
       (code-review-section--render-diff-tree commit-focus?)
-      (code-review-section--fold-and-mark fresh-render?)
+      (code-review-section--fold-and-mark fresh-render? commit-focus?)
       (code-review-section--activate-review-buffer
        buff-name window ws commit-focus?)
       (when code-review-comment-cursor-pos
@@ -476,6 +504,12 @@ If you want to display a minibuffer MSG in the end."
            ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
            (cons (cons 'new-since-last-review news) fixed-infos)
          fixed-infos))
+      ;; phase 13 slice 2: the read tracking.  Expire the marks the
+      ;; new diff invalidated (hunk keys gone, changed files), then
+      ;; let GitHub's Viewed state (fetched in the infos) win for
+      ;; the file-level rows.
+      (code-review-viewed--expire (a-get news 'files))
+      (code-review-viewed--seed-github)
 
       ;; 1.2 trigger renders
       (progress-reporter-update progress 5)
@@ -514,8 +548,12 @@ If you want to display a minibuffer MSG in the end."
     (progress-reporter-update progress 5)
     (code-review-db--pullreq-raw-infos-update
      (if news
-         (a-cons 'new-since-last-review news fixed-infos)
+         ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
+         (cons (cons 'new-since-last-review news) fixed-infos)
        fixed-infos))
+    ;; phase 13 slice 2: expire the read-tracking marks the new diff
+    ;; invalidated (GitLab has no Viewed API: the state is local)
+    (code-review-viewed--expire (a-get news 'files))
 
     ;; 1.3. trigger renders
     (progress-reporter-update progress 6)
@@ -568,8 +606,11 @@ If you want to display a minibuffer MSG in the end."
            ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
            (cons (cons 'new-since-last-review news) fixed-infos)
          fixed-infos))
+      ;; phase 13 slice 2: expire the read-tracking marks the new
+      ;; diff invalidated (Bitbucket has no Viewed API: local only)
+      (code-review-viewed--expire (a-get news 'files))
 
-      ;; 1.3 trigger renders
+      ;; 1.3. trigger renders
       (progress-reporter-update progress 5)
       (let ((code-review-section--just-refetched t))
         (code-review--trigger-hooks buff-name nil msg))

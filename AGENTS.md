@@ -48,6 +48,9 @@ discovered.
 | `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
+| `code-review-db-reviewed.el` | phase 13 viewed-row persistence and indexed lookups, loaded by db.el; no cascading FK because pullreq rows are replaced |
+| `code-review-viewed.el` | phase 13 marking, local expiry, GitHub reconciliation/rollback, viewed index, folds, and hide-viewed filtering |
+| `code-review-github-query.el` | GraphQL query documents, paginated file state/user reads, viewed mutation; loaded by github.el |
 | `code-review-github.el` / `-gitlab.el` / `-bitbucket.el` | forge backends |
 | `code-review-repo.el`, `code-review-comment.el`, `code-review-actions.el`, `code-review-utils.el`, `code-review-faces.el`, `code-review-parse-hunk.el`, `code-review-interfaces.el` | support (`actions.el` also holds the interactive/navigation commands) |
 | `code-review-folding.el` | the review-buffer fold commands: the global level folds (`C-c C--`/`C-c C-+`, phase 9) and the per-file fold `S-<tab>` (fold the whole file at point — a reviewed-file mark; per-hunk fold state kept on expand, the fold survives re-renders via magit's visibility cache; outside any file it falls back to magit's global cycle).  Extracted from `code-review-actions.el` (2026-10-09, the file-size guideline) |
@@ -958,6 +961,11 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   previous PR render's value bound — the commit buffer would
   grow [NEW] tags, the new-first reorder and auto-folding over a
   single-commit diff, 2026-10-15).
+- NEW is independent of a file's classification: keep its DOC,
+  GEN or heat tag, focus filtering and default fold.  Both the
+  washer and post-fetch visibility pass must use the effective
+  collapse policy (including the review-comment exception), or
+  the latter silently reopens the docs the former just folded.
 - A MAGIT UPGRADE while a daemon is running gives the worst kind
   of mixed state: the daemon keeps the OLD magit-section runtime
   (native-compiled, so no recompile fixes it) while the package's
@@ -973,6 +981,34 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   Restarting the daemon picks up the new magit and the render
   self-heals — do this BEFORE debugging a wash that only breaks
   in the daemon (2026-10-15).
+- A child FK with ON DELETE CASCADE also fires for SQLite
+  INSERT OR REPLACE of its parent.  closql replaces pullreq
+  rows on metadata updates, so the reviewed table must NOT
+  cascade from pullreq: it erased read progress on every fetch
+  with foreign_keys enabled.  Delete reviewed children explicitly
+  in `code-review-db--delete-pullreq-tree`.
+- Chained migrations must update their LOCAL version variable
+  after a helper updates sqlite's user_version.  Otherwise the
+  following version gate is skipped (v9 -> v10 -> v11).
+- An untagged file has a PRESENT hash key with value nil.
+  `when (gethash ...)` cannot distinguish it from an absent
+  path.  Use a missing-key sentinel before attaching viewed flags.
+- Canonical diff paths need explicit provenance, not membership
+  guesses.  Both app.el and b/app.el may be changed: a raw
+  `b/app.el` section value can mean the former, while a canonical
+  one means the latter.  The washer derives the canonical path
+  from the diff header and preserves it as `code-review-path`
+  on file headings; hunk values already carry canonical paths.
+  This must also work when commit focus disables read tracking.
+- GitHub viewed state is `viewerViewedState` on file NODES,
+  with VIEWED/UNVIEWED/DISMISSED enum values, not a boolean on
+  edges.  Async rollback must capture its PR/database and prior
+  path state.  Serialize edits to a file while a mutation is
+  pending, or two failures can restore an unconfirmed mark.
+- Load `code-review-github-query` AFTER defining
+  `code-review-github-repo`: the query module defines methods
+  specialized on that class.  Moving the require above the class
+  breaks fresh loads even though a long-lived daemon still works.
 
 
 

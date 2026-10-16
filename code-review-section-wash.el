@@ -62,6 +62,11 @@
 ;; the new-since-last-review alist, NIL forward-declaration — a
 ;; valued defvar here would pre-bind it and shadow the owner
 (defvar code-review-section--new-since-last-review)
+;; phase 13 slice 2 (same deal): the explicit read-tracking index,
+;; owned by code-review-section.el, populated in --insert-pr-text
+(defvar code-review-section--viewed)
+(declare-function code-review-viewed--count-files "code-review-viewed")
+(declare-function code-review-viewed--strip-path "code-review-viewed")
 
 (defun code-review-section--new-since-last-review-suffix ()
   "One-line report for the Files changed heading.
@@ -237,11 +242,23 @@ in the diff nothing changes (no empty section, no heading)."
                                  (length .nodes)
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .nodes))
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .nodes))))
+                       ;; phase 13 slice 2: the read-tracking counter
+                       ;; (explicit marks + the all-hunks rollup)
+                       (when (and (hash-table-p code-review-section--viewed)
+                                  (hash-table-p
+                                   code-review-section--file-classifications))
+                         (format "  --  %d/%d viewed"
+                                 (code-review-viewed--count-files)
+                                 (hash-table-count
+                                  code-review-section--file-classifications)))
                        ;; phase 13: what a returning reviewer needs
                        (code-review-section--new-since-last-review-suffix)
                        (when code-review-focus-mode
                          (or (code-review-section--focus-summary)
-                             "  --  focus: no noise files to hide")))
+                             "  --  focus: no noise files to hide"))
+                       (when (and code-review-hide-viewed-files
+                                  (hash-table-p code-review-section--viewed))
+                         "  --  viewed files hidden"))
                'font-lock-face
                'magit-section-heading)))
     (magit-insert-heading)))
@@ -265,7 +282,7 @@ nothing matches (which ends the loop)."
          ;; `a/X b/X' line, the wash stops at the first block and
          ;; the rest of the diff lands as raw, uncolored text.
          "^diff --\\(?:\\(?1:git\\) \\(?:\\(?2:.+?\\) \\2\\)?\\|\\(?3:cc\\|combined\\) \\(?4:.+\\)\\)")
-    (let ((status (cond ((equal (match-string 1) "git") "modified")
+    (let* ((status (cond ((equal (match-string 1) "git") "modified")
                         ((match-string 3)              "resolved")
                         (t                            "unmerged")))
           (orig nil)
@@ -274,7 +291,13 @@ nothing matches (which ends the loop)."
                          (line-beginning-position) (1+ (line-end-position)))))
           (modes nil)
           (rename nil)
-          (binary nil))
+          (binary nil)
+          ;; Canonical provenance comes from the diff header, not
+          ;; from read-tracking state or a path's leading directory.
+          (canonical-path
+           (or (code-review--diff--extract-b-path
+                (string-trim-right (car header)))
+               file)))
       (code-review-wash--delete-line)
       (while (not (or (eobp) (looking-at "^@@\\|^diff --\\|^Submodule")))
         (cond
@@ -318,10 +341,11 @@ nothing matches (which ends the loop)."
         (delete-region (point) (match-end 0)))
       (when orig
         (setq orig (code-review-wash--decode-git-path orig)))
-      (setq file (code-review-wash--decode-git-path file))
+      (setq file (code-review-wash--decode-git-path (or file canonical-path)))
+      (setq canonical-path (code-review-wash--decode-git-path canonical-path))
       (setq header (string-join (nreverse header)))
       (code-review-wash-insert-file-section
-       file orig status modes rename header binary nil))))
+       file orig status modes rename header binary nil canonical-path))))
 (defun code-review-wash--decode-git-path (path)
   "Decode git-quoted PATH (\"\\226...\" style) to its raw form.
 Delegates to magit's utility when available; identity otherwise."
@@ -329,12 +353,14 @@ Delegates to magit's utility when available; identity otherwise."
       (magit-decode-git-path path)
     path))
 (defun code-review-wash-insert-file-section
-    (file orig status modes rename header binary long-status)
+    (file orig status modes rename header binary long-status
+          &optional canonical-path)
   "Insert the file section for FILE and wash its hunks.
 ORIG is the original file name (renames), STATUS the change type,
 MODES a mode-change header, RENAME a rename header, HEADER the
-raw extended headers, BINARY non-nil for binary files and
-LONG-STATUS an alternative status text.  This is an owned copy of
+raw extended headers, BINARY non-nil for binary files,
+LONG-STATUS an alternative status text, and CANONICAL-PATH the
+repository-relative path from the diff header.  This is an owned copy of
 magit-diff's file inserter (phase 11b); ours adds the
 code-review specifics: file classification (tags, collapse),
 comment bookkeeping and the trailing `missing comments' pass.
@@ -347,18 +373,13 @@ this is non-nil."
   ;;; Also apply file classification (tags, collapse) from
   ;;; `code-review--diff--classify-diff'.
   (let* ((raw-path-name (substring-no-properties file))
-         (clean-path (if (string-prefix-p "b/" raw-path-name)
-                         (replace-regexp-in-string "^b\\/" "" raw-path-name)
-                       raw-path-name))
+         (clean-path (or canonical-path
+                         (code-review-viewed--strip-path raw-path-name)))
          (info (and code-review-section--file-classifications
                     (gethash clean-path
                              code-review-section--file-classifications)))
          (tag (plist-get info :tag))
-         (collapse (and (plist-get info :collapse)
-                        ;; never auto-collapse files that carry
-                        ;; review comments: they'd hide discussion
-                        (not (code-review--diff--file-has-comments-p
-                              clean-path)))))
+         (collapse (code-review-section--file-collapse-p clean-path info)))
     (code-review-db--curr-path-update clean-path)
     ;;; --- end -- code-review specific code.
     (insert ?\n)
@@ -379,9 +400,13 @@ this is non-nil."
                                   (if (or (not orig) (equal orig file))
                                       file
                                     (format "%s -> %s" orig file)))
-                          'font-lock-face 'magit-diff-file-heading))
+                          'font-lock-face 'magit-diff-file-heading
+                          'code-review-path clean-path))
       (when tag
         (insert (propertize (format "  [%s]" tag)
+                            'font-lock-face 'code-review-diff-tag-face)))
+      (when (plist-get info :new)
+        (insert (propertize "  [NEW]"
                             'font-lock-face 'code-review-diff-tag-face)))
       ;; phase 17: hard tag on files with CI-gaming findings (skip
       ;; markers, gated/removed CI steps, lowered thresholds)
@@ -394,6 +419,10 @@ this is non-nil."
         (insert (propertize (format "  %s" itag)
                             'font-lock-face
                             'code-review-delicate-hunk-face)))
+      ;; phase 13 slice 2: the reviewer marked this file viewed
+      (when (plist-get info :viewed)
+        (insert (propertize "  [VIEWED]"
+                            'font-lock-face 'code-review-dimmed)))
       (when long-status
         (insert (format " (%s)" long-status)))
       (magit-insert-heading)
@@ -500,11 +529,16 @@ it on the db (PATH-NAME) when missing so comment positions anchor."
       (let ((adjusted-pos (+ (code-review--line-number-at-pos) 1)))
         (code-review-db--curr-path-head-pos-update path-name adjusted-pos)
         adjusted-pos)))
-(defun code-review-wash-hunk--insert-heading (heading badge notest)
+(defun code-review-wash-hunk--insert-heading (heading badge notest &optional viewed?)
   "Insert the hunk HEADING line, the phase 17 NO-TEST tag NOTEST
 and, when non-nil, the delicacy BADGE (phase 15), then close the
-heading (`magit-insert-heading')."
-  (insert (propertize heading 'font-lock-face 'magit-diff-hunk-heading))
+heading (`magit-insert-heading').  VIEWED? (phase 13 slice 2)
+dims the heading instead of the regular hunk heading face: the
+reviewer marked this hunk read."
+  (insert (propertize heading
+                      'font-lock-face
+                      (if viewed? 'code-review-dimmed
+                        'magit-diff-hunk-heading)))
   (when notest
     (insert (propertize (format "  [%s]" notest)
                         'font-lock-face 'font-lock-warning-face)))
@@ -607,11 +641,18 @@ Please Report this Bug" path-name))
               :about about)
           ;; phase 15: the delicacy badge; phase 17: the NO-TEST tag
           ;; (cache hits: the Analysis section runs before the diff
-          ;; wash in the sections hook)
+          ;; wash in the sections hook); phase 13 slice 2: a hunk
+          ;; the reviewer marked read dims its heading
           (code-review-wash-hunk--insert-heading
            heading
            (code-review-analysis--hunk-badge-for path-name raw-ranges)
-           (code-review-testimpact--hunk-tag-for path-name raw-ranges))
+           (code-review-testimpact--hunk-tag-for path-name raw-ranges)
+           (let ((vinfo (and (hash-table-p code-review-section--viewed)
+                             (gethash path-name
+                                      code-review-section--viewed))))
+             (and vinfo
+                  (or (member raw-ranges (plist-get vinfo :hunks))
+                      (plist-get vinfo :file)))))
           ;; Keep track of old/new line numbers from the hunk header so we
           ;; can anchor local comments keyed by SIDE/LINE inline.
           (code-review-wash-hunk--interleave-comments

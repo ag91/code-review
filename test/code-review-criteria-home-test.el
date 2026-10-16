@@ -392,7 +392,11 @@ the priorities."
                    (insert-file-contents
                     (expand-file-name "specs/index.md" root))
                    (buffer-string)))))
-    (should (equal (length ids) 30))
+    ;; New requirements may be added without changing the migrated set.
+    (should (equal (length (cl-remove-if-not
+                           (lambda (id) (string-lessp id "2026-10-16"))
+                           ids))
+                   30))
     ;; sorted, unique
     (should (equal (delete-dups (copy-sequence ids)) ids))
     (dolist (req home)

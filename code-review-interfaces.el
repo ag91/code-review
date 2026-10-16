@@ -175,5 +175,19 @@ provider API call completes.")
   (ignore obj make-draft? callback)
   (user-error "Toggling draft status is not implemented for this provider"))
 
+;; Phase 13 slice 2: the Viewed-files sync.  FILE-level only (hunk
+;; granularity has no forge counterpart).  The CALLBACK runs when
+;; the API call succeeds (the local state is already right:
+;; optimistic), the ERRORBACK on failure (the caller reverts the
+;; local state).
+(cl-defgeneric code-review-toggle-file-viewed (obj path viewed? callback errorback)
+  "Mirror PATH's viewed state (VIEWED? non-nil = viewed) to the
+forge of OBJ.  Optimistic: the local db row is written before
+this runs.  Call CALLBACK on success and ERRORBACK on failure.")
+
+(cl-defmethod code-review-toggle-file-viewed ((obj t) path viewed? callback errorback)
+  "Fallback: the state stays local (no forge counterpart)."
+  (ignore obj path viewed? callback errorback))
+
 (provide 'code-review-interfaces)
 ;;; code-review-interfaces.el ends here

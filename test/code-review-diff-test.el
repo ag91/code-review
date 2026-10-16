@@ -126,19 +126,35 @@ previous snapshot\"."
     (should (null (a-get news 'files)))
     (should (null (a-get news 'commits)))))
 
-(ert-deftest code-review-diff-test/mark-new-files-wins-over-noise ()
-  "The NEW tag overrides a DOC/GEN classification and is never
-hidden by focus mode."
+(ert-deftest code-review-diff-test/mark-new-files-preserves-classification ()
+  "NEW is independent of the file's tag, default collapse and focus policy."
   (let* ((classifications (code-review--diff--classify-diff
                            (code-review-test--diff-sample))))
+    (puthash "hot.py" '(:tag "HOT" :collapse nil :hide nil) classifications)
     (code-review-diff--mark-new-files
-     classifications '("src/main.py"))
+     classifications '("src/main.py" "README.md" "hot.py" "removed.py"))
     (let ((info (gethash "src/main.py" classifications)))
-      (should (equal (plist-get info :tag) "NEW"))
+      (should-not (plist-get info :tag))
       (should (plist-get info :new))
       (should-not (plist-get info :hide)))
-    ;; the untouched file keeps its own classification
-    (should-not (plist-get (gethash "README.md" classifications) :new))))
+    (let ((info (gethash "README.md" classifications)))
+      (should (equal (plist-get info :tag) "DOC"))
+      (should (plist-get info :new))
+      (should (plist-get info :collapse))
+      (should (plist-get info :hide)))
+    (should (equal (plist-get (gethash "hot.py" classifications) :tag) "HOT"))
+    (should-not (gethash "removed.py" classifications))))
+
+(ert-deftest code-review-diff-test/new-docs-stay-hidden-by-focus-mode ()
+  "NEW does not make a DOC file bypass the selected noise filter."
+  (let* ((diff (code-review-test--diff-sample))
+         (classifications (code-review--diff--classify-diff diff))
+         (code-review-focus-mode t))
+    (code-review-diff--mark-new-files classifications '("README.md"))
+    (should (equal (mapcar #'car
+                          (code-review--diff--split-by-files
+                           (code-review--maybe-reorder-diff diff classifications)))
+                   '("src/main.py")))))
 
 (ert-deftest code-review-diff-test/reorder-puts-new-files-first ()
   "The new-since-last-review files sort ahead of everything else,
@@ -150,3 +166,14 @@ even files matched by user order rules."
                        diff-text classifications))
            (first-block (code-review--diff--split-by-files reordered)))
       (should (equal (car (car first-block)) "README.md")))))
+
+;;; Phase 13, slice 2: the hunk keys (the read-tracking identity)
+
+(ert-deftest code-review-diff-test/hunk-keys ()
+  "Every file maps to the raw `@@ -a,b +c,d @@' MIDDLE texts of its
+hunks — byte-identical to the hunk section's `ranges' key — and
+the trailing newline of the file's own block is irrelevant."
+  (let ((keys (code-review-diff--hunk-keys
+               (code-review-test--diff-sample))))
+    (should (equal (cdr (assoc "README.md" keys)) '("-0,0 +1")))
+    (should (equal (cdr (assoc "src/main.py" keys)) '("-1 +1")))))

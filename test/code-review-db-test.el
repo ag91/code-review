@@ -265,8 +265,10 @@ the same convention."
   (code-review-test--reset-db file))
 
 (defun code-review-db-test--v10-migration-assertions (db)
-  "Assert the state of DB after a v10 migration of a seeded v9 db."
-  (should (= 10 (closql--db-get-version db)))
+  "Assert the state of DB after a v10 migration of a seeded v9 db.
+The chain runs on to the current version (v11): the pullreq table
+shaped by v10 is unchanged by it."
+  (should (= 11 (closql--db-get-version db)))
   ;; canonical column order, no callback column
   (should (equal (closql--table-columns db 'pullreq)
                  code-review-db--v10-canonical-columns))
@@ -355,7 +357,7 @@ the end) into v10's canonical layout, values intact."
             (emacsql db [:pragma (= user-version 8)]))
           (code-review-test--reset-db file)
           (let ((db (code-review-db)))
-            (should (= 10 (closql--db-get-version db)))
+            (should (= 11 (closql--db-get-version db)))
             (should (equal (closql--table-columns db 'pullreq)
                            code-review-db--v10-canonical-columns))
             (let ((row (car (emacsql db [:select [description title sha state url]
@@ -367,5 +369,110 @@ the end) into v10's canonical layout, values intact."
             (delete-file file)
             (delete-file (concat file "-shm"))
             (delete-file (concat file "-wal")))))))
+
+;;; Phase 13 slice 2: the read tracking (`reviewed' table)
+
+(ert-deftest code-review-db-test/reviewed-migrate-from-v10 ()
+  "An existing v10 database gains the reviewed table on reconnect,
+and the version lands on 11."
+  (let ((file (code-review-test--fresh-db-file)))
+    (unwind-protect
+        (progn
+          (code-review-test--reset-db file)
+          (let ((db (code-review-db)))
+            (emacsql db "DROP TABLE reviewed")
+            (closql--db-set-version db 10))
+          (code-review-test--reset-db file)
+          (let ((db (code-review-db)))
+            (should (= 11 (closql--db-get-version db)))
+            (should (member 'reviewed
+                            (mapcar #'car
+                                    (emacsql db "SELECT name FROM sqlite_master WHERE type = 'table'")))))
+          (code-review-test--reset-db nil)
+          (ignore-errors
+            (delete-file file)
+            (delete-file (concat file "-shm"))
+            (delete-file (concat file "-wal")))))))
+
+(ert-deftest code-review-db-test/reviewed-insert-and-read ()
+  "Marking a file or hunk viewed persists and reads back."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    (code-review-db--reviewed-insert "src/app.el")
+    (code-review-db--reviewed-insert "src/app.el" "-7,17 +7,18")
+    (should (code-review-db--reviewed-file-p "src/app.el"))
+    (should-not (code-review-db--reviewed-file-p "src/other.el"))
+    (should (member "-7,17 +7,18"
+                    (cdr (assoc "src/app.el"
+                                (code-review-db--reviewed-hunk-keys)))))
+    ;; a hunk row does NOT make the file marked
+    (code-review-db--reviewed-insert "src/hunk-only.el" "-1,2 +1,3")
+    (should-not (code-review-db--reviewed-file-p "src/hunk-only.el"))))
+
+(ert-deftest code-review-db-test/reviewed-delete-hunk-keeps-file-row ()
+  "Unmarking a hunk leaves the file-level row alone."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    (code-review-db--reviewed-insert "src/app.el")
+    (code-review-db--reviewed-insert "src/app.el" "-7,17 +7,18")
+    (code-review-db--reviewed-delete "src/app.el" "-7,17 +7,18")
+    (should (code-review-db--reviewed-file-p "src/app.el"))
+    (should-not (assoc "src/app.el"
+                       (code-review-db--reviewed-hunk-keys)))))
+
+(ert-deftest code-review-db-test/reviewed-delete-path-drops-everything ()
+  "The full unview drops the file row AND the hunk rows of the path."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    (code-review-db--reviewed-insert "src/app.el")
+    (code-review-db--reviewed-insert "src/app.el" "-7,17 +7,18")
+    (code-review-db--reviewed-insert "src/app.el" "-20,3 +20,4")
+    (code-review-db--reviewed-insert "src/other.el")
+    (code-review-db--reviewed-delete-path "src/app.el")
+    (should-not (code-review-db--reviewed-file-p "src/app.el"))
+    (should-not (assoc "src/app.el" (code-review-db--reviewed-hunk-keys)))
+    (should (code-review-db--reviewed-file-p "src/other.el"))))
+
+(ert-deftest code-review-db-test/reviewed-replace-file-rows ()
+  "The G seed replaces the file rows wholesale; hunk rows survive."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    (code-review-db--reviewed-insert "old1.el")
+    (code-review-db--reviewed-insert "old2.el")
+    (code-review-db--reviewed-insert "old2.el" "-1,2 +1,3")
+    (code-review-db--reviewed-replace-file-rows '("new.el" "old2.el"))
+    (should (code-review-db--reviewed-file-p "new.el"))
+    (should (code-review-db--reviewed-file-p "old2.el"))
+    (should-not (code-review-db--reviewed-file-p "old1.el"))
+    ;; the hunk row survived the seed
+    (should (member "-1,2 +1,3"
+                    (cdr (assoc "old2.el"
+                                (code-review-db--reviewed-hunk-keys)))))))
+
+(ert-deftest code-review-db-test/reviewed-delete-invalid ()
+  "Rows the new diff invalidated are dropped: the hunk rows whose
+key disappeared from the diff and the file rows whose file's block
+changed; everything else stays."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    (let ((diff "diff --git a/a.el b/a.el\nindex 111..222 100644\n--- a/a.el\n+++ b/a.el\n@@ -1,2 +1,2 @@\n context\n-old\n+new\ndiff --git a/b.el b/b.el\nindex 333..444 100644\n--- a/b.el\n+++ b/b.el\n@@ -1,2 +1,3 @@\n context\n+added\n"))
+      (code-review-db--pullreq-raw-diff-update diff)
+      ;; a.el: a file row (stays: the file did not change in the news)
+      (code-review-db--reviewed-insert "a.el")
+      ;; b.el: a hunk row with a key PRESENT in the diff (stays)
+      (code-review-db--reviewed-insert "b.el" "-1,2 +1,3")
+      ;; b.el: a hunk row whose key is NOT in the diff (expires)
+      (code-review-db--reviewed-insert "b.el" "-99,9 +99,9")
+      ;; a stale row for a path that left the diff (expires)
+      (code-review-db--reviewed-insert "gone.el")
+      ;; a.el's file row is in the news (expires: the reset semantics)
+      (code-review-db--reviewed-delete-invalid
+       (lambda (path) (not (member path '("a.el"))))
+       (code-review-diff--hunk-keys diff))
+      (should-not (code-review-db--reviewed-file-p "a.el"))
+      (should-not (code-review-db--reviewed-file-p "gone.el"))
+      (let ((keys (cdr (assoc "b.el" (code-review-db--reviewed-hunk-keys)))))
+        (should (member "-1,2 +1,3" keys))
+        (should-not (member "-99,9 +99,9" keys))))))
 
 ;;; code-review-db-test.el ends here

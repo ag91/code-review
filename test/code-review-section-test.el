@@ -814,4 +814,69 @@ open."
             (should (oref a-section hidden))
             (should-not (oref b-section hidden))))))))
 
+;;; Phase 13 slice 2: the explicit read tracking (the `v' marks)
+
+(ert-deftest code-review-section-test/viewed-tag-counter-fold-dim ()
+  "The viewed render end to end: the file with a FILE-level row
+and the file whose only hunk is read (the rollup) both get the
+[VIEWED] tag, fold on a fresh render, dim their hunk headings,
+and the Files changed heading reports 2/2 viewed."
+  (code-review-section-test--with-section-env
+    (let ((diff-text
+           (concat
+            "diff --git a/a.el b/a.el\n"
+            "index 111..222 100644\n"
+            "--- a/a.el\n"
+            "+++ b/a.el\n"
+            "@@ -1,2 +1,2 @@\n"
+            " context\n"
+            "-old\n"
+            "+new\n"
+            "diff --git a/b.el b/b.el\n"
+            "index 333..444 100644\n"
+            "--- a/b.el\n"
+            "+++ b/b.el\n"
+            "@@ -1,2 +1,3 @@\n"
+            " context\n"
+            "+added\n")))
+      (code-review-db--pullreq-raw-diff-update diff-text)
+      ;; a.el: the FILE-level mark; b.el: the hunk mark completing
+      ;; the rollup (its single hunk's key)
+      (code-review-db--reviewed-insert "a.el")
+      (code-review-db--reviewed-insert "b.el" "-1,2 +1,3")
+      (with-temp-buffer
+        (magit-section-mode)
+        (let ((inhibit-read-only t)
+              (code-review-fold-reviewed-files t)
+              (code-review-section--just-refetched t)
+              (code-review-section--new-since-last-review nil)
+              (code-review-history-enabled nil))
+          (code-review-section--insert-pr-text)
+          (goto-char (point-min))
+          (magit-insert-section (code-review--root-section)
+            (magit-insert-section (code-review-files-report-section)
+              (code-review-section-insert-files-changed)
+              (magit-insert-section (code-review-files-chnged)
+                (save-restriction
+                  (narrow-to-region (point) (point-max))
+                  (magit-wash-sequence #'code-review-wash-diff)))))
+          (let ((text (buffer-string)))
+            (should (string-match-p "\\[VIEWED\\]" text))
+            (should (string-match-p "2/2 viewed" text)))
+          ;; the viewed files fold on a fresh render
+          (code-review-section--fold-and-mark t)
+          (let ((files 0))
+            (magit-map-sections
+             (lambda (f)
+               (when (cl-typep f 'magit-file-section)
+                 (setq files (1+ files))
+                 (should (get-char-property (oref f content) 'invisible)))))
+            (should (= files 2)))
+          ;; the viewed hunk heading carries the dimmed face
+          (goto-char (point-min))
+          (should (re-search-forward "^@@" nil t))
+          (beginning-of-line)
+          (should (eq (get-text-property (point) 'font-lock-face)
+                      'code-review-dimmed)))))))
+
 ;;; code-review-section-test.el ends here

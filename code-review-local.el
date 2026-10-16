@@ -47,13 +47,15 @@ from a timer where `default-directory' is arbitrary."
   (let ((default-directory (file-name-as-directory (oref obj host))))
     (magit-git-output "diff" "--no-color" (oref obj base-ref-name))))
 
-(defun code-review-local--cleanup-rows ()
-  "Delete stale LOCAL rows from the database."
+(defun code-review-local--cleanup-rows (&optional root diff-args)
+  "Delete stale LOCAL rows, except the review of ROOT and DIFF-ARGS.
+Keeping the matching row lets reopening preserve its viewed marks."
   (let ((db (code-review-db)))
-    (dolist (row (emacsql db [:select [id] :from 'pullreq
+    (dolist (row (emacsql db [:select [id host base-ref-name] :from 'pullreq
                                     :where (= state "LOCAL")]))
-      (ignore-errors
-        (closql-delete (closql-get db (car row) 'code-review-db-pullreq))))))
+      (unless (and root (equal root (nth 1 row))
+                   (equal diff-args (nth 2 row)))
+        (code-review-db--delete-pullreq-tree db (car row))))))
 
 (defun code-review-local--commit-args (rev)
   "Return (DIFF-ARGS TITLE) reviewing REV against its first parent.
@@ -171,13 +173,14 @@ stops responding to G (full reload)."
       ;; worth reading)
       (code-review-criteria--enforce-local root diff)
       (let ((code-review-section-full-refresh? t))
-        (code-review-local--cleanup-rows)
-        (code-review-db--pullreq-create
-         (code-review-local-diff
-          :owner "local"
-          :repo (file-name-nondirectory (directory-file-name root))
-          :number 0
-          :url nil))
+        (code-review-local--cleanup-rows root diff-args)
+        (let ((obj (code-review-local-diff
+                    :owner "local"
+                    :repo (file-name-nondirectory (directory-file-name root))
+                    :number 0 :url nil)))
+          (oset obj host root)
+          (oset obj base-ref-name diff-args)
+          (code-review-db--pullreq-create obj))
         (let ((pr (code-review-db-get-pullreq)))
           (oset pr state "LOCAL")
           (oset pr title title)
@@ -234,7 +237,10 @@ stops responding to G (full reload)."
                 new-diff nil)))
     (setq code-review-section--new-since-last-review news)
     (oset obj raw-diff new-diff)
-    (closql-insert (code-review-db) obj t))
+    (closql-insert (code-review-db) obj t)
+    ;; phase 13 slice 2: expire the read-tracking marks the new diff
+    ;; invalidated (local reviews: the state is local by definition)
+    (code-review-viewed--expire (a-get news 'files)))
   (progress-reporter-update progress 5)
   (let ((code-review-section--just-refetched t))
     (code-review--trigger-hooks buff-name nil msg))

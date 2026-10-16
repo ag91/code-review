@@ -213,6 +213,8 @@ away with \"Could not identify the PR ...\"."
     code-review-testimpact-run-tests)
    ("N" "Focus: hide auto-flagged noise files (lockfiles, docs, whitespace-only)"
     code-review-toggle-focus-mode)
+   ("v" "Mark file/hunk viewed (C-u: unmark)" code-review-viewed-toggle)
+   ("C-c v" "Hide/show viewed files" code-review-toggle-hide-viewed-files)
    ("D" "Difftastic: zoom into the file's real changes (C-u: whole PR)"
     code-review-difftastic-file)
    ("V" "View: whole diff ignoring whitespace (view-only)"
@@ -256,6 +258,11 @@ away with \"Could not identify the PR ...\"."
     (define-key map (kbd "M-.") 'code-review-xref-find-definitions)
     (define-key map (kbd "M-?") 'code-review-xref-find-references)
     (define-key map (kbd "w") 'code-review-repo-open-worktree)
+    ;; phase 13 slice 2: mark the file/hunk at point viewed
+    ;; (C-u unmarks); GitHub PRs mirror the file state to the
+    ;; forge's Viewed checkbox
+    (define-key map (kbd "v") 'code-review-viewed-toggle)
+    (define-key map (kbd "C-c v") 'code-review-toggle-hide-viewed-files)
     ;; Review threads
     (define-key map (kbd "R") 'code-review-threads-toggle-resolved)
     ;; Noise reduction: focus mode, difftastic drill-down, -w view

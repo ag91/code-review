@@ -294,5 +294,12 @@ explicitly."
   (when (and (oref section hidden)
              (not (eq section magit-root-section)))
     (magit-section-hide section)))
+
+(defun code-review-section--file-collapse-p (path info)
+  "Return PATH's default collapse policy from classification INFO.
+Files carrying review comments stay open so discussion remains visible."
+  (and (plist-get info :collapse)
+       (not (code-review--diff--file-has-comments-p path))))
+
 (provide 'code-review-section-shared)
 ;;; code-review-section-shared ends here

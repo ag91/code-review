@@ -1585,11 +1585,11 @@ Gotchas:
   file — always check-parens / depth-walk probe scripts
   regardless.
 
-* Phase 13 — Read tracking: mark files/hunks as reviewed      :STATUS:todo:
+* Phase 13 — Read tracking: mark files/hunks as reviewed      :STATUS:done:
 
-Slice 1 DONE (2026-10-15): INFERRED new-since-last-review — see
-below.  The manual =v= marking and the GitHub Viewed sync remain
-todo.
+DONE (2026-10-16).  Slice 1 infers new-since-last-review from
+snapshots; slice 2 adds persistent explicit marks, GitHub Viewed
+sync, and the hide-viewed companion.
 
 Problem: folding a hunk once you have read it is the natural
 review workflow, but magit's visibility state lives only in the
@@ -1623,9 +1623,10 @@ unviewed when a new contributor commit touches it.
      blob (key `new-since-last-review') — no schema change, and
      the value survives re-renders and restarts.  Local reviews
      (no infos blob) stash it in the render-time defvar only.
-   - Render: the NEW files get a =[NEW]= tag that WINS over the
-     noise/heat tags and is NEVER hidden by focus mode
-     (`code-review-diff--mark-new-files'), they sort AHEAD of
+   - Render: changed files get an ADDITIONAL =[NEW]= badge,
+     preserving noise/heat tags, heading annotations, default
+     folds and focus-mode filtering
+     (`code-review-diff--mark-new-files'); they sort AHEAD of
      everything else (first comparator clause in
      `--maybe-reorder-diff'), the "Files changed" heading gains
      "N file(s) changed since your last review (K new commits)"
@@ -1637,7 +1638,7 @@ unviewed when a new contributor commit touches it.
      Nothing-new fetches fold NOTHING.
    - Verification: unit tests for the pure comparison
      (added/changed/untouched/no-snapshot/nothing-changed), the
-     tag-over-noise marking, the new-first reorder, and a
+     additive NEW marking, the new-first reorder, and a
      RENDER-LEVEL test (`code-review-section-test/
      new-since-last-review-tag-order-fold`: [NEW] tag, new file
      first, reviewed file folded after a fetch).  316/317 green
@@ -1652,7 +1653,8 @@ unviewed when a new contributor commit touches it.
    - Known wrinkle: a COMMIT-buffer build overwrites the PR's
      stored raw-diff snapshot with the commit's diff (existing
      behavior), so the next full refresh of the PR computes
-     everything as NEW once (tags on every file, no folding) and
+     everything as NEW once (badges on every file; classification
+     folds still apply) and
      self-heals on the following refresh.
    - Fix (2026-10-15, same day): the PR-scoped news defvar
      LEAKED into COMMIT-FOCUS buffers — `--trigger-hooks`
@@ -1663,6 +1665,24 @@ unviewed when a new contributor commit touches it.
      CLEARS the defvar when COMMIT-FOCUS? is set (a skip alone
      would leave the previous render's value bound).  Found
      while diagnosing the ec7378d commit buffer (below).
+   - Fix (2026-10-16): NEW originally REPLACED the DOC/GEN/heat
+     tag and cleared focus-mode hiding, while slice 2's post-fetch
+     visibility pass explicitly opened all changed files.  A
+     local review consequently showed =Improvements.org= open
+     with only =[NEW]= despite its DOC collapse rule.  NEW now
+     has its own badge, and the washer and visibility pass share
+     the effective collapse policy (including the existing
+     review-comment exception).  Changed source still reopens
+     after a fetch; deliberately expanded docs survive rerenders.
+     Guard: =req-2026-10-16-005= plus classification, focus,
+     heading-annotation and attached-discussion regressions.
+     Verification: 83 focused tests and the full 358-test suite
+     pass; fresh bytecode, zero compilation errors.  Also fixed
+     the GitHub query module's load order: its specialized methods
+     require the GitHub class to exist before the module loads.
+     Daemon: corrected bytecode loaded; two isolated renders each
+     produced 2 files, 2 hunks, 4 painted changed lines, folded
+     DOC+NEW and open source.  Existing review text was unchanged.
 
 ** Fix (2026-10-15) — commit buffer ec7378d "not all hunks display" = stale daemon magit runtime
    Symptom: the =*Code Review Commit ec7378d …*= buffer showed
@@ -1696,10 +1716,9 @@ unviewed when a new contributor commit touches it.
      snapshot was already healed to the real 6-block commit diff
      during diagnosis).  Also fixed en route: the phase 13 news
      leak into commit buffers (above).
-   - The =v= marking / GitHub Viewed sync (the plan below) is
-     still the right completion for HUNK granularity and for
-     cross-machine sync — the inference covers the 90% case with
-     one pure function.
+   - The =v= marking / GitHub Viewed sync (completed below)
+     adds HUNK granularity and cross-machine file sync; the
+     inference remains the cheap returning-reviewer overview.
 
 ** While in there (2026-10-15) — two header improvements
    - Commit DATES: the Commits section showed only sha + message,
@@ -1717,57 +1736,79 @@ unviewed when a new contributor commit touches it.
      quickly?" signal at the top of the buffer, the phase 25
      review-budget view.
 
-Design (remaining):
-
-- SOURCE OF TRUTH for forge PRs: GitHub itself.  The web UI's
-  "Viewed" checkbox is file-level and already has the wanted
-  reset semantics (new commits to the file mark it unviewed
-  again).  So do not reimplement staleness logic for GitHub:
-  mirror it.
-  - Mutations: GraphQL =markFileAsViewed= /
-    =unmarkFileAsViewed= (input: =pullRequestId=, =path=).
-  - Query side: fetch the per-file viewed state with the rest
-    of the infos and seed the local DB from it (verify the
-    exact field name in the GraphQL schema during
-    implementation; the REST files endpoint does not carry it).
-  - Marking is optimistic: update the local DB, re-render, and
-    push the mutation asynchronously; an errback reverts the
-    local state and messages the user.
-- LOCAL STATE (needed for hunks, for GitLab/Bitbucket which
-  lack the same API, and for local diff reviews): a new closql
-  table (e.g. =reviewed=: pullreq, path, hunk-key, updated-at).
-  - Hunk granularity keyed by =file + hunk header=
-    (=@@ -a,b +c,d @@=), which survives most re-renders; a
-    changed header means the diff changed =3D read state
-    expires — that reproduces GitHub's reset semantics
-    locally without diffing diffs.
-  - File viewed =3D all its hunks read; then the GitHub sync
-    fires (for GitHub PRs).
-  - Schema note: new TABLE, not new columns (the pullreq schema
-    is fixed and closql insert maps the whole object); create
-    it =IF NOT EXISTS= on connect so existing user DBs migrate
-    transparently.
-- UX:
-  - =v= on a hunk section: mark that hunk read (dim + auto-fold
-    on next render); =v= on a file section: mark the whole file
-    read; =C-u v= unmarks.  Also works in =*Code Review:
-    local...*= buffers, DB-only.
-  - Read files get a =VIEWED= tag on the file heading (same
-    mechanism as =DOC=/=GEN= tags) and stay folded by default;
-    =code-review-toggle-focus-mode= gets a companion that hides
-    them entirely.
-  - "Files changed" heading reports "8/14 viewed".
-  - =G= (full reload) must reconcile: GitHub state wins for
-    GitHub PRs, local state fills in for the rest.
-- Implementation order: (1) DB table + =v= command with local
-  persistence and rendering (works everywhere, including local
-  reviews); (2) GitHub sync on top (query seed + optimistic
-  push); (3) GitLab/Bitbucket if their APIs allow, DB-only
-  otherwise.
-- Verification lessons already learned apply: batch tests in a
-  FRESH emacs for the DB table and hunk-key expiry; render
-  checks for the tag/folding; live litellm buffer health; and
-  beware that daemon staleness lies (see phase 11c correction).
+** Slice 2 (DONE 2026-10-16) — explicit read tracking
+   - =v= marks the file or hunk at point viewed; =C-u v= unmarks.
+     A marked hunk dims and folds immediately; completing every
+     hunk rolls the file up to =[VIEWED]= and folds the file.
+     Unmarking one hunk of a whole-file mark preserves the other
+     hunks' progress.  Unmarking a file clears its hunk marks too.
+   - =C-c v= / =code-review-toggle-hide-viewed-files= hides or
+     shows viewed files without altering marks.  The "Files
+     changed" heading keeps the full denominator (=8/14 viewed=),
+     including hidden files.  The counter also works in local
+     reviews, which have no forge metadata.
+   - Default folds honor =code-review-fold-reviewed-files=.
+     Ordinary re-renders preserve deliberately expanded files;
+     a newly marked/unmarked target updates its own visibility.
+     Commit-focus buffers exclude read tracking, hiding, and its
+     counter: the state belongs to the full reviewed change.
+   - Persistence: schema v11 adds the =reviewed= table, with a
+     =(pullreq, path, hunk_key)= lookup index.  Its class and
+     accessors live in =code-review-db-reviewed.el=.  Reopening
+     copies marks and the previous diff snapshot into the fresh
+     PR row while discarding old path/comment bookkeeping.
+     Reopening the SAME local root/range preserves progress;
+     opening a different local review keeps the existing
+     single-local-review policy and discards the previous one.
+   - Refresh expiry: removed paths disappear, changed file
+     blocks lose local whole-file marks, and hunk marks expire
+     when their range header leaves the diff.  Hunk keys are
+     deliberately HEADER-based, not content hashes: an edit
+     retaining the same ranges retains that local hunk mark.
+     Hunk parsing caches only one diff snapshot.
+   - GitHub: both infos queries request =viewerViewedState= on
+     =files.nodes= (the enum =VIEWED=/=UNVIEWED=/=DISMISSED=,
+     NOT a boolean on a file edge).  File pages continue
+     asynchronously beyond the first 100, with a repeated-cursor
+     guard and a 30-continuation cap.  A failed page never clears
+     unfetched states.  On =G=, known GitHub states win; a reset
+     cannot be masked by a stale completed local rollup.
+   - =markFileAsViewed= / =unmarkFileAsViewed= use the PR node id
+     and path.  Marking renders from cached data first, then
+     sends asynchronously.  Failure restores the complete prior
+     path state, bound to the originating PR/database, and
+     refreshes that buffer.  A second edit to the same file waits
+     while its mutation is pending, so rollback never inherits
+     an unconfirmed mark.  GitLab/Bitbucket/local marks stay
+     DB-only; no new remote writes for those backends.
+   - File-size boundary: GitHub's query documents, paginated
+     read helpers and viewed mutation moved into
+     =code-review-github-query.el=, required by the existing
+     backend facade; all touched production files stay below
+     800 lines.
+   - Traps caught by tests: closql uses INSERT OR REPLACE, so a
+     cascading FK from reviewed to pullreq silently DELETED marks
+     on metadata updates (no FK here; cleanup is explicit).
+     Untagged files have NIL classification values, not absent
+     keys.  Canonical paths come from diff headers and ride the
+     file heading as =code-review-path=: inferring prefixes from
+     the viewed index confuses =app.el= with =b/app.el=.
+     Migration chains must advance the LOCAL version after v10,
+     not just sqlite's version, or v11 is skipped.
+   - Verification: 78 focused ERT tests and the full 353/353 suite
+     pass in fresh batch Emacs; paren checks, byte compilation
+     (zero errors, fresh artifacts), native-cache cleanup and
+     =git diff --check=.  Guards include actual =v=/=C-u v=
+     keypresses, invisible fold overlays, reopening/restarts,
+     partial/full unmarks, rollback isolation/races, pagination,
+     path collisions, local counters, hiding, and commit focus.
+     New requirements are req-2026-10-16-001..004.  The migration
+     invariant test still checks its original 30 definitions but
+     now permits later requirements.
+   - Live verification deferred: no GitHub mutation was sent and
+     no user daemon/buffer was reloaded during this slice.  The
+     daemon restart needed for the stale magit runtime above
+     remains the prerequisite for a trustworthy live check.
 
 * Phase 14 — Review heat: risk-ranked reading order          :STATUS:done:
 
