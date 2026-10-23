@@ -5028,6 +5028,52 @@ was the phase's meanest):
   was staged but uncommitted; commit checkpoints before
   bulk migrations.)
 
+* Four fixes — 2026-10-23 :STATUS:done:
+
+Small fixes from a review session, each with a guard test (req-2026-10-23-001
+is the fold; the others ride the existing contracts):
+
+- =C-u= on a GitHub link opens the DEFAULT BROWSER (=code-review-browse-url=:
+  =browse-url= hands its interactive prefix to the handler as arg 2;
+  =code-review-open-pr-at-point= forwards =current-prefix-arg=).
+- The brief drafter prompt (station 1) no longer asks the agent to author
+  =specs/*.md= files: the criteria ARE guard tests (req id in the test name,
+  EARS sentence as the docstring, machine keys in the block, draft-not-push).
+- =code-review-review-local-diff= works on a fresh autoload: it is
+  autoloaded WITHOUT =code-review.el= (circular load at the top), but the
+  render path needs =code-review-mode= and =code-review-sections-hook=,
+  which live ONLY there — a runtime =(require 'code-review)= inside the
+  command's non-empty-diff branch (a no-op once loaded).
+- Hunks start folded (=code-review-fold-hunks-by-default=, the walkers live
+  in =code-review-folding.el= beside the other fold commands): the buffer
+  opens as a list of affected files.
+
+** The magit re-render overlay trap (the fold fix's gotcha)
+
+=magit-section-hide= paints the =invisible= OVERLAY; outside a real
+=magit-refresh-buffer= pass, a re-render re-creates hunk sections that
+INHERIT the old tree's =hidden= SLOTS (the ident-based visibility cache)
+but get NO overlay — =hidden=t= while the text is perfectly visible
+(=get-char-property= nil).  Code-review renders DIRECTLY (no refresh
+pass), so any fold applied only on the first render silently unmasks
+itself on the second.  The fold walk therefore runs on EVERY render:
+fresh/refetch hides every hunk; a plain re-render re-applies the overlay
+ONLY where the inherited slot says hidden (deliberately expanded hunks
+have =hidden=nil= and stay open).  The same "slot is not visibility"
+logic as the criteria-sentence three-part fold note above — there the
+fix was a heading + explicit hide; the missing piece here was the
+overlay RE-application per render.
+
+Test-side red herring: ERT prints a failed =should='s recorded VALUES
+AFTER the unwind-protect cleanup already killed the test's temp buffer —
+a live =content= marker reports as =#<marker in no buffer>= in the
+failure message.  Judge the marker state in the ASSERTION, not by the
+print.  And a test of an every-render default must bind the defcustom
+=non-nil= around EVERY render: the shared test harness binds it nil
+protectively, and a re-render under the nil binding skips the fold walk
+entirely (which LOOKS like the production bug while testing a state no
+real buffer is in).
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N

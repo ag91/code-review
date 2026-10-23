@@ -65,11 +65,12 @@ re-prioritized, or the PR is too big to review honestly."
   "The station-1 DRAFTER hook (phase 27; nil = no AI, hand-write).
 Called with (TITLE BODY PATHS WORKTREE): the PR's title and
 description (nil body for local reviews), the diff's changed
-paths and the worktree directory.  The drafter WRITES EARS
-criteria files into the worktree's criteria directory — the pane
-and checklist render the ledger, so a draft needs no separate
-surface.  Never signals into callers (the command condition-
-cases); returning nil means nothing was drafted.  The mode CALLS
+paths and the worktree directory.  The drafter DRAFTS THE
+CRITERIA AS GUARD TESTS in the worktree's test suite (the
+requirement id in the test name, the EARS sentence as the test's
+docstring, the machine keys in the comment block above the test).
+Never signals into callers (the command condition-cases);
+returning nil means nothing was drafted.  The mode CALLS
 this but never implements it."
   :type '(choice function (const nil))
   :group 'code-review)

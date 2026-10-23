@@ -15,7 +15,10 @@
           "@@ -1 +1 @@\n-before\n+after\n"))
 
 (defmacro code-review-viewed-render-test--with-review (&rest body)
-  "Run BODY in a temporary LOCAL review with no background work."
+  "Run BODY in a temporary LOCAL review with no background work.
+The hunk default-fold is bound nil so the read-tracking
+expectations stay independent of it (tests for the default fold
+rebind it locally)."
   (declare (indent 0))
   `(code-review-test--with-db
      (code-review-db--pullreq-create
@@ -28,7 +31,8 @@
      (with-temp-buffer
        (code-review-mode)
        (setq code-review-review-buffer-pr-id code-review-db--pullreq-id)
-       ,@body)))
+       (let ((code-review-fold-hunks-by-default nil))
+         ,@body))))
 
 (defun code-review-viewed-render-test--render (&optional commit-focus? news)
   "Render the fixture with optional COMMIT-FOCUS? and snapshot NEWS."
@@ -167,6 +171,46 @@
                  (oref file start) (oref file content))))))
         (fset 'code-review-testimpact--file-tag-for ci-tag)
         (fset 'code-review-registry--file-tag incident-tag)))))
+
+;;; req-2026-10-23-001: hunks start folded
+;; covers: code-review-section.el, code-review-folding.el
+;; covers-fn: code-review-section--fold-hunks
+;; enforcement: test
+(ert-deftest code-review-viewed-render-test/req-2026-10-23-001-hunks-start-folded ()
+  "WHEN a reviewer opens a review THE SYSTEM SHALL start the hunks folded so the affected files are scannable."
+  (code-review-viewed-render-test--with-review
+    (let ((code-review-fold-hunks-by-default t))
+      (code-review-viewed-render-test--render))
+    (let ((hunks (code-review-viewed-render-test--sections 'magit-hunk-section))
+          (files (code-review-viewed-render-test--sections 'magit-file-section)))
+      (should (= 2 (length files)))
+      (should (= 3 (length hunks)))
+      ;; every hunk folds, every file stays scannable
+      (dolist (h hunks)
+        (should (get-char-property (oref h content) 'invisible)))
+      (dolist (f files)
+        (should-not (oref f hidden)))
+      ;; a deliberately expanded hunk survives a plain re-render: the
+      ;; re-render runs with the fold ON (the real default) so the
+      ;; folded hunks keep their invisible overlay while the expanded
+      ;; one stays open
+      (magit-section-show (car hunks))
+      (let ((code-review-fold-hunks-by-default t))
+        (code-review-viewed-render-test--render))
+      (should-not (get-char-property
+                   (oref (car (code-review-viewed-render-test--sections
+                               'magit-hunk-section)) content)
+                   'invisible))
+      (should (get-char-property
+               (oref (cadr (code-review-viewed-render-test--sections
+                            'magit-hunk-section)) content)
+               'invisible))
+      ;; a refetch refolds the default state
+      (let ((code-review-fold-hunks-by-default t)
+            (code-review-section--just-refetched t))
+        (code-review-viewed-render-test--render))
+      (dolist (h (code-review-viewed-render-test--sections 'magit-hunk-section))
+        (should (get-char-property (oref h content) 'invisible))))))
 
 ;;; req-2026-10-16-004:
 ;; covers: code-review-viewed.el, code-review-section.el, code-review.el

@@ -1009,6 +1009,26 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   `code-review-github-repo`: the query module defines methods
   specialized on that class.  Moving the require above the class
   breaks fresh loads even though a long-lived daemon still works.
+- A `hidden` SLOT is not VISIBILITY on a direct re-render: magit paints
+  the `invisible` overlay only in `magit-section-hide`, and its re-render
+  ident-inheritance re-creates sections with the old tree's `hidden`
+  slots but NO overlay.  Code-review renders directly (no
+  `magit-refresh-buffer` pass), so a fold applied only on the first
+  render silently unmasks itself on the second — text fully visible
+  while the slot says hidden (`get-char-property` nil).  Run the fold
+  walk on EVERY render and let it re-apply the overlay where the
+  inherited slot says hidden; `magit-section-show` (expanded) leaves
+  `hidden` nil, so deliberate expansions survive (the 2026-10-23 hunk
+  default fold).  Two test-side faces of the same trap: ERT prints a
+  failed `should`'s recorded values AFTER the unwind-protect cleanup
+  killed the test's temp buffer, so a LIVE content marker reports as
+  `#<marker in no buffer>` — judge marker state in the assertion, not
+  by the print; and a test of an every-render default must bind the
+  defcustom non-nil around EVERY render — the shared render-test
+  harness binds `code-review-fold-hunks-by-default` nil protectively,
+  and a re-render under that binding skips the fold walk entirely,
+  which looks exactly like the production bug while testing a state no
+  real buffer is in.
 
 
 

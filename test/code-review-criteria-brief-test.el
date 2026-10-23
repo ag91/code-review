@@ -135,16 +135,27 @@ requirement plist (and drops invalid values)."
 ;;; The reference drafter prompts (pure)
 
 (ert-deftest code-review-criteria-brief-test/req-2026-10-12-001-brief-prompt-contract ()
-  "The brief prompt carries the worktree, the file-naming and
-priority contract, the interface-detail ban, and the
-draft-not-push rule."
+  "The brief prompt asks the agent to draft the criteria as GUARD
+TESTS in the worktree's test suite — the requirement id in the
+test name, the EARS sentence in the docstring, the machine keys in
+the comment block above the test — never specs files, with the
+draft-not-push rule intact."
   (let ((prompt (code-review-agents-shell-brief-prompt
                  "Add export" "Adds the export button."
                  '("src/export.el" "src/ui.el") "/wt/")))
     (should (string-match-p "/wt/" prompt))
-    (should (string-match-p "priority: P1 | P2 | P3" prompt))
-    (should (string-match-p "YYYY-MM-DD-NNN" prompt))
-    (should (string-match-p "no interface" prompt))
+    ;; the criteria ARE tests, keyed by the machine-key block
+    (should (string-match-p "ert-deftest" prompt))
+    (should (string-match-p "req-YYYY-MM-DD-NNN" prompt))
+    (should (string-match-p "WHEN .* THE SYSTEM SHALL" prompt))
+    (should (string-match-p "covers:" prompt))
+    (should (string-match-p "covers-fn:" prompt))
+    (should (string-match-p "enforcement: test" prompt))
+    ;; the old specs-file shape is explicitly forbidden
+    (should (string-match-p "Do NOT write specs" prompt))
+    ;; ranking stays reviewer state (in the reply, not the tests)
+    (should (string-match-p "rank them in your reply" prompt))
+    (should (string-match-p "no[[:space:]\n]+interface" prompt))
     (should (string-match-p "Do NOT[[:space:]\n]+commit" prompt))
     (should (string-match-p "uncommitted" prompt))
     (should (string-match-p "src/export.el" prompt))

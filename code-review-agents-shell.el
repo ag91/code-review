@@ -57,7 +57,7 @@
 The review buffer's worktree (a detached checkout at the PR head
 for forge PRs — the agent can trash it freely), the repository
 root when no review is open, else the directory of the criterion
-file itself (specs/ lives at the repo root)."
+file itself."
   (let ((fallback (and (fboundp 'code-review-registry--repo-dir)
                        (code-review-registry--repo-dir))))
     (file-name-as-directory
@@ -161,45 +161,60 @@ off; agent-shell absent returns nil with a message."
 
 (defun code-review-agents-shell-brief-prompt (title body paths worktree)
   "The station-1 BRIEF drafting prompt (pure).
-The agent writes EARS criteria FILES into the worktree's
-criteria directory — untracked-but-not-ignored files count —
-each with `paths:' front matter and a P1..P3 `priority:'
-ranking.  Draft-not-push: uncommitted, the reviewer edits
-BEFORE the diff is read."
+The agent drafts the criteria as GUARD TESTS in the worktree's
+test suite — the requirement id lives in the test name, the EARS
+sentence is the test's docstring, and the machine keys
+(covers/covers-fn/enforcement) ride the comment block above the
+test.  Draft-not-push: uncommitted, the reviewer edits BEFORE the
+diff is read."
   (format
    "Brief work item: draft the review criteria for a change.
 
 Working tree: %s
-Write each criterion as a file under %sspecs/ named
-YYYY-MM-DD-NNN-<subject-slug>.md (NNN = one past the highest
-existing number), content:
+Draft HERE, and only here.
 
----
-paths: [<files the requirement governs>]
-priority: P1 | P2 | P3
----
+Do NOT write specs/*.md criteria files: the criteria ARE guard
+tests.  For each requirement, author ONE test in the worktree's
+test suite (uncommitted), following the repository's own test
+framework and helpers.  For an Emacs Lisp worktree, each
+requirement is an `ert-deftest':
 
-WHEN <trigger> THE SYSTEM SHALL <verifiable behavior>.
+;;; req-YYYY-MM-DD-NNN:
+;; covers: <paths the requirement governs, comma separated>
+;; covers-fn: <functions it guards, comma separated>
+;; enforcement: test
+(ert-deftest <suite>/req-YYYY-MM-DD-NNN-<subject-slug> ()
+  \"WHEN <trigger> THE SYSTEM SHALL <verifiable behavior>.\"
+  ...)
 
-Write at most 8 criteria, ranked: P1 = this change must not
-ship without it.  They are DRAFTS for a reviewer who will edit
-them before reading the diff: short, falsifiable, no interface
-details (no keybindings or UI shapes — only behavior).  Do NOT
-commit, do NOT push: leave them uncommitted.
+The rules:
+- The requirement id (YYYY-MM-DD-NNN, NNN = one past the highest
+  existing number for that date in the test suite) appears in the
+  block header AND in the test name.
+- The FIRST line of the test docstring is the requirement itself,
+  in EARS form: WHEN ... THE SYSTEM SHALL ...
+- The test is FALSIFIABLE: it FAILS while the change violates the
+  requirement and PASSES once it is met.
+- Draft at most 8 criteria; rank them in your reply (P1 = this
+  change must not ship without it).  Short, verifiable, no
+  interface details (no keybindings or UI shapes — only behavior).
+- Do NOT commit, do NOT push, do NOT create or touch any branch:
+  leave the tests uncommitted for the reviewer to edit and ship.
 
 PR title: %s
 PR description:
 %s
 Changed paths:
 %s"
-   worktree worktree
+   worktree
    (or title "(no title)")
    (or body "(no description)")
    (string-join (or paths '("-")) "\n")))
 
 (defun code-review-agents-shell-brief-drafter (title body paths worktree)
   "The `code-review-criteria-brief-drafter-function' reference
-implementation (station 1): the agent drafts the criteria files."
+implementation (station 1): the agent drafts the criteria as
+guard tests in the worktree's test suite."
   (code-review-agents-shell--handoff
    (code-review-agents-shell-brief-prompt title body paths worktree)
    worktree "the brief"))

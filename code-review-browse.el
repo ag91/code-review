@@ -159,37 +159,44 @@ Same shape `code-review-pr-buffer-name' derives from the PR object."
 ;;; Opening
 
 ;;;###autoload
-(defun code-review-browse-url (url &rest _args)
+(defun code-review-browse-url (url &optional browse? &rest _args)
   "Open the pull request at URL inside Emacs.
 Registered in `browse-url-default-handlers', so GitHub PR links
 clicked in any buffer (email, eww, org, chat) open as a
 code-review buffer instead of the browser.  GitHub file/line
 anchors (#diff-<sha>L42, #discussion_r<id>, #issuecomment-<id>)
 jump to the matching file section, diff line or comment section.
+With BROWSE? non-nil (interactively, \\[universal-argument], or a
+prefix passed through `browse-url') hand the URL to the default
+browser instead: the review is skipped entirely.
 When a review buffer for the PR is already open, it is reused
 as-is (no refetch).  GitLab and Bitbucket URLs work too when
 passed explicitly, but only GitHub links are registered with
 `browse-url' (their anchor formats are GitHub-specific)."
-  (interactive "sPR URL: ")
-  (let* ((canonical (code-review-browse--canonical-url url))
-         (pr-alist (code-review-utils-pr-from-url canonical))
-         (anchor (code-review-browse--parse-fragment url)))
-    (unless pr-alist
-      (error "code-review: not a supported pull request URL: %s" url))
-    (let* ((buff-name (code-review-browse--buffer-name pr-alist))
-           (existing (get-buffer buff-name)))
-      (if (and existing
-               (buffer-live-p existing)
-               (with-current-buffer existing
-                 (derived-mode-p 'code-review-mode)))
-          (progn
-            (pop-to-buffer buff-name)
-            (when anchor
-              (code-review-browse--jump anchor))
-            (message "Reusing open review buffer %s" buff-name))
-        (when anchor
-          (push (cons buff-name anchor) code-review-browse--pending))
-        (code-review-start canonical)))))
+  (interactive (list (read-string "PR URL: ") current-prefix-arg))
+  (if (or browse? current-prefix-arg)
+      ;; the browser gets the ORIGINAL url: anchors (#diff-...)
+      ;; carry no meaning for code-review but the browser needs them
+      (browse-url-default-browser url)
+    (let* ((canonical (code-review-browse--canonical-url url))
+           (pr-alist (code-review-utils-pr-from-url canonical))
+           (anchor (code-review-browse--parse-fragment url)))
+      (unless pr-alist
+        (error "code-review: not a supported pull request URL: %s" url))
+      (let* ((buff-name (code-review-browse--buffer-name pr-alist))
+             (existing (get-buffer buff-name)))
+        (if (and existing
+                 (buffer-live-p existing)
+                 (with-current-buffer existing
+                   (derived-mode-p 'code-review-mode)))
+            (progn
+              (pop-to-buffer buff-name)
+              (when anchor
+                (code-review-browse--jump anchor))
+              (message "Reusing open review buffer %s" buff-name))
+          (when anchor
+            (push (cons buff-name anchor) code-review-browse--pending))
+          (code-review-start canonical))))))
 
 (defun code-review-open-pr-at-point ()
   "Open a pull request link from this buffer inside Emacs.
@@ -202,7 +209,9 @@ the right spot."
   (interactive)
   (let ((url (code-review-browse--url-in-buffer)))
     (if url
-        (code-review-browse-url url)
+        ;; forward the prefix: C-u on `a' opens the link in the
+        ;; default browser too
+        (code-review-browse-url url current-prefix-arg)
       (user-error "No pull request URL found in this buffer"))))
 
 (defun code-review-browse--url-in-buffer ()

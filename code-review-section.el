@@ -64,6 +64,9 @@
 (require 'code-review-section-criteria)
 (require 'code-review-section-comment)
 (require 'code-review-section-wash)
+;; the render's default folds (the defcustoms + the fold walkers
+;; --fold-and-mark calls below live there)
+(require 'code-review-folding)
 
 
 (defcustom code-review-buffer-name "*Code Review*"
@@ -91,19 +94,6 @@ stay open at once."
 ;; `code-review-viewed--index'
 (defvar-local code-review-section--viewed nil)
 (put 'code-review-section--viewed 'permanent-local t)
-
-(defcustom code-review-fold-reviewed-files t
-  "Fold the files a returning reviewer already reviewed.
-When a snapshot from a previous fetch exists, unchanged files fold
-to their headings, one TAB away.  Changed files get a [NEW] badge
-without overriding their classification's default folds.
-Applies on the first render of a buffer and right after a
-refresh (G); re-renders never
-re-fold, so sections you deliberately expanded stay expanded.
-Explicitly viewed files and hunks also start folded.  Marking or
-unmarking a target updates its fold immediately."
-  :group 'code-review
-  :type 'boolean)
 
 (defvar-local code-review-review-buffer-pr-id nil
   "Database id of the pull request displayed in this review buffer.")
@@ -319,18 +309,6 @@ washed diff under the files-report container."
           (magit-wash-sequence
            #'code-review-wash-diff))))))
 
-(defun code-review-section--fold-reviewed-files (section new-paths)
-  "Fold every file section under SECTION whose path is not in NEW-PATHS.
-The returning reviewer opens the buffer on the new changes; the
-already-reviewed files stay one TAB away under their headings."
-  (dolist (c (oref section children))
-    (if (cl-typep c 'magit-file-section)
-        (let ((path (plist-get (code-review-viewed--target-at c) :path)))
-          (when path
-            (unless (member path new-paths)
-              (magit-section-hide c))))
-      (code-review-section--fold-reviewed-files c new-paths))))
-
 (defun code-review-section--fold-and-mark (fresh-render? &optional commit-focus?)
   "Fold bot-authored comment threads (AI chatter) and add the
 fringe markers on diff lines carrying a thread.  The fold runs
@@ -359,6 +337,16 @@ be worth it."
         (code-review-section--fold-reviewed-files
          magit-root-section
          (a-get code-review-section--new-since-last-review 'files))))
+  ;; hunks start folded: the buffer opens as a list of the affected
+  ;; files, one TAB away from the diffs.  On a fresh render or right
+  ;; after a fetch everything folds; a plain re-render keeps the
+  ;; inherited visibility (the fold helper re-applies only the folded
+  ;; hunks' overlay — `hidden' alone conceals nothing outside a
+  ;; `magit-refresh-buffer' pass).
+  (when (and code-review-fold-hunks-by-default magit-root-section)
+    (code-review-section--fold-hunks
+     magit-root-section
+     (not (or fresh-render? code-review-section--just-refetched))))
   (unless commit-focus?
     (code-review-viewed--apply-visibility
      magit-root-section

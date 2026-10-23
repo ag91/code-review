@@ -287,6 +287,18 @@ ranges change. Marks survive reopening the same review.
 alongside existing tags, such as `[DOC] [NEW]`, without overriding
 default folding or focus-mode filtering.
 
+Hunks start folded (`code-review-fold-hunks-by-default`): a review
+buffer opens as a list of the affected files — their tags, counters and
+comment markers — one `TAB` away from the diffs. Hunks you deliberately
+expanded stay expanded across refreshes; `G` (fetch) refolds to the
+default list view.
+
+GitHub PR links open inside Emacs: `RET` on a PR URL (in any buffer,
+via `code-review-open-pr-at-point`) starts or jumps to the review,
+including `#diff-<file>` anchors. With `C-u`, the link opens in your
+default browser instead — `C-u RET` on a link inside a review buffer
+bypasses the in-Emacs opening the same way.
+
 
 ## Binding suggestions
 

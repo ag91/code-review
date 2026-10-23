@@ -9,8 +9,70 @@
 
 (require 'magit-section)
 (require 'cl-lib)
+(require 'a)
 
 (declare-function code-review-eldoc--file-section "code-review-actions")
+(declare-function code-review-viewed--target-at "code-review-viewed")
+
+;; The render-time new-since-last-review alist, owned by
+;; code-review-section.el — VALUELESS forward declaration: a valued
+;; defvar would pre-bind it and shadow the owner (the defcustom
+;; gotcha).
+(defvar code-review-section--new-since-last-review)
+
+;;; The render's default folds (phase 13): what a fresh buffer looks
+;;; like before the reviewer touches anything.
+
+(defcustom code-review-fold-reviewed-files t
+  "Fold the files a returning reviewer already reviewed.
+When a snapshot from a previous fetch exists, unchanged files fold
+to their headings, one TAB away.  Changed files get a [NEW] badge
+without overriding their classification's default folds.
+Applies on the first render of a buffer and right after a
+refresh (G); re-renders never re-fold, so sections you
+deliberately expanded stay expanded.  Explicitly viewed files and
+hunks also start folded.  Marking or unmarking a target updates
+its fold immediately."
+  :group 'code-review
+  :type 'boolean)
+
+(defcustom code-review-fold-hunks-by-default t
+  "Start the review with every hunk folded.
+The buffer opens as a list of the affected files (their tags,
+counters and comments), one TAB away from the diffs; TAB on a
+file or hunk expands it.  Applies on the first render of a buffer
+and right after a refresh (G); a plain re-render keeps the
+inherited visibility, so hunks you deliberately expanded stay
+expanded."
+  :group 'code-review
+  :type 'boolean)
+
+(defun code-review-section--fold-reviewed-files (section new-paths)
+  "Fold every file section under SECTION whose path is not in NEW-PATHS.
+The returning reviewer opens the buffer on the new changes; the
+already-reviewed files stay one TAB away under their headings."
+  (dolist (c (oref section children))
+    (if (cl-typep c 'magit-file-section)
+        (let ((path (plist-get (code-review-viewed--target-at c) :path)))
+          (when path
+            (unless (member path new-paths)
+              (magit-section-hide c))))
+      (code-review-section--fold-reviewed-files c new-paths))))
+
+(defun code-review-section--fold-hunks (section &optional keep-visible?)
+  "Fold every hunk section under SECTION, recursively.
+The default open state: the buffer shows the affected files'
+headings, one TAB away from the diffs.  On a fresh render or
+right after a fetch every hunk folds.  With KEEP-VISIBLE? (a
+plain re-render), hunks that inherited an EXPANDED state from the
+old tree stay open — the re-render only re-applies the invisible
+overlay of the folded ones, because `hidden' alone conceals
+nothing outside a `magit-refresh-buffer' pass."
+  (dolist (c (oref section children))
+    (if (cl-typep c 'magit-hunk-section)
+        (unless (and keep-visible? (not (oref c hidden)))
+          (magit-section-hide c))
+      (code-review-section--fold-hunks c keep-visible?))))
 
 (defvar-local code-review-fold-level nil
   "Current global fold level, nil when unset.

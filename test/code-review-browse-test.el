@@ -279,6 +279,58 @@ to the nearest patch line (no error, no raw crash)."
       (code-review-browse--jump-to-comment-id (list :kind 'comment :id 4321))
       (should (bobp)))))
 
+;;; Universal prefix: the default-browser escape hatch
+
+(ert-deftest code-review-browse-test/prefix-opens-default-browser ()
+  "A universal prefix hands the PR URL to the default browser and
+skips code-review entirely; without a prefix the review opens."
+  (let* ((orig-start (symbol-function 'code-review-start))
+         (orig-browser (symbol-function 'browse-url-default-browser))
+         browser-urls review-urls)
+    (fset 'code-review-start
+          (lambda (url &rest _) (push url review-urls) nil))
+    (fset 'browse-url-default-browser
+          (lambda (url &rest _) (push url browser-urls)))
+    (unwind-protect
+        (progn
+          ;; explicit second arg (the C-u position)
+          (code-review-browse-url "https://github.com/o/r/pull/7" t)
+          (should (equal browser-urls '("https://github.com/o/r/pull/7")))
+          (should-not review-urls)
+          ;; a prefix `browse-url' passes through current-prefix-arg
+          (let ((current-prefix-arg '(4)))
+            (code-review-browse-url "https://github.com/o/r/pull/7"))
+          (should (= (length browser-urls) 2))
+          (should-not review-urls)
+          ;; no prefix: the code-review machinery runs, not the browser
+          (code-review-browse-url "https://github.com/o/r/pull/7")
+          (should (equal review-urls '("https://github.com/o/r/pull/7")))
+          (should (= (length browser-urls) 2)))
+      (fset 'code-review-start orig-start)
+      (fset 'browse-url-default-browser orig-browser))))
+
+(ert-deftest code-review-browse-test/prefix-forwarded-from-at-point ()
+  "`code-review-open-pr-at-point' forwards its prefix to the
+browse command: C-u on `a' opens the link in the default browser."
+  (let* ((orig-start (symbol-function 'code-review-start))
+         (orig-browser (symbol-function 'browse-url-default-browser))
+         browser-urls review-urls)
+    (fset 'code-review-start
+          (lambda (url &rest _) (push url review-urls) nil))
+    (fset 'browse-url-default-browser
+          (lambda (url &rest _) (push url browser-urls)))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "See https://github.com/acme/widget/pull/42 today\n")
+          (goto-char (point-min))
+          (let ((current-prefix-arg '(4)))
+            (code-review-open-pr-at-point))
+          (should (equal browser-urls
+                         '("https://github.com/acme/widget/pull/42")))
+          (should-not review-urls))
+      (fset 'code-review-start orig-start)
+      (fset 'browse-url-default-browser orig-browser))))
+
 ;;; Finding PR URLs in a buffer (email workflow)
 
 (defconst code-review-browse-test--email-text

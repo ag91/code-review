@@ -17,11 +17,14 @@ object would accumulate ids and a stale database pointer."
    :number "num"))
 
 (defmacro code-review-section-test--with-section-env (&rest body)
-  "Run BODY with a fresh test db and deterministic section variables."
+  "Run BODY with a fresh test db and deterministic section variables.
+The hunk default-fold is bound nil: the fold-focused tests bind it
+explicitly, the rest stay independent of it."
   (declare (indent 0))
   `(let ((code-review-section-indent-width 2)
          (code-review-section-image-scaling 0.8)
-         (code-review-fill-column 70))
+         (code-review-fill-column 70)
+         (code-review-fold-hunks-by-default nil))
      (code-review-test--with-db
        (code-review-db--pullreq-create (code-review-section-test--sample-pr-obj))
        ,@body)))

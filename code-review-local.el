@@ -167,6 +167,14 @@ stops responding to G (full reload)."
                  (magit-git-output "diff" "--no-color" diff-args))))
     (if (or (not diff) (string-empty-p diff))
         (message "code-review: no local changes (git diff %s)" diff-args)
+      ;; This command is autoloaded WITHOUT `code-review.el' (which
+      ;; requires this file, so we cannot require it at the top:
+      ;; circular loads signal "Recursive load").  The render path
+      ;; needs what lives ONLY there: `code-review-mode' and the
+      ;; `code-review-sections-hook' defcustom (the header
+      ;; sections).  A runtime require is a no-op once loaded and
+      ;; never recursive (by then this file's provide has run).
+      (require 'code-review)
       ;; phase 23: REQUIRE mode — the local review refuses to open
       ;; until at least one criteria file covers the touched area
       ;; (the change's REQUIREMENTS must exist before the diff is
