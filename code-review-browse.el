@@ -55,6 +55,7 @@
 (require 'magit-diff)
 (require 'thingatpt)
 (require 'code-review-utils)
+(require 'code-review-diff)
 
 (declare-function code-review-start "code-review" (url))
 (declare-function code-review--patch-line-p "code-review-section")
@@ -283,12 +284,6 @@ Mirror of `code-review-jump-to-gh', which builds #diff-<hash>
 links outbound."
   (secure-hash 'sha256 path))
 
-(defun code-review-browse--strip-diff-prefix (path)
-  "Strip an a/ or b/ prefix from a diff file PATH."
-  (cond ((string-prefix-p "a/" path) (substring path 2))
-        ((string-prefix-p "b/" path) (substring path 2))
-        (t path)))
-
 (defun code-review-browse--walk-sections (fn)
   "Call FN for every section under `magit-root-section' until it returns non-nil.
 FN receives a section; its value becomes the result.  Returns nil
@@ -314,7 +309,7 @@ when no section satisfies FN, or when there is no root section
                 (slot-boundp sec 'value)
                 (stringp (oref sec value)))
        (let ((h (code-review-browse--path-hash
-                 (code-review-browse--strip-diff-prefix
+                 (code-review-diff--strip-path
                   (substring-no-properties (oref sec value))))))
          ;; GitHub may truncate the digest in links; accept prefix
          ;; matches in either direction.

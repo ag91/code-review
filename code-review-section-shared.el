@@ -68,6 +68,26 @@ See `code-review-diff-noise-rules' and
   "Hash table path -> plist (:tag :collapse :hide) for the diff.
 Recomputed by `code-review--diff--classify-diff' on every render.
 For internal usage only.")
+
+(defconst code-review-section--viewed-tag "  [VIEWED]"
+  "The [VIEWED] tag on a file heading.
+Byte-identical between the wash that renders it
+(`code-review-wash-insert-file-section') and the in-place updater
+that edits it (`code-review-viewed--heading-set-tag') — the two
+must never drift apart.")
+
+(defconst code-review-section--viewed-counter-format "  --  %d/%d viewed"
+  "The N/M viewed counter piece on the Files changed heading.
+Byte-identical between the wash that renders it
+(`code-review-section-insert-files-changed') and the in-place
+updater that edits it (`code-review-viewed--heading-counter').")
+
+(defconst code-review-section--viewed-counter-regexp
+  (replace-regexp-in-string "%d" "[0-9]+"
+                            code-review-section--viewed-counter-format)
+  "Regexp matching the counter piece, derived from
+`code-review-section--viewed-counter-format' so the two cannot
+drift apart.")
 (defcustom code-review-fold-header-sections t
   "When non-nil, low-signal top sections start folded.
 \"Commits\" (with their CI checks), \"Description\", \"Your

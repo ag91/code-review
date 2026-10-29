@@ -353,6 +353,14 @@ that left the diff must not create a classification."
                classifications))
     found))
 
+(defun code-review-diff--strip-path (path)
+  "Strip a leading a/ or b/ diff prefix from PATH.
+The one canonical copy of the stripper that had grown four
+identical ones across actions, browse, testimpact and viewed."
+  (cond ((string-prefix-p "a/" path) (substring path 2))
+        ((string-prefix-p "b/" path) (substring path 2))
+        (t path)))
+
 (defun code-review-diff--hunk-keys (diff-text)
   "Map every file path of DIFF-TEXT to its hunk keys.
 Phase 13 slice 2 read tracking: the hunk key is the raw

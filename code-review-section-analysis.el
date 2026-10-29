@@ -48,7 +48,7 @@
 (require 'code-review-criteria)
 
 (declare-function code-review-browse--reveal "code-review-browse")
-(declare-function code-review-browse--strip-diff-prefix "code-review-browse")
+(declare-function code-review-diff--strip-path "code-review-diff")
 
 
 
@@ -312,7 +312,7 @@ such file."
                   (magit-file-section-p sec)
                   (slot-boundp sec 'value)
                   (stringp (oref sec value))
-                  (equal (code-review-browse--strip-diff-prefix
+                  (equal (code-review-diff--strip-path
                           (substring-no-properties (oref sec value)))
                          path))
          (setq target sec))))

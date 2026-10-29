@@ -40,10 +40,10 @@
 (require 'code-review-db)
 (require 'code-review-diff)
 (require 'code-review-interfaces)
+(require 'code-review-section-shared)
 
 (declare-function code-review--build-buffer "code-review-section")
 (declare-function code-review-utils--log "code-review-utils")
-(declare-function code-review-section--file-collapse-p "code-review-section-shared")
 (defvar code-review-review-buffer-pr-id)
 (defvar code-review-section--viewed)
 (defvar code-review-section-full-refresh?)
@@ -56,8 +56,6 @@
   "Hide files marked viewed in this review buffer.")
 (put 'code-review-hide-viewed-files 'permanent-local t)
 
-(defvar code-review-viewed--changed-target nil
-  "Mark or unmark target whose visibility should change during this render.")
 (defvar code-review-viewed--pending (make-hash-table :test #'equal)
   "Latest outstanding GitHub mutation, keyed by (PR-ID PATH).")
 (defvar code-review-viewed--hunk-key-cache nil
@@ -87,11 +85,8 @@ db only."
            (hunk-key (plist-get target :hunk-key))
            (index (code-review-viewed--index))
            (info (gethash path index))
-           (file-viewed? (code-review-viewed--file-p info))
-           (viewed? (if hunk-key
-                        (or (plist-get info :file)
-                            (member hunk-key (plist-get info :hunks)))
-                      file-viewed?))
+           (file-viewed? (code-review-viewed--viewed-p info))
+           (viewed? (code-review-viewed--viewed-p info hunk-key))
            (before (code-review-viewed--path-rows path))
            (mark? (not unmark?)))
       (cond
@@ -106,10 +101,13 @@ db only."
                       path))
         (code-review-viewed--set-state path hunk-key mark? info)
         (let* ((after-info (gethash path (code-review-viewed--index)))
-               (after-viewed? (code-review-viewed--file-p after-info))
-               (code-review-viewed--changed-target
-                (append target (list :unmark unmark?))))
-          (code-review-viewed--refresh (current-buffer))
+               (after-viewed? (code-review-viewed--viewed-p after-info)))
+          ;; Update the rendered buffer in place: fold the target,
+          ;; rewrite the [VIEWED] tag and the counter.  The old full
+          ;; re-render (`--build-buffer') blocked Emacs for seconds on
+          ;; large PRs, while all a mark changes locally is a fold and
+          ;; two labels.
+          (code-review-viewed--apply-local path hunk-key)
           (when (and (cl-typep (code-review-db-get-pullreq)
                               'code-review-github-repo)
                      (not (eq (not file-viewed?) (not after-viewed?))))
@@ -139,13 +137,164 @@ db only."
       (code-review-db--reviewed-delete path key)))))
 
 (defun code-review-viewed--refresh (buffer)
-  "Re-render BUFFER from cached data, without fetching or losing point."
+  "Re-render BUFFER from cached data, without fetching or losing point.
+Only for callers that change WHAT is rendered (the C-c v diff
+filter); a mark changes labels and folds, which
+`code-review-viewed--apply-local' does in place."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((code-review-section-full-refresh? nil)
             (position (point)))
         (code-review--build-buffer (buffer-name))
         (goto-char (min position (point-max)))))))
+
+;;; In-place label updates (no re-render)
+
+(defun code-review-viewed--heading-set-tag (section viewed?)
+  "Add or remove the [VIEWED] tag on the file SECTION's heading.
+The heading text spans [start, content): the tag joins the other
+heading tags at the end of the line, before its trailing newline.
+Surgical spans only — a whole-heading rewrite would move magit's
+`start' marker (insertion-type t) past the new text."
+  (when (and (slot-boundp section 'start) (oref section start)
+             (slot-boundp section 'content) (oref section content))
+    (let ((beg (oref section start))
+          (end (oref section content)))
+      (save-excursion
+        (goto-char beg)
+        (cond
+         (viewed?
+          (unless (search-forward code-review-section--viewed-tag end t)
+            (goto-char (1- end))
+            (let ((tag-beg (point))
+                  ;; the tag must carry the section identity (and any
+                  ;; other base property) of its neighbors, with the
+                  ;; dimmed face on top
+                  (props (text-properties-at (1- end))))
+              (insert (apply #'propertize
+                             code-review-section--viewed-tag props))
+              (put-text-property tag-beg (point)
+                                 'font-lock-face 'code-review-dimmed))))
+         (t
+          (when (search-forward code-review-section--viewed-tag end t)
+            (delete-region
+             (- (point) (length code-review-section--viewed-tag))
+             (point)))))))))
+
+(defun code-review-viewed--heading-counter (section)
+  "Rewrite the N/M viewed piece of the Files changed SECTION heading.
+The heading is inserted into the files-REPORT section's body
+(before its files-chnged child opens), so the search bounds at the
+heading's own line end, never at the section's content marker.
+The rewritten piece is the FULL shared format (separator
+included): delete less than the format renders and the next
+rewrite's regexp can never match again.  One combined regexp:
+the counter piece is the FIRST `  --  ' separator only because
+the wash inserts it before the new-since-last-review suffix —
+the digit guard makes a reordering fail safe (a no-op, not a
+wrong rewrite)."
+  (when (and (hash-table-p code-review-section--viewed)
+             (hash-table-p code-review-section--file-classifications)
+             (slot-boundp section 'start) (oref section start))
+    (let* ((beg (oref section start))
+           (eol (save-excursion (goto-char beg) (line-end-position))))
+      (save-excursion
+        (goto-char beg)
+        (when (re-search-forward
+               code-review-section--viewed-counter-regexp eol t)
+          (let ((piece-beg (match-beginning 0))
+                (props (text-properties-at (match-beginning 0))))
+            (delete-region piece-beg (match-end 0))
+            (goto-char piece-beg)
+            (insert (apply #'propertize
+                           (format
+                            code-review-section--viewed-counter-format
+                            (code-review-viewed--count-files)
+                            (hash-table-count
+                             code-review-section--file-classifications))
+                           props))))))))
+
+(defun code-review-viewed--dim-hunk-heading (section dim?)
+  "Face the hunk SECTION's heading dimmed or regular.
+Only the @@ line changes: the NO-TEST tag and delicacy badge keep
+their own faces, exactly as the wash renders them."
+  (when (and (slot-boundp section 'start) (oref section start)
+             (slot-boundp section 'content) (oref section content))
+    (let* ((beg (oref section start))
+           (end (oref section content))
+           (gap (save-excursion
+                  (goto-char beg)
+                  (or (and (search-forward "  [" (1- end) t)
+                           (- (point) 3))
+                      (1- end)))))
+      (put-text-property beg gap 'font-lock-face
+                         (if dim? 'code-review-dimmed
+                           'magit-diff-hunk-heading)))))
+
+(defun code-review-viewed--apply-local (path hunk-key &optional buffer)
+  "Update the rendered review in place for a changed mark on PATH
+(or PATH's HUNK-KEY hunk).  Refreshes the render's viewed index
+from the db, folds or shows the changed sections, rewrites the
+file heading's [VIEWED] tag and the hunk-heading dims, and
+refreshes the Files changed counter.  Everything a mark changes
+locally — never a re-render: rebuilding the whole review on every
+`v' blocked Emacs for seconds on large PRs.  BUFFER defaults to
+the current buffer.  A file section hidden by
+`code-review-toggle-hide-viewed-files' is not in the buffer: only
+the counter updates, the hide applies at the next re-render."
+  (setq buffer (or buffer (current-buffer)))
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when magit-root-section
+        (let ((inhibit-read-only t))
+          ;; the toggle wrote the db: rebuild the render's index cache
+          (setq code-review-section--viewed (code-review-viewed--index))
+          (let* ((info (gethash path code-review-section--viewed))
+                 (file-viewed? (code-review-viewed--viewed-p info))
+                 (file nil) (report nil) (hunk nil))
+            ;; ONE pass over the tree: the changed file's section and
+            ;; the Files changed container (its heading carries the
+            ;; viewed counter)
+            (magit-map-sections
+             (lambda (section)
+               (cond
+                ((and (null file)
+                      (cl-typep section 'magit-file-section)
+                      (equal path
+                             (plist-get (code-review-viewed--target-at section)
+                                        :path)))
+                 (setq file section))
+                ((and (null report)
+                      (cl-typep section 'code-review-files-report-section))
+                 (setq report section))))
+             magit-root-section)
+            (when file
+              ;; every hunk's dim keys on its own mark or the file
+              ;; mark; the changed hunk is captured on the way
+              (magit-map-sections
+               (lambda (section)
+                 (when (cl-typep section 'magit-hunk-section)
+                   (let ((key (plist-get (code-review-viewed--target-at section)
+                                         :hunk-key)))
+                     (when (equal key hunk-key)
+                       (setq hunk section))
+                     (code-review-viewed--dim-hunk-heading
+                      section (code-review-viewed--viewed-p info key)))))
+               file)
+              (when hunk-key
+                (if (code-review-viewed--viewed-p info hunk-key)
+                    (magit-section-hide hunk)
+                  (magit-section-show hunk)
+                  ;; the shown hunk must not stay behind a folded file
+                  (when (and (oref file hidden)
+                             (not file-viewed?))
+                    (magit-section-show file))))
+              (if file-viewed?
+                  (magit-section-hide file)
+                (magit-section-show file))
+              (code-review-viewed--heading-set-tag file file-viewed?))
+            (when report
+              (code-review-viewed--heading-counter report))))))))
 
 (defun code-review-viewed--target-at (section)
   "The read-tracking target, a (:path .. :hunk-key ..) plist, for
@@ -158,7 +307,8 @@ the magit SECTION at point, or nil."
                         (oref section start)
                         (get-text-property (oref section start)
                                            'code-review-path))
-                   (code-review-viewed--strip-path (oref section value)))
+                   (substring-no-properties
+                    (code-review-diff--strip-path (oref section value))))
           :hunk-key nil))
    ((and section (slot-boundp section 'value)
          (cl-typep section 'magit-hunk-section))
@@ -169,13 +319,6 @@ the magit SECTION at point, or nil."
         ;; The owned washer stores an already canonical hunk path.
         (list :path (substring-no-properties (cdr (assq 'path v)))
               :hunk-key (cdr (assq 'ranges v))))))))
-
-(defun code-review-viewed--strip-path (path)
-  "Strip the a/ b/ diff prefixes from PATH, if present."
-  (substring-no-properties
-   (cond ((string-prefix-p "a/" path) (substring path 2))
-        ((string-prefix-p "b/" path) (substring path 2))
-        (t path))))
 
 ;;; Render index
 
@@ -219,16 +362,26 @@ Each entry has :keys (current headers), :file (a whole-file mark),
      index)
     index))
 
-(defun code-review-viewed--file-p (info)
-  "Return non-nil when the indexed file INFO is fully viewed."
-  (or (plist-get info :file) (plist-get info :all-hunks)))
+(defun code-review-viewed--viewed-p (info &optional hunk-key)
+  "Non-nil when INFO reads as viewed.
+Without HUNK-KEY: the whole file — an explicit mark or the
+completed hunk rollup.  With HUNK-KEY: that hunk — its own mark
+or the file's mark covering it.  THE one read-tracking predicate;
+the toggle, the in-place updater and the visibility pass must
+never grow private copies of this rule."
+  (when info
+    (if hunk-key
+        (or (plist-get info :file)
+            (member hunk-key (plist-get info :hunks)))
+      (or (plist-get info :file)
+          (plist-get info :all-hunks)))))
 
 (defun code-review-viewed--count-files ()
   "How many of the diff's files are viewed (the heading counter)."
   (when (hash-table-p code-review-section--viewed)
     (let ((viewed 0))
       (maphash (lambda (_path vinfo)
-                 (when (code-review-viewed--file-p vinfo)
+                 (when (code-review-viewed--viewed-p vinfo)
                    (setq viewed (1+ viewed))))
                code-review-section--viewed)
       viewed)))
@@ -273,7 +426,7 @@ leave local state alone.  Partial hunk progress remains local."
               ;; means the reviewed content changed, invalidating it all.
               (when (or (and (equal state "DISMISSED")
                              (plist-get info :hunks))
-                        (code-review-viewed--file-p info))
+                        (code-review-viewed--viewed-p info))
                 (code-review-db--reviewed-delete-path path)))))))))
 
 (defun code-review-viewed--sync-file (path mark? before)
@@ -299,13 +452,14 @@ user; the review keeps working offline."
                 (when (and (code-review-db-get-pullreq)
                            (equal after (code-review-viewed--path-rows path)))
                   (code-review-db--reviewed-restore-path path before)
+                  ;; revert the labels in place: a full re-render in
+                  ;; this async callback would block Emacs just as
+                  ;; the toggle's old one did
                   (when (and (buffer-live-p buffer)
                              (equal pr-id
                                     (buffer-local-value
                                      'code-review-review-buffer-pr-id buffer)))
-                    (save-window-excursion
-                      (save-current-buffer
-                        (code-review-viewed--refresh buffer))))))
+                    (code-review-viewed--apply-local path nil buffer))))
               (code-review-utils--log "code-review-viewed"
                                       (format "Viewed sync failed for %s" path))
               (message "code-review: could not %s %s on GitHub; local state restored"
@@ -350,8 +504,9 @@ CLASSIFICATIONS retains all paths, so the counter still includes hidden files."
 
 (defun code-review-viewed--apply-visibility (root defaults?)
   "Apply read-tracking folds under ROOT.
-DEFAULTS? enables initial or post-fetch folding.  Ordinary re-renders
-preserve deliberate expansions; only a just-changed target overrides them."
+DEFAULTS? enables initial or post-fetch folding; ordinary
+re-renders preserve what is on screen.  A mark's own fold/show is
+`code-review-viewed--apply-local' (in place, no re-render)."
   (when (and root (hash-table-p code-review-section--viewed))
     (magit-map-sections
      (lambda (section)
@@ -359,22 +514,9 @@ preserve deliberate expansions; only a just-changed target overrides them."
          (let* ((path (plist-get target :path))
                 (key (plist-get target :hunk-key))
                 (info (gethash path code-review-section--viewed))
-                (changed code-review-viewed--changed-target)
-                (same-path (equal path (plist-get changed :path)))
-                (selected (and same-path
-                               (or (null (plist-get changed :hunk-key))
-                                   (equal key (plist-get changed :hunk-key)))))
-                (viewed? (if key
-                             (or (plist-get info :file)
-                                 (member key (plist-get info :hunks)))
-                           (code-review-viewed--file-p info))))
+                (viewed? (code-review-viewed--viewed-p info key)))
            (cond
-            ((and selected (plist-get changed :unmark))
-             (magit-section-show section))
-            ((and same-path (null key) (plist-get changed :unmark))
-             (magit-section-show section))
-            ((and viewed? (or defaults? selected
-                              (and same-path (null key) changed)))
+            ((and viewed? defaults?)
              (magit-section-hide section))
             ((and defaults? code-review-section--just-refetched
                   (member path

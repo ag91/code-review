@@ -271,7 +271,7 @@ Review` buffer.
 | C-c C-n | anywhere in buffer                    | Jump to next diff hunk (skips comments and collapsed noise files) |
 | C-c C-p | anywhere in buffer                    | Jump to previous diff hunk |
 | N       | anywhere in buffer                    | Toggle focus mode: hide auto-flagged noise files (lockfiles, docs, whitespace-only changes); the "Files changed" heading reports what is hidden |
-| v       | file or hunk                          | Mark viewed, persist progress, and fold; C-u v unmarks |
+| v       | file or hunk                          | Mark viewed, persist progress, and fold; C-u v unmarks. Updates the buffer in place — no re-render |
 | C-c v   | anywhere in buffer                    | Hide/show viewed files without changing their marks |
 | D       | file section                          | Difftastic drill-down: zoom into one file's real changes in a structural view (read-only; C-u for the whole PR; needs the `difftastic` package and the `difft` command) |
 | V       | anywhere in buffer                    | View-only diff of the whole PR ignoring whitespace |

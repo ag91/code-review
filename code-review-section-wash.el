@@ -44,6 +44,7 @@
 (require 'code-review-utils)
 (require 'code-review-analysis)
 (require 'code-review-hunkhighlight)
+(require 'code-review-diff)
 (require 'code-review-history)
 (require 'code-review-testimpact)
 (require 'code-review-registry)
@@ -66,7 +67,6 @@
 ;; owned by code-review-section.el, populated in --insert-pr-text
 (defvar code-review-section--viewed)
 (declare-function code-review-viewed--count-files "code-review-viewed")
-(declare-function code-review-viewed--strip-path "code-review-viewed")
 
 (defun code-review-section--new-since-last-review-suffix ()
   "One-line report for the Files changed heading.
@@ -247,7 +247,7 @@ in the diff nothing changes (no empty section, no heading)."
                        (when (and (hash-table-p code-review-section--viewed)
                                   (hash-table-p
                                    code-review-section--file-classifications))
-                         (format "  --  %d/%d viewed"
+                         (format code-review-section--viewed-counter-format
                                  (code-review-viewed--count-files)
                                  (hash-table-count
                                   code-review-section--file-classifications)))
@@ -374,7 +374,7 @@ this is non-nil."
   ;;; `code-review--diff--classify-diff'.
   (let* ((raw-path-name (substring-no-properties file))
          (clean-path (or canonical-path
-                         (code-review-viewed--strip-path raw-path-name)))
+                         (code-review-diff--strip-path raw-path-name)))
          (info (and code-review-section--file-classifications
                     (gethash clean-path
                              code-review-section--file-classifications)))
@@ -421,7 +421,7 @@ this is non-nil."
                             'code-review-delicate-hunk-face)))
       ;; phase 13 slice 2: the reviewer marked this file viewed
       (when (plist-get info :viewed)
-        (insert (propertize "  [VIEWED]"
+        (insert (propertize code-review-section--viewed-tag
                             'font-lock-face 'code-review-dimmed)))
       (when long-status
         (insert (format " (%s)" long-status)))

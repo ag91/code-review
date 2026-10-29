@@ -5074,6 +5074,39 @@ protectively, and a re-render under the nil binding skips the fold walk
 entirely (which LOOKS like the production bug while testing a state no
 real buffer is in).
 
+* The viewed toggle stops re-rendering — 2026-10-29 :STATUS:done:
+
+Marking a file read used to rebuild the whole review
+(=code-review-viewed--refresh= → =code-review--build-buffer=), which
+blocked Emacs for seconds on large PRs.  All a mark actually changes
+on screen is a fold, the file heading's =[VIEWED]= tag, the hunk
+headings' dim face, and the =N/M viewed= counter — so the toggle now
+applies exactly those IN PLACE
+(=code-review-viewed--apply-local=), and the rebuild spy test
+proves =code-review--build-buffer= never runs on a mark.  The sync
+failure callback reverts in place too (a full re-render inside an
+async callback is the same freeze).  =C-c v= keeps its re-render:
+hiding viewed files changes WHICH files are in the diff at all.
+
+Three shape facts the in-place surgery depends on (each cost a red
+suite run to learn):
+
+- Section TYPE symbols that are not =defclass='d (=code-review-files-chnged=)
+  are NOT eieio classes: =cl-typep= signals "Unknown type".  Match
+  =(oref section type)= instead.
+- The =N/M viewed= counter heading is inserted into the
+  files-REPORT section's body — BEFORE the =files-chnged= child
+  opens — so it belongs to the report section, and the counter
+  search bounds at the heading's line end, not at any content
+  marker.
+- magit sets a section's =start= marker insertion-type t
+  (=set-marker-insertion-type= in =magit-insert-section--finish=):
+  a whole-heading delete-and-rewrite moves =start= PAST the new
+  text and corrupts the section.  Heading edits must be surgical
+  spans (insert before the heading's trailing newline, delete the
+  exact tag span), and inserted text must capture its neighbor's
+  text properties (the section identity rides on them).
+
 * Future ideas
 
 - =code-review-repo-cleanup=: prune old worktrees (older than N

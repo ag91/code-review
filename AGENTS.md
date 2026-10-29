@@ -1009,6 +1009,23 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   `code-review-github-repo`: the query module defines methods
   specialized on that class.  Moving the require above the class
   breaks fresh loads even though a long-lived daemon still works.
+- In-place heading surgery on rendered sections (the 2026-10-29
+  viewed-toggle fix): NEVER delete-and-rewrite a whole heading span —
+  magit sets a section's `start' marker insertion-type t at section
+  finish, so the rewrite moves `start' PAST the new text and corrupts
+  the section.  Edit surgical spans only (insert before the heading's
+  trailing newline, delete the exact tag span) and give inserted text
+  the NEIGHBOR's text properties (the section identity rides on them).
+  Two shape traps on the way: a section TYPE symbol that was never
+  `defclass'd (`code-review-files-chnged') is not an eieio class —
+  `cl-typep' signals "Unknown type", match `(oref section type)'
+  instead; and the "Files changed" counter heading is inserted into
+  the files-REPORT section's body BEFORE its files-chnged child opens,
+  so it belongs to the report section — bound counter searches at the
+  heading's line end, not at any content marker.  Any render-path
+  text edit must bind `inhibit-read-only' (review buffers are
+  read-only; the failure surfaces as `buffer-read-only' from the
+  async callback or the command).
 - A `hidden` SLOT is not VISIBILITY on a direct re-render: magit paints
   the `invisible` overlay only in `magit-section-hide`, and its re-render
   ident-inheritance re-creates sections with the old tree's `hidden`

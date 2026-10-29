@@ -33,6 +33,7 @@
 (require 'code-review-bitbucket)
 (require 'code-review-gitlab)
 (require 'code-review-github)
+(require 'code-review-diff)
 (require 'let-alist)
 
 (defcustom code-review-always-restrict-approval? nil
@@ -1397,11 +1398,6 @@ Comments can only be placed in the review buffer, not here.
         (diff-mode)
         (goto-char (point-min)))
       (pop-to-buffer "*Code Review Diff (-w)*"))))
-(defun code-review--strip-diff-prefix (path)
-  "Remove a leading \"a/\" or \"b/\" from diff PATH."
-  (cond ((string-prefix-p "a/" path) (substring path 2))
-        ((string-prefix-p "b/" path) (substring path 2))
-        (t path)))
 (defun code-review--section-visible-p (section)
   "Non-nil when SECTION and all its ancestors are expanded."
   (let ((s section)
@@ -1506,7 +1502,7 @@ Nothing is shown while the real heading is still on screen."
                        (> (point) (oref section start))
                        (not (pos-visible-in-window-p (oref section start))))
                   (concat " "
-                          (propertize (code-review--strip-diff-prefix file)
+                          (propertize (code-review-diff--strip-path file)
                                       'face 'magit-diff-file-heading))
                 nil))))))
 
@@ -1529,7 +1525,7 @@ because the string is computed in bounded time."
   (let* ((section (magit-current-section))
          (file (code-review-eldoc--file-section section)))
     (when (and file (stringp (oref file value)))
-      (let ((path (code-review--strip-diff-prefix (oref file value))))
+      (let ((path (code-review-diff--strip-path (oref file value))))
         (if (not (and section (magit-hunk-section-p section)
                       (slot-boundp section 'to-range)
                       (car (oref section to-range))))

@@ -47,8 +47,8 @@
 
 (declare-function code-review--diff--classify-diff "code-review-diff")
 (declare-function code-review--maybe-reorder-diff "code-review-diff")
+(declare-function code-review-diff--strip-path "code-review-diff")
 (declare-function code-review-browse--reveal "code-review-browse")
-(declare-function code-review-browse--strip-diff-prefix "code-review-browse")
 
 (require 'code-review-interfaces)
 (require 'code-review-github)

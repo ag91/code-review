@@ -590,12 +590,6 @@ Called from the file wash (cache hit, see `--hunk-tag-for')."
 
 ;;; The T command: run the mapped subset
 
-(defun code-review-testimpact--strip-path (path)
-  "Remove a leading \"a/\" or \"b/\" from diff file PATH."
-  (cond ((string-prefix-p "a/" path) (substring path 2))
-        ((string-prefix-p "b/" path) (substring path 2))
-        (t path)))
-
 (defun code-review-testimpact--section-target ()
   "(:path PATH :ranges RANGES-or-nil) for the hunk/file at point.
 The innermost wins: inside a hunk that hunk, else the file
@@ -612,7 +606,7 @@ subset)."
                           :ranges (cdr (assq 'ranges v))))))
        ((and (magit-file-section-p sec)
              (slot-boundp sec 'value))
-        (setq res (list :path (code-review-testimpact--strip-path
+        (setq res (list :path (code-review-diff--strip-path
                                 (substring-no-properties
                                  (oref sec value))))))
        (t

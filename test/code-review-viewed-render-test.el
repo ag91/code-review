@@ -214,23 +214,20 @@ rebind it locally)."
 
 ;;; req-2026-10-16-004:
 ;; covers: code-review-viewed.el, code-review-section.el, code-review.el
-;; covers-fn: code-review-viewed-toggle, code-review-viewed--apply-visibility
+;; covers-fn: code-review-viewed-toggle, code-review-viewed--apply-local
 ;; enforcement: test
 (ert-deftest code-review-viewed-render-test/req-2026-10-16-004-mark-and-unmark ()
   "WHEN a reviewer records progress THE SYSTEM SHALL retain it and distinguish unread changes."
   (code-review-viewed-render-test--with-review
-    (let ((original (symbol-function 'code-review--build-buffer))
-          (code-review-section-full-refresh? t)
-          (renders 0))
+    (let ((original (symbol-function 'code-review--build-buffer)))
       (unwind-protect
           (save-window-excursion
             (switch-to-buffer (current-buffer))
+            ;; a mark updates the rendered buffer in place: the full
+            ;; rebuild must never run
             (fset 'code-review--build-buffer
-                  (lambda (name &rest _)
-                    (should (equal name (buffer-name)))
-                    (should-not code-review-section-full-refresh?)
-                    (setq renders (1+ renders))
-                    (code-review-viewed-render-test--render)))
+                  (lambda (&rest _)
+                    (error "marking viewed must not rebuild the buffer")))
             (code-review-viewed-render-test--render)
             (goto-char (oref (car (code-review-viewed-render-test--sections
                                   'magit-hunk-section)) start))
@@ -250,12 +247,58 @@ rebind it locally)."
                               'magit-file-section))))
               (should (get-char-property (oref file content) 'invisible))
               (should (string-match-p "1/2 viewed" (buffer-string)))
+              (should (string-match-p "\\[VIEWED\\]" (buffer-string)))
               (goto-char (oref file start)))
             (execute-kbd-macro (kbd "C-u v"))
             (should-not (code-review-db--reviewed-rows))
             (should-not (oref (car (code-review-viewed-render-test--sections
                                    'magit-file-section)) hidden))
-            (should (= renders 3)))
+            (should-not (string-match-p "\\[VIEWED\\]" (buffer-string))))
+        (fset 'code-review--build-buffer original)))))
+
+;;; req-2026-10-29-001:
+;; covers: code-review-viewed.el
+;; covers-fn: code-review-viewed--apply-local
+;; enforcement: test
+(ert-deftest code-review-viewed-render-test/req-2026-10-29-001-mark-updates-in-place ()
+  "WHEN a reviewer marks a file read THE SYSTEM SHALL update the fold and labels in place without re-rendering the diff."
+  (code-review-viewed-render-test--with-review
+    (let ((original (symbol-function 'code-review--build-buffer))
+          (rebuilds 0))
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer (current-buffer))
+            (fset 'code-review--build-buffer
+                  (lambda (&rest _) (setq rebuilds (1+ rebuilds))))
+            (code-review-viewed-render-test--render)
+            (let ((file (car (code-review-viewed-render-test--sections
+                              'magit-file-section))))
+              (goto-char (oref file start))
+              (execute-kbd-macro (kbd "v")))
+            ;; the buffer updated in place: no rebuild, the file folded
+            ;; under its heading, tag and counter rewritten
+            (should (= rebuilds 0))
+            (let ((file (car (code-review-viewed-render-test--sections
+                              'magit-file-section))))
+              (should (oref file hidden))
+              (should (string-match-p "\\[VIEWED\\]"
+                                      (buffer-substring-no-properties
+                                       (oref file start) (oref file content))))
+              (should (string-match-p "1/2 viewed" (buffer-string))))
+            ;; unmarking restores the open state in place too
+            (let ((file (car (code-review-viewed-render-test--sections
+                              'magit-file-section))))
+              (goto-char (oref file start))
+              (execute-kbd-macro (kbd "C-u v")))
+            (should (= rebuilds 0))
+            (let ((file (car (code-review-viewed-render-test--sections
+                              'magit-file-section))))
+              (should-not (oref file hidden))
+              (should-not (string-match-p "\\[VIEWED\\]"
+                                          (buffer-substring-no-properties
+                                           (oref file start)
+                                           (oref file content))))
+              (should (string-match-p "0/2 viewed" (buffer-string)))))
         (fset 'code-review--build-buffer original)))))
 
 (ert-deftest code-review-viewed-render-test/partial-hunk-dim-and-fold ()

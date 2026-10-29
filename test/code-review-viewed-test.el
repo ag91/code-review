@@ -79,36 +79,40 @@ and its file path."
       (should-not (code-review-viewed--target-at (magit-current-section))))))
 
 (ert-deftest code-review-viewed-test/toggle-command ()
-  "v marks the file at point viewed and re-renders; C-u unmarks.
-The forge sync transport is stubbed; the test counts its calls."
+  "v marks the file at point viewed in place and folds its section;
+C-u unmarks and reopens it.  No full rebuild ever runs, and the
+forge sync transport still fires (stubbed, counted)."
   (code-review-test--with-db
     (code-review-db--pullreq-create (code-review-viewed-test--sample-pr-obj))
     (code-review-db--pullreq-raw-diff-update (code-review-viewed-test--diff))
     (with-temp-buffer
       (magit-section-mode)
       (let ((inhibit-read-only t))
-        (magit-insert-section (magit-file-section "b/app.el")
-          (insert "modified   app.el\n")))
+        ;; a PARENT section: a lone top-level section would BE the
+        ;; root, and `magit-section-hide' refuses the root
+        (magit-insert-section (magit-section)
+          (magit-insert-section (magit-file-section "b/app.el")
+            (insert "modified   app.el\n"))))
       (goto-char (point-min))
-      (let ((renders 0)
-            (syncs nil)
+      (let ((syncs nil)
             (old-build (symbol-function 'code-review--build-buffer))
             (old-sync (symbol-function 'code-review-viewed--sync-file)))
         (fset 'code-review--build-buffer
-              (lambda (&rest _) (setq renders (1+ renders))))
+              (lambda (&rest _)
+                (error "marking viewed must not rebuild the buffer")))
         (fset 'code-review-viewed--sync-file
               (lambda (path mark? _before) (push (cons path mark?) syncs)))
         (unwind-protect
             (progn
               (code-review-viewed-toggle)
-              (should (= renders 1))
               (should (code-review-db--reviewed-file-p "app.el"))
               (should (equal syncs '(("app.el" . t))))
+              (should (oref (magit-current-section) hidden))
               ;; marking twice is a no-op (already viewed)
               (code-review-viewed-toggle)
-              (should (= renders 1))
+              (should (equal syncs '(("app.el" . t))))
               (code-review-viewed-toggle '(4))
-              (should (= renders 2))
+              (should-not (oref (magit-current-section) hidden))
               (should-not (code-review-db--reviewed-file-p "app.el")))
           (fset 'code-review--build-buffer old-build)
           (fset 'code-review-viewed--sync-file old-sync))))))
@@ -172,7 +176,7 @@ The forge sync transport is stubbed; the test counts its calls."
     (let ((info (gethash "app.el" (code-review-viewed--index))))
       (code-review-viewed--set-state "app.el" "-1,2 +1,2" nil info))
     (let ((info (gethash "app.el" (code-review-viewed--index))))
-      (should-not (code-review-viewed--file-p info))
+      (should-not (code-review-viewed--viewed-p info))
       (should (equal (plist-get info :hunks) '("-5,2 +5,3"))))
     (code-review-viewed--set-state "app.el" nil nil nil)
     (should-not (code-review-db--reviewed-rows))))
@@ -187,8 +191,9 @@ The forge sync transport is stubbed; the test counts its calls."
     (with-temp-buffer
       (magit-section-mode)
       (let ((inhibit-read-only t))
-        (magit-insert-section (magit-file-section "app.el")
-          (insert "modified app.el\n")))
+        (magit-insert-section (magit-section)
+          (magit-insert-section (magit-file-section "app.el")
+            (insert "modified app.el\n"))))
       (goto-char (point-min))
       (let (sync)
         (code-review-viewed-test--with-stubs
@@ -283,8 +288,9 @@ The forge sync transport is stubbed; the test counts its calls."
     (with-temp-buffer
       (magit-section-mode)
       (let ((inhibit-read-only t))
-        (magit-insert-section (magit-file-section "app.el")
-          (insert "modified app.el\n")))
+        (magit-insert-section (magit-section)
+          (magit-insert-section (magit-file-section "app.el")
+            (insert "modified app.el\n"))))
       (goto-char (point-min))
       (let (failure)
         (code-review-viewed-test--with-stubs
@@ -338,7 +344,7 @@ The forge sync transport is stubbed; the test counts its calls."
     (let* ((code-review-section--viewed (code-review-viewed--index))
            (info (gethash "image.png" code-review-section--viewed)))
       (should (= 2 (hash-table-count code-review-section--viewed)))
-      (should-not (code-review-viewed--file-p info))
+      (should-not (code-review-viewed--viewed-p info))
       (should (= 0 (code-review-viewed--count-files))))))
 
 (ert-deftest code-review-viewed-test/target-keeps-canonical-prefix-directory ()
