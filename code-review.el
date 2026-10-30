@@ -54,6 +54,7 @@
 (require 'code-review-dossier)
 (require 'code-review-local)
 (require 'code-review-budget)
+(require 'code-review-budget-focus)
 (require 's)
 
 (defgroup code-review nil

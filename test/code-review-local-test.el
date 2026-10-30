@@ -393,6 +393,7 @@ the row leaves the unfinished queue and the budget's balance
 shrinks accordingly."
   (let ((code-review-history-enabled nil)
         (code-review-review-budget-minutes 90)
+        (code-review-budget-focus-enabled nil)
         (code-review-budget-state-file (make-temp-file "cr-fin-")))
     (code-review-test--with-db
       (unwind-protect

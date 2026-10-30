@@ -470,9 +470,14 @@ For the time that never shows up in a finished row."
               (plist-get (code-review-budget--state-load) :log))))
 
 (defun code-review-budget--finished-today-cost ()
-  "Estimated cost of the reviews finished today (sunk, still counted).
-Scans the db's finished rows: each review consumed its estimated
-cost when it happened.  Never signals: a db problem reads as 0."
+  "Minutes spent on the reviews finished today (sunk, still counted).
+MEASURED minutes replace the estimate: the focus tracker
+(`code-review-budget-focus.el', phase 25b follow-up) books the
+seconds a review buffer held the selected window, and that
+actual spend is what a finished row consumes.  The diff-shape
+estimate is the FALLBACK for rows the tracker never saw (daemon
+restart, tracking off, a review finished without focus time).
+Never signals: a db problem reads as 0."
   (condition-case err
       (let ((db (code-review-db))
             (today-re
@@ -482,16 +487,26 @@ cost when it happened.  Never signals: a db problem reads as 0."
                      (format-time-string "%Y")))
             (total 0.0))
         (dolist (row (emacsql db
-                              [:select [raw-diff finished-at]
+                              [:select [owner repo number raw-diff
+                                        finished-at]
                                        :from pullreq
                                        :where (= finished 't)]))
-          (let ((finished-at (nth 1 row)))
+          (let ((finished-at (nth 4 row)))
             (when (and finished-at
                        (string-match-p today-re finished-at))
-              (setq total
-                    (+ total (code-review-budget--cost
-                              (code-review-budget--shape
-                               (nth 0 row))))))))
+              (let* ((key (format "%s/%s#%s"
+                                  (nth 0 row) (nth 1 row) (nth 2 row)))
+                     (measured
+                      (and (fboundp
+                            'code-review-budget-focus-minutes-for)
+                           (code-review-budget-focus-minutes-for
+                            key))))
+                (setq total
+                      (+ total (or (and measured (> measured 0)
+                                        measured)
+                                   (code-review-budget--cost
+                                    (code-review-budget--shape
+                                     (nth 3 row))))))))))
         total)
     (error
      (code-review-utils--log

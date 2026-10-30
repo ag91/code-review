@@ -294,6 +294,7 @@ tier and signal evidence, and a header reporting the remaining
 balance and the backlog ratio."
   (let ((code-review-budget-state-file (make-temp-file "cr-budget-"))
         (code-review-repo-worktree nil)
+        (code-review-budget-focus-enabled nil)
         (code-review-history-enabled nil))
     (code-review-test--with-db
       (code-review-budget-test--make-pr "o" "r" "1"
@@ -372,6 +373,7 @@ balance (local and remote rows alike) — and nothing when there is
 no diff."
   (let ((code-review-history-enabled nil)
         (code-review-review-budget-minutes 90)
+        (code-review-budget-focus-enabled nil)
         (code-review-budget-state-file (make-temp-file "cr-est-"))
         (code-review-repo-worktree nil))
     (code-review-test--with-db

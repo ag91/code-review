@@ -4584,6 +4584,24 @@ which double as the budget's booking events:
   traceability), so the line and the queue always agree.  The
   headers-hook defcustom rebind in the daemon needed the
   standard-value =set= (the defcustom-won't-overwrite gotcha).
+- The reviewer's THIRD finding became the tracker (2026-10-30,
+  req-2026-10-30-004): MEASURED minutes replace the booking.
+  =code-review-budget-focus.el= ticks on
+  =buffer-list-update-hook=, attributing selected-window focus
+  seconds to the review buffer's pr (idle gaps over 60s are
+  walk-aways; flush throttled to 15s into the state's =:focus=
+  key).  =--finished-today-cost= books the MEASURED minutes and
+  keeps the diff-shape estimate only as the fallback (untracked
+  rows, daemon restarts); the estimate keeps the queue's
+  ex-ante jobs (rank, bounce, per-PR cap) which no measurement
+  can do before the buffer is ever opened.  Bonus: the
+  measured-vs-estimate delta per PR is the data that calibrates
+  the 0.75/hunk dial.  The per-buffer pr id
+  (=code-review-review-buffer-pr-id=) is the attribution key —
+  the global =code-review-db--pullreq-id= is clobbered by
+  commit-focus renders.  Render-level tests bind
+  =code-review-budget-focus-enabled= nil: the live hook must not
+  accrue real focus seconds into a test's state file.
 
 Gotchas (this round's harvest — one MAJOR):
 
