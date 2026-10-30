@@ -49,6 +49,9 @@
 (require 'code-review-criteria-grill)
 (require 'code-review-registry)
 (defvar code-review-repo-worktree)         ; code-review-repo.el
+;; valueless on purpose (AGENTS.md): the owning defcustom lives in
+;; code-review-local.el, which requires this file's sibling later
+(defvar code-review-local-agent-dispatch-function)
 (declare-function code-review-registry--repo-dir "code-review-registry")
 (declare-function agent-shell-prompt-queue "agent-shell-prompt-queue")
 
@@ -334,6 +337,14 @@ Entry: %s"
    repo
    (format "the incident draft for %s" (plist-get incident :id))))
 
+(defun code-review-agents-shell-local-dispatcher (prompt repo)
+  "The `code-review-local-agent-dispatch-function' reference
+implementation: hand the local review's fix work item (PROMPT)
+to the agent session the reviewer started on REPO.  Same
+queueing semantics as every station: sends when idle, queues
+when the agent is mid-run, never steals focus."
+  (code-review-agents-shell--handoff prompt repo "local review comments"))
+
 ;; Wire ALL the hooks when agent-shell is present: only fill the
 ;; DEFAULT-EMPTY slots, never clobber a user's explicit choice.
 (when (fboundp 'agent-shell-prompt-queue)
@@ -351,7 +362,10 @@ Entry: %s"
           #'code-review-agents-shell-probe-drafter))
   (unless (bound-and-true-p code-review-registry-drafter-function)
     (setq code-review-registry-drafter-function
-          #'code-review-agents-shell-incident-drafter)))
+          #'code-review-agents-shell-incident-drafter))
+  (unless (bound-and-true-p code-review-local-agent-dispatch-function)
+    (setq code-review-local-agent-dispatch-function
+          #'code-review-agents-shell-local-dispatcher)))
 
 (provide 'code-review-agents-shell)
 ;;; code-review-agents-shell.el ends here

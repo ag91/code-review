@@ -53,6 +53,7 @@
 (require 'code-review-agents-shell)
 (require 'code-review-dossier)
 (require 'code-review-local)
+(require 'code-review-budget)
 (require 's)
 
 (defgroup code-review nil
@@ -67,6 +68,7 @@
     code-review-section-insert-files-summary
     code-review-section-insert-author
     code-review-section-insert-title
+    code-review-section-insert-budget
     code-review-section-insert-state
     code-review-section-insert-ref
     code-review-section-insert-milestone
@@ -171,6 +173,35 @@ away with \"Could not identify the PR ...\"."
 
 ;;; Transient
 
+(transient-define-prefix code-review-transient-local ()
+  "Code Review (local diff): the local outcomes, phase 25b.
+There is no forge to submit to: the exits are dispatching the
+pending comments to the agent session and finishing the review."
+  [["Local review"
+    ("c" "Complete: book the budget, then magit-status"
+     code-review-local-finish)
+    ("a" "Agent: send pending comments to the AI session (draft-not-push)"
+     code-review-local-comments-send)
+    ("s" "Log spent minutes manually" code-review-budget-log-minutes)]
+   ["Buffer"
+    ("w" "Open repo in Dired" code-review-repo-open-worktree)
+    ("d" "Popup: what the reviewed diff is"
+     code-review-popup-pr-description)
+    ("N" "Focus: hide auto-flagged noise files"
+     code-review-toggle-focus-mode)
+    ("G" "Full reload" code-review-reload)
+    ("q" "Quit" transient-quit-one)]])
+
+(defun code-review-transient-dispatch ()
+  "Open the transient for the CURRENT review's kind.
+Forge PRs get `code-review-transient-api'; local diffs get
+`code-review-transient-local' (the forge submits all user-error
+there)."
+  (interactive)
+  (if (code-review-db-local-pr-p)
+      (code-review-transient-local)
+    (code-review-transient-api)))
+
 (transient-define-prefix code-review-transient-api ()
   "Code Review."
   [["Review"
@@ -203,6 +234,8 @@ away with \"Could not identify the PR ...\"."
    ("s d" "Description" code-review-set-description)]
   ["Buffer"
    ("w" "Open worktree in Dired" code-review-repo-open-worktree)
+   ("B" "Review budget: the risk-ranked queue of open PRs (phase 25)"
+    code-review-budget-queue)
    ("d" "Popup: PR description (toggle; refer to the intent while reviewing)"
     code-review-popup-pr-description)
    ("C-c C-d" "Next delicate hunk (cycle: risk-ranked hunks, hottest first)"
@@ -228,7 +261,7 @@ away with \"Could not identify the PR ...\"."
 (defvar code-review-mode-map
   (let ((map (copy-keymap magit-section-mode-map)))
     (suppress-keymap map t)
-    (define-key map (kbd "r") 'code-review-transient-api)
+    (define-key map (kbd "r") 'code-review-transient-dispatch)
     (define-key map (kbd "RET") 'code-review-comment-add-or-edit)
     ;; Use a robust worktree file visit that ignores inline review lines
     (define-key map (kbd "C-<return>") 'code-review-visit-worktree-file)

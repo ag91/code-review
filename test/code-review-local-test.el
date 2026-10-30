@@ -288,5 +288,143 @@ survives the test's db reset."
                    "\\`\\*Code Review: local: cr-local-[A-Za-z0-9]+ @ HEAD\\*\\'"
                    (code-review-pr-buffer-name pr))))))))
 
+;;; Local review outcomes (phase 25b): comments -> agent, finish ->
+;;; budget booking
+
+(defun code-review-local-test--make-local-pr (diff)
+  "A LOCAL review row with the given RAW-DIFF, persisted."
+  (let ((obj (code-review-local-diff
+              :owner "local" :repo "myrepo" :number 0 :url nil)))
+    (code-review-db--pullreq-create obj)
+    (oset obj state "LOCAL")
+    (oset obj title "Local changes (HEAD)")
+    (oset obj host "/tmp/somerepo/")
+    (oset obj base-ref-name "HEAD")
+    (oset obj saved t)
+    (oset obj raw-diff diff)
+    (code-review-db-update obj)
+    obj))
+
+(defconst code-review-local-test--local-comment-alist
+  `((author (login . "me"))
+    (state . "LOCAL COMMENT")
+    (comments (nodes ((internal-id . "id1")
+                      (bodyText . "this duplicate logic must go")
+                      (path . "lib.py")
+                      (position . 5)
+                      (line . 3)
+                      (side . "RIGHT")
+                      (diffHunk . "@@ -1,3 +1,4 @@\n context\n+dup")
+                      (local?))))))
+
+;;; req-2026-10-30-001: local-comments-dispatch-as-agent-work-item
+;; covers: code-review-local.el
+;; covers-fn: code-review-local--pending-comments,
+;; code-review-local-agent--prompt, code-review-local-comments-send
+;; enforcement: test
+(ert-deftest code-review-local/req-2026-10-30-001-comments-dispatch-to-agent ()
+  "WHEN the reviewer sends the pending comments of a local review
+THE SYSTEM SHALL hand the attached AI agent ONE batched work item
+anchored at each finding's path and line, under a draft-not-push
+contract — and WHEN no agent is wired THE SYSTEM SHALL still
+deliver the work item to a buffer and the kill ring, so the
+finding never evaporates."
+  (let ((code-review-history-enabled nil))
+    (code-review-test--with-db
+      (let ((pr (code-review-local-test--make-local-pr
+                 "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,1 +1,2 @@\n x\n+y\n")))
+        (code-review-db--pullreq-raw-comments-update
+         code-review-local-test--local-comment-alist)
+        ;; extraction: the one local comment, anchors intact
+        (let ((cs (code-review-local--pending-comments)))
+          (should (= (length cs) 1))
+          (should (equal (plist-get (car cs) :path) "lib.py"))
+          (should (equal (plist-get (car cs) :line) 3))
+          (should (equal (plist-get (car cs) :body)
+                         "this duplicate logic must go")))
+        ;; the pure prompt: anchors, contract, repo
+        (let ((prompt (code-review-local-agent--prompt
+                       (code-review-local--pending-comments)
+                       "/tmp/somerepo/")))
+          (should (string-match-p "lib.py:3" prompt))
+          (should (string-match-p "this duplicate logic must go" prompt))
+          (should (string-match-p "Do NOT commit" prompt))
+          (should (string-match-p "/tmp/somerepo/" prompt)))
+        ;; wired agent: the hook receives (PROMPT REPO-DIR)
+        ;; let* NOT let: a lambda in a plain let's binding list does
+        ;; not capture a sibling binding on this Emacs build
+        (let* ((calls nil)
+               (code-review-local-agent-dispatch-function
+                (lambda (prompt repo)
+                  (setq calls (list prompt repo)))))
+          (code-review-local-comments-send)
+          (should (= (length calls) 2))
+          (should (equal (nth 1 calls) "/tmp/somerepo/"))
+          (should (string-match-p "lib.py:3" (car calls))))
+        ;; no agent: the work item lands in a buffer + kill ring
+        (let ((code-review-local-agent-dispatch-function nil))
+          (unwind-protect
+              (progn
+                (code-review-local-comments-send)
+                (with-current-buffer "*Local Review Findings*"
+                  (should (string-match-p
+                           "this duplicate logic must go"
+                           (buffer-string)))))
+            (and (get-buffer "*Local Review Findings*")
+                 (kill-buffer "*Local Review Findings*"))))))))
+
+(ert-deftest code-review-local/comments-send-requires-comments ()
+  "Sending with no pending comments is a friendly error, and the
+send refuses to run outside a LOCAL review."
+  (let ((code-review-history-enabled nil))
+    (code-review-test--with-db
+      (code-review-local-test--make-local-pr "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,1 +1,2 @@\n x\n+y\n")
+      (should-error (code-review-local-comments-send)
+                    :type 'user-error))))
+
+;;; req-2026-10-30-002: local-finish-books-the-budget
+;; covers: code-review-local.el
+;; covers-fn: code-review-local--finish
+;; enforcement: test
+(ert-deftest code-review-local/req-2026-10-30-002-finish-books-budget ()
+  "WHEN the reviewer completes a local review THE SYSTEM SHALL
+stamp it finished so its estimated cost counts as spent today —
+the row leaves the unfinished queue and the budget's balance
+shrinks accordingly."
+  (let ((code-review-history-enabled nil)
+        (code-review-review-budget-minutes 90)
+        (code-review-budget-state-file (make-temp-file "cr-fin-")))
+    (code-review-test--with-db
+      (unwind-protect
+          (progn
+            (code-review-local-test--make-local-pr
+             "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,1 +1,2 @@\n x\n+y\n")
+            ;; before: unfinished, nothing spent
+            (should (= (length (code-review-db-all-unfinished)) 1))
+            (should (= (code-review-budget--finished-today-cost) 0.0))
+            ;; finish: booked
+            (code-review-local--finish)
+            (let ((pr (code-review-db-get-pullreq)))
+              (should (oref pr finished))
+              (should (oref pr finished-at)))
+            (should (null (code-review-db-all-unfinished)))
+            (should (> (code-review-budget--finished-today-cost) 0.0))
+            (should (< (code-review-budget--remaining) 90))
+            ;; idempotent: a second finish does not double-book
+            (code-review-local--finish)
+            (should (< (code-review-budget--finished-today-cost)
+                       100.0)))
+        (ignore-errors (delete-file code-review-budget-state-file))))))
+
+(ert-deftest code-review-local/transient-dispatch-keybinding ()
+  "`r' routes by review kind: the dispatcher is bound in the mode
+map, and local reviews get the local transient."
+  (should (equal (lookup-key code-review-mode-map (kbd "r"))
+                 'code-review-transient-dispatch))
+  ;; the local transient declares the two outcome commands
+  (should (fboundp 'code-review-transient-local))
+  (should (commandp 'code-review-local-finish))
+  (should (commandp 'code-review-local-comments-send)))
+
 (provide 'code-review-local-test)
 ;;; code-review-local-test.el ends here

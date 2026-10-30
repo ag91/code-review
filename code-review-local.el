@@ -18,13 +18,17 @@
 ;;
 ;;  Review the working tree (or any local range) with the full
 ;;  code-review rendering: classification tags, folding, difftastic
-;;  drill-down.  The "PR" is a local diff; comments and reactions
-;;  are read-only because there is no forge to send them to.
+;;  drill-down.  The "PR" is a local diff; there is no forge, so
+;;  the review's OUTCOMES are local too (phase 25b): pending local
+;;  comments dispatch to the attached AI agent session as fix work
+;;  items, and finishing books the budget and hands off to
+;;  magit-status for the commit.
 ;;
 ;;  The pullreq row uses state "LOCAL" as its marker.  It has NO
 ;;  extra slots: the git diff args ride the existing
-;;  `base-ref-name' column and the worktree is derived from
-;;  `magit-toplevel' at render time.
+;;  `base-ref-name' column, the repo root is the `host' column,
+;;  and the worktree is derived from `magit-toplevel' at render
+;;  time.
 ;;
 ;;; Code:
 
@@ -37,6 +41,7 @@
 (require 'code-review-interfaces)
 (require 'code-review-section)
 (require 'code-review-criteria)
+(require 'code-review-budget)
 
 (declare-function code-review--build-buffer "code-review-section")
 
@@ -253,6 +258,155 @@ stops responding to G (full reload)."
   (let ((code-review-section--just-refetched t))
     (code-review--trigger-hooks buff-name nil msg))
   (progress-reporter-done progress))
+
+;;; Local review outcomes (phase 25b): the two honest exits of a
+;;; self-review are (1) issues found -> dispatch the pending local
+;;; comments to the attached AI agent session as work items, and
+;;; (2) complete -> book the budget and commit via magit.  Both are
+;;; pure git (L0); the agent transport is a hook, nil = no AI.
+
+(defcustom code-review-local-agent-dispatch-function nil
+  "Transport for dispatching local review comments to an agent.
+Called with (PROMPT REPO-DIR); nil (the default) means no AI:
+the work item falls back to a buffer + the kill ring, so it can
+go to any agent by hand.  `code-review-agents-shell.el' fills
+this with its reference dispatcher when agent-shell is loaded."
+  :group 'code-review
+  :type '(choice function (const nil)))
+
+(defun code-review-local--pending-comments ()
+  "Pending local comments of the current LOCAL review.
+Plists (:path :line :side :body :diffhunk) from the row's
+raw-comments (the nodes the local comment flow writes; replies
+and fetched comments are not local-review material)."
+  (let ((pr (code-review-db-get-pullreq)))
+    (cl-loop for c in (oref pr raw-comments)
+             when (equal (a-get c 'state) "LOCAL COMMENT")
+             append (cl-loop for n in (a-get-in c '(comments nodes))
+                             unless (a-get n 'reply?)
+                             collect (list :path (a-get n 'path)
+                                           :line (a-get n 'line)
+                                           :side (a-get n 'side)
+                                           :body (a-get n 'bodyText)
+                                           :diffhunk (a-get n 'diffHunk))))))
+
+(defun code-review-local-agent--prompt (comments repo)
+  "The agent WORK-ITEM prompt for the local COMMENTS of REPO.
+Pure: one batched item, each comment anchored at path:line with
+the reviewer's text and the diff hunk context.  DRAFT-NOT-PUSH:
+the agent fixes UNCOMMITTED in the working tree, the reviewer
+inspects and commits via magit.  No transport here."
+  (let ((items nil))
+    (dolist (c comments)
+      (setq items
+            (append items
+                    (list
+                     (format "- %s%s:\n%s\n  Reviewer's finding: %s"
+                             (plist-get c :path)
+                             (if (plist-get c :line)
+                                 (format ":%s" (plist-get c :line))
+                               "")
+                             (or (and (plist-get c :diffhunk)
+                                      (concat "  Hunk context:\n"
+                                              (code-review-local--indent
+                                               (plist-get c :diffhunk)
+                                               "  ")))
+                                 "")
+                             (plist-get c :body))))))
+    (format
+     "Review-fix work item from a local code review.
+
+Working tree: %s
+Fix HERE, and only here.
+
+The reviewer left the findings below on the uncommitted changes.
+Address each one as UNCOMMITTED changes in that working tree.
+Do NOT commit, do NOT push, do NOT create or touch any branch:
+the reviewer inspects the fixes and commits via magit.
+
+Findings:
+
+%s
+
+When a finding is wrong or unclear, say so in your reply instead
+of guessing: the reviewer reads the session."
+     repo
+     (string-join (or items '("- none")) "\n"))))
+
+(defun code-review-local--indent (text prefix)
+  "Every line of TEXT indented by PREFIX."
+  (string-join
+   (mapcar (lambda (l) (concat prefix l))
+           (split-string text "\n"))
+   "\n"))
+
+;;;###autoload
+(defun code-review-local-comments-send ()
+  "Send the pending local comments to the attached AI agent session.
+One batched work item; the transport is
+`code-review-local-agent-dispatch-function' (agent-shell when
+wired).  Without any agent, the work item lands in a buffer and
+the kill ring — paste it wherever your agent lives.  This does
+NOT book the budget or finish the review: dispatching is not
+completing."
+  (interactive)
+  (unless (code-review-db-local-pr-p)
+    (user-error "Only local diff reviews dispatch comments locally"))
+  (let* ((comments (code-review-local--pending-comments))
+         (pr (code-review-db-get-pullreq))
+         (repo (oref pr host)))
+    (if (null comments)
+        (user-error "No pending local comments to send (RET on a hunk line writes one)")
+      (let ((prompt (code-review-local-agent--prompt comments repo)))
+        (if code-review-local-agent-dispatch-function
+            (progn
+              (funcall code-review-local-agent-dispatch-function
+                       prompt repo)
+              (message "code-review: %d finding(s) handed to the agent session (draft-not-push; finish with code-review-local-finish)"
+                       (length comments)))
+          ;; L0: no agent wired — nothing evaporates
+          (kill-new prompt)
+          (with-current-buffer
+              (get-buffer-create "*Local Review Findings*")
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert prompt)
+              (special-mode)))
+          (pop-to-buffer "*Local Review Findings*")
+          (message "code-review: no agent wired — the work item is in *Local Review Findings* and the kill ring"))))))
+
+(defun code-review-local--finish ()
+  "Stamp the current LOCAL review finished (the budget booking).
+The row's estimated cost then counts as spent today via the
+budget's finished-today scan.  Idempotent."
+  (unless (code-review-db-local-pr-p)
+    (user-error "Only local diff reviews finish locally"))
+  (let ((pr (code-review-db-get-pullreq)))
+    (oset pr finished t)
+    (oset pr finished-at (current-time-string))
+    (code-review-db-update pr)
+    pr))
+
+;;;###autoload
+(defun code-review-local-finish ()
+  "Complete the local review: book the budget, then magit-status.
+The review's estimated cost counts as spent today (honest
+accounting: the attention was spent); the review leaves the
+unfinished queue.  Then opens magit-status on the repository —
+you commit the changes yourself."
+  (interactive)
+  (let* ((pr (code-review-local--finish))
+         (root (oref pr host)))
+    (message "code-review: local review booked (%.1f min estimated); committing via magit"
+             (code-review-budget--cost
+              (code-review-budget--shape
+               (oref pr raw-diff))))
+    ;; magit loads transitively with the package; require lazily so
+    ;; this file never depends on it at load time
+    (require 'magit-status nil t)
+    (if (fboundp 'magit-status)
+        (magit-status root)
+      (user-error "magit-status unavailable; open the repository yourself"))))
 
 (provide 'code-review-local)
 ;;; code-review-local.el ends here

@@ -38,6 +38,13 @@
 (require 'magit-section)
 (require 'magit-diff)
 (require 'cl-lib)
+
+;; the budget estimate line (phase 25b); valueless defvar on purpose
+(defvar code-review-budget--current-pr)
+(declare-function code-review-budget--assess "code-review-budget")
+(declare-function code-review-budget--signals "code-review-budget")
+(declare-function code-review-budget--remaining "code-review-budget")
+(declare-function code-review-utils--log "code-review-utils")
 (require 'a)
 (require 'code-review-faces)
 (require 'code-review-db)
@@ -137,6 +144,48 @@ reviewed quickly (the phase 25 review-budget view)."
     (magit-insert-section (code-review-title-section title)
       (insert (format "%-17s" "Title: ") title)
       (insert ?\n))))
+(defclass code-review-budget-section (magit-section)
+  ((cost    :initarg :cost
+            :type number)
+   (tier    :initarg :tier
+            :type symbol)
+   (balance :initarg :balance
+            :type (or null number))))
+
+(defun code-review-section-insert-budget ()
+  "Insert the review-budget estimate line (phase 25b).
+Under the Title, for local and remote PRs alike: the diff's
+estimated deep-review cost, its budget tier, and today's
+remaining balance (\"budget off\" when the machinery is
+disabled).  Never signals: a failure is no line (the phase 5
+survivability rule)."
+  (condition-case err
+      (let* ((pr (code-review-db-get-pullreq))
+             (diff (and pr (slot-boundp pr 'raw-diff) (oref pr raw-diff))))
+        (when (and pr diff (not (string-empty-p diff)))
+          (let* ((code-review-budget--current-pr pr)
+                 (a (code-review-budget--assess
+                     diff (code-review-budget--signals pr diff)))
+                 (balance (code-review-budget--remaining)))
+            (magit-insert-section
+                (code-review-budget-section
+                 (list :cost (plist-get a :cost)
+                       :tier (plist-get a :tier)
+                       :balance balance))
+              (insert
+               (format "%-17s" "Review budget:")
+               (format "~%.1f min (tier: %s, %s)"
+                       (plist-get a :cost)
+                       (upcase (symbol-name (plist-get a :tier)))
+                       (if balance
+                           (format "balance today: %.1f min" balance)
+                         "budget off")))
+              (insert ?\n)))))
+    (error
+     (code-review-utils--log
+      "code-review-section-header"
+      (format "budget line failed, skipping (%s)" (error-message-string err))))))
+
 (defclass code-review-state-section (magit-section)
   ((state  :initform nil
            :type (or null string))))

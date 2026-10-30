@@ -44,8 +44,9 @@ discovered.
 | `code-review-criteria-brief.el` | phase 27 station 1 — THE BRIEF: the ranked criteria ledger reviewed BEFORE the diff.  Priorities are durable (the criteria file's `priority:` front matter; `--rewrite` is a pure front-matter-only edit; `--set`/`--cycle` write the file), the `d` description popup renders the PANE above the PR's intent (ledger + P1 budget line + the loop's ONE next action, `--next-action`), and `code-review-criteria-max-p1` turns an uneditable P1 list into an UNDER-SPECIFIED-change signal (phase 25's input).  `code-review-criteria-brief-draft` hands the PR's intent to `code-review-criteria-brief-drafter-function` (nil default — the L0 is hand-written criteria) |
 | `code-review-criteria-grill.el` | phase 27 station 4 — THE GRILL (`g`, only AFTER verdicts: attempt first, feedback after) and REVIEW-BY-EXECUTION (`C-c C-p`).  The mechanical grill (`--findings`, pure) reports LEDGER SUGGESTIONS awaiting disposition in the review buffer — `disagreement` ([x] vs the mechanical evidence), `vague` (unfalsifiable wording), `uncovered-p1` — never review comments; `d` dismisses a row (the disposition IS the verification behavior).  The AI grill (`code-review-criteria-grill-drafter-function`) cross-checks semantically (contradictions) in the agent session.  The probe converts a contested criterion to one executable test via `code-review-criteria-probe-drafter-function` and runs it at HEAD and BASE on the phase 17 fake-fix substrate: pass+fail = met, fail = contradicts (flip or emit), pass+pass = bad probe |
 | `code-review-criteria-regression.el` | phase 27 APPROVAL step, `code-review-criteria-request-regression` (C-c C-g): ships an EXPLORED regression draft.  Branches `review/req-<id>` off the current HEAD (the PR head in the detached forge worktree), commits the criteria file + drafted tests with `Invariant-Ref:`/`Regression-Test:` trailers; L0 (local review) stages ONLY criteria + test-matching files (never a blanket add on the user's own tree; a nothing-to-ship run deletes the empty branch again), L1 (GitHub PR) pushes and opens a STACKED PR with base = the contributor's PR branch — the contributor decides, never a push to their branch, never main; GitLab/Bitbucket degrade to L0 with a message.  Interactive criterion: the checklist row at point, else completing-read over the worktree ledger |
+| `code-review-budget.el` | phase 25 review budget: risk-ranked admission and honest accounting over `code-review-db-all-unfinished`.  PURE core (`--assess`: heat x delicacy x incidents x size, cost from hunks/added lines, tiers admit/safe/bounce, incident paths mandatory-admit, unknown signals never make a PR safe) + `--allocate` (bounced consume nothing, mandatory first even beyond the balance, greedy top-down, deferred not cherry-picked, injected audit predicate) + the package's first `tabulated-list-mode` queue view (`code-review-budget-queue`, header reports balance + backlog ratio) with one-key approve-on-gates / bounce posting through `code-review-new-issue-comment`.  Signal assembly NEVER harvests: it reads only the phase 14/15/22/24 caches the renders already populate, and unknown degrades to ADMIT |
 | `code-review-section-criteria.el` | phase 23 criteria CHECKLIST section (local reviews only, a reading aid — nothing submitted): per-item section class with a `req` slot, `RET` cycling `[ ]/[x]/[!]` in place, ONE-SCANNABLE-LINE rows (id jump button, subject slug, priority token, covered paths as jump buttons into the review's file sections), the full EARS sentence as a TAB-expandable hidden child, `p` cycling the durable P1..P3 priority, the P1-budget warning line, the loop's one-next-action footer (phase 27), and the warn banner when no criteria cover the change |
-| `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL) |
+| `code-review-local.el` | local diff review (`code-review-review-local-diff`): working tree as a read-only pseudo-PR (state LOCAL).  Phase 25b OUTCOMES: pending local comments (RET works on local rows — they persist on the local row's raw-comments and render inline), `code-review-local-comments-send` (one batched draft-not-push work item to `code-review-local-agent-dispatch-function`; nil = a findings buffer + kill ring), `code-review-local-finish` (stamps finished/finished-at — the budget books the estimated cost — then opens magit-status for the commit); `r` opens the local-aware transient (`code-review-transient-dispatch`) |
 | `code-review-browse.el` | phase 7: `browse-url` integration — GitHub PR links (with `#diff-`/comment anchors) open inside Emacs; `code-review-open-pr-at-point` finds PR URLs in any buffer (email workflow) |
 | `code-review-db.el` | sqlite persistence via closql (singleton db) |
 | `code-review-db-reviewed.el` | phase 13 viewed-row persistence and indexed lookups, loaded by db.el; no cascading FK because pullreq rows are replaced |
@@ -1046,6 +1047,27 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   and a re-render under that binding skips the fold walk entirely,
   which looks exactly like the production bug while testing a state no
   real buffer is in.
+- tabulated-list entries must be proper two-element LISTS
+  `(list ID VECTOR)`, not bare `(ID . VECTOR)` conses: the DEFAULT
+  column sorter (a `t` entry in `tabulated-list-format`) does
+  `(aref (cadr A) n)`, and the cons's `cadr` is `(car VECTOR)` — a
+  crash inside the sort, far from the row builder.  The printer
+  alone accepts both shapes, so the buffer renders fine until you
+  click a sortable header (phase 25's queue view).  Also:
+  `header-line-format` is NOT part of `buffer-string` — a render
+  test asserting on the header must read the variable.
+- On this machine's Emacs 30.2, a lambda defined in a PLAIN `let`'s
+  binding list does NOT capture a SIBLING binding of that same let:
+  the reference goes dynamic (silently — `setq` creates a global,
+  the closure's env is empty, and the captured variable reads nil
+  afterwards).  `(let ((calls nil) (cb (lambda () (setq calls t))))`
+  is BROKEN here; `(let* ...)` and nested lets capture correctly.
+  `let*` is not just house style — it is load-bearing.  (2026-10-30,
+  phase 25b: a dispatch-hook test stub was silently never called for
+  exactly this reason; proven with a `-Q` capture matrix.)
+- `a-get-in` keys are the bare symbols: `'(comments nodes)`, not
+  `'(comments 'nodes)` — the quoted form navigates nowhere (returns
+  nil) with no error (2026-10-30, the pending-comments extraction).
 
 
 

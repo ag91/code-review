@@ -4351,7 +4351,7 @@ visual hierarchy IS the methodology.
   traceability regression on a synthetic PR with a criteria
   file; live on a real PR through the suggestion path.
 
-* Phase 25 — Review budget: risk-ranked attention, honest accounting :STATUS:todo:
+* Phase 25 — Review budget: risk-ranked attention, honest accounting :STATUS:done:
 
 RELEVANCE (preamble): maximizes the value of review time
 (preamble goal 2) by making the already-existing implicit
@@ -4423,6 +4423,189 @@ go.
   traceability+heat outputs, audit-trail comment body); queue
   view render test; live daemon on the real unfinished-PR
   pool.
+
+DONE (implementation notes, 2026-10-29):
+
+- New file =code-review-budget.el= (~700 lines). Defcustoms:
+  =code-review-review-budget-minutes= (90, nil disables),
+  =code-review-review-per-pr-minutes= (15 — also the
+  diagnostic: an estimate above it can never be SAFE,
+  over-budget by construction),
+  =code-review-review-bounce-minutes= (45),
+  =code-review-review-audit-rate= (0.1), the deterministic
+  cost model (base 2 + 0.75/hunk + 1.5/100 added lines), the
+  approve/bounce comment templates (format-spec: %p %t %c %r
+  and %b), and =code-review-budget-state-file= (untracked
+  local state in =user-emacs-directory=: manually logged
+  minutes + approved/bounced decisions, like
+  =specs/index.md=).
+- RISK MODEL as specified: a PURE
+  =code-review-budget--assess (diff signals)= — heat factor
+  (HOT 1.5 / WARM 1.2 / COLD 1.0, worst bucket wins) x
+  delicacy (1 + worst hunk score, capped 3) x incidents
+  (+0.5/hit, capped +2) x size (1 + min 2, added/500), cost
+  from hunk count/added lines.  The SIGNALS plist is the
+  honesty boundary: =nil= members mean "unknown", never
+  "negative", and unknown signals NEVER make a PR safe.
+- SIGNAL ASSEMBLY reads only caches the renders already
+  populate (no new harvest): the phase 14 order table (per
+  (PR, diff) heat entries), the phase 15 analysis cache (the
+  =:hunks= entries — with the missing-key SENTINEL: the
+  analysis legitimately caches nil, "analyzed and clean" must
+  not read as "never analyzed"), the phase 22 registry scan
+  (current repo only — the queue never resolves other repos'
+  worktrees), and the phase 24 traceability pass (pure,
+  itself cached).  The queue degrades to L0 honestly: an
+  unread pool renders every PR ADMIT with
+  "heat/delicacy/incidents unknown" in the Signals column.
+- ALLOCATION =code-review-budget--allocate (ranked remaining
+  audit-p)= is pure and stateless (spent minutes are sunk, no
+  clawback): bounced entries never consume budget; MANDATORY
+  entries (incident paths, phase 22's never-sampleable rule)
+  are admitted FIRST, even beyond the balance — that over-run
+  is the honest "risk creation outpacing verification
+  capacity" signal; then the risk-ranked admit slice, greedy
+  top-down, each entry admitted only if it still fits and the
+  rest DEFERRED (not cherry-picked away); the random audit
+  draw comes last, also budget-bound (the predicate is
+  injected, so tests are deterministic).  A mid-cycle
+  high-risk arrival needs no machinery: ranking is pure, it
+  re-ranks to the top at the next sit-down.
+- QUEUE VIEW: the package's first =tabulated-list-mode=
+  buffer ("*Code Review Budget*", =M-x
+  code-review-budget-queue=, also in the transient's Buffer
+  section as =B=): PR / Risk / Cost / Tier / Signals columns,
+  sorted by risk descending; header line reports remaining
+  balance, backlog ratio ("Nx daily budget", team-level) and
+  open-PR count.  Keys: RET opens the PR's review
+  (=code-review-start=; local rows user-error), =a=
+  approve-on-gates (SAFE/AUDIT rows only — y-or-n confirm,
+  posts the audit-trail comment, records the decision, drops
+  the row), =b= bounce (BOUNCE rows only), =s= log spent
+  minutes, =g= re-collect, =q= quit.  Approve/bounce post
+  through the existing generic
+  =code-review-new-issue-comment= (the db row IS the forge
+  object — =code-review-github-repo= subclasses
+  =code-review-db-pullreq=).
+- Honest accounting: spent-today = the estimated cost of
+  reviews FINISHED today (db rows with =finished-at= today —
+  sunk, still counted) + manually logged minutes; the balance
+  clamps at zero.  Decided rows drop out of the collect, so
+  the queue only ever shows the undecided remainder.
+- ERT (test/code-review-budget-test.el, 12 tests): shape/cost
+  determinism, SAFE only from known-green gates (heat
+  unknown, delicacy unanalyzed, strong trace finding and HOT
+  file each force ADMIT), bounce tier, mandatory incident
+  admit, ranking + balance rationing + mid-cycle arrival,
+  mandatory beyond-balance admission, audit draw bounded,
+  bounced consume nothing, template substitution (both
+  comment bodies), db-backed queue render (two fixture PRs,
+  tier tags, header, decided-row exclusion) and the
+  spent-today arithmetic.  Suite 373/373.  Live daemon:
+  fresh load + bounded probe (no pop-to-buffer, no prompts)
+  — collect, allocate, render and a re-render stability check
+  run clean over the real pool (currently empty: the queue
+  reports the honest 0-PR state).
+- GOTCHAS (this phase's harvest):
+  - tabulated-list's DEFAULT column sorter reads =(cadr A)=
+    then =aref=s it: entries must be proper two-element LISTS
+    =(list ID VECTOR)=, not bare =(ID . VECTOR)= conses — the
+    cons crashes the sort with =car= applied to the column
+    vector (the printer alone accepts both; only the =t=
+    sortable column path breaks).
+  - the cost estimator must count only lines INSIDE hunks:
+    the file header's own =--- a/x= / =+++ b/x= lines
+    otherwise count as a deletion and an addition of every
+    file.
+  - =header-line-format= is not part of =buffer-string=: a
+    render test asserting on the queue's header must read the
+    variable, not the text.
+  - the plist-get-on-a-number slip: =(plist-get (--cost x)
+    :cost)= returns nil and =(+ total nil)= signals — inside a
+    condition-case that reads as a 0.0 spend.  The stale-.elc
+    trap also bit once more (edited sources, ran =make test=
+    without =make compile=: the failures were the OLD code).
+
+** Phase 25b — Local review outcomes (2026-10-30)             :STATUS:done:
+
+The budget's blind spot: a LOCAL review (phase 12) had no finish
+event at all — no forge to submit to, so its minutes never
+reached the accounting and the queue under-counted real
+attention.  The fix gives the self-review the two honest exits,
+which double as the budget's booking events:
+
+- PENDING LOCAL COMMENTS in local review buffers: the
+  =code-review-db-local-pr-p= guard on RET
+  (=code-review-comment-add-or-edit=) is GONE — the machinery
+  below it (the =LOCAL COMMENT= section class, the raw-comments
+  persistence, the inline rendering) was already
+  forge-independent; only the entry was gated.  Reactions and
+  remote-comment edits stay gated.
+- =code-review-local-comments-send= (transient: =r a=): gathers
+  all pending local comments into ONE batched agent work item —
+  path:line anchors, the reviewer's text, the diff hunk context —
+  under the DRAFT-NOT-PUSH contract (fix UNCOMMITTED in the
+  working tree, the reviewer inspects and commits via magit).
+  Transport per the drafter/transport split: the new
+  =code-review-local-agent-dispatch-function= hook (nil default =
+  no AI, L0), auto-wired by =code-review-agents-shell.el='s
+  reference dispatcher (the shared =--handoff=, session resolved
+  by project of the repo root, queued when the agent is mid-run).
+  The L0 fallback lands the work item in a
+  =*Local Review Findings*= buffer + the kill ring — paste it
+  wherever the agent lives.  Dispatching is NOT completing: the
+  review stays open.
+- =code-review-local-finish= (transient: =r c=): stamps the local
+  row =finished t= + =finished-at= — the EXISTING
+  finished-today scan then books the diff's estimated cost
+  against the day's budget (zero new budget code) — and opens
+  =magit-status= on the repository; the commit is the user's.
+  Idempotent.
+- =r= in a LOCAL review buffer now opens
+  =code-review-transient-local= (via
+  =code-review-transient-dispatch=: forge PRs keep
+  =code-review-transient-api=) — the forge submit entries all
+  user-error there anyway, and =c= ("complete") / =a= ("agent")
+  are the familiar local shape.
+- ERT (4 tests in =code-review-local-test.el=): extraction of
+  pending comments, the pure prompt (anchors + contract + repo),
+  dispatch through a stubbed hook, the L0 fallback buffer, the
+  finish booking (row leaves the unfinished queue, the
+  finished-today cost rises, idempotent), and the keymap
+  routing.  Suite 377/377.  Daemon: touched files reloaded
+  (.elc paths), live keymap patched in place.
+- The estimate is ALSO IN THE REVIEW BUFFER now
+  (req-2026-10-30-003): =code-review-section-insert-budget=
+  renders =Review budget: ~N min (tier: TIER, balance today: M
+  min)= right under the Title in =code-review-headers-hook= —
+  local and remote PRs alike, ="budget off"= when the machinery
+  is disabled, and NO line when the row has no diff yet.  The
+  signals are the queue's own (heat cache, delicacy, registry,
+  traceability), so the line and the queue always agree.  The
+  headers-hook defcustom rebind in the daemon needed the
+  standard-value =set= (the defcustom-won't-overwrite gotcha).
+
+Gotchas (this round's harvest — one MAJOR):
+
+- **A lambda in a PLAIN =let='s binding list does NOT capture a
+  SIBLING binding of that let on this machine's Emacs 30.2** —
+  the reference goes dynamic, silently: =setq= creates a global,
+  the closure env is empty, the stub hook is never called, and
+  everything stays green-looking.  Proven with a =-Q= capture
+  matrix (=let*= and nested lets capture; plain =let= does not).
+  Every test stub and callback of the shape =(let ((flag nil)
+  (cb (lambda () ... flag ...))))= is suspect; =let*= is
+  load-bearing, not style.  (The codebase's pervasive =let*=
+  suddenly reads very differently.)
+- =a-get-in= keys are the bare symbols — ='(comments nodes)=,
+  not ='(comments 'nodes)=: the quoted form navigates nowhere
+  and returns nil, no error.
+- The two-step debug protocol that found the capture loss:
+  probe the DIRECT =funcall= of the stubbed lambda first (it
+  failed too — the bug was in the probe's own binding shape, not
+  the production code), then reduce to a =-Q= one-liner.  The
+  reduction took five probes; the trap would have been invisible
+  inside the full suite forever.
 
 * Phase 26 — Outcome telemetry ladder (production as the truth source) :STATUS:todo:
 

@@ -408,10 +408,12 @@ other people's comments."
 ;;;###autoload
 (defun code-review-comment-add-or-edit (&optional suggestion-code?)
   "Add or edit comment depending on context.
-Inform if a SUGGESTION-CODE? is being proposed."
+Inform if a SUGGESTION-CODE? is being proposed.
+Local diff reviews write PENDING LOCAL comments (stored on the
+local row, rendered inline, dispatchable to an agent session
+with `code-review-local-comments-send'); only the forge paths
+stay closed."
   (interactive)
-  (when (code-review-db-local-pr-p)
-    (user-error "Local diff reviews are read-only (no forge connection)"))
   (let ((section (magit-current-section)))
     (with-current-buffer (code-review-review-buffer)
       (setq code-review-comment-cursor-pos (point)
