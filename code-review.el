@@ -337,7 +337,10 @@ there)."
   ;; Phase 9: eldoc shows the current context (file, hunk line, side)
   ;; at point.  Registered as a local `eldoc-documentation-functions'
   ;; entry; only actually reports when `eldoc-mode' is on.
-  (add-hook 'eldoc-documentation-functions #'code-review-eldoc-context nil t))
+  (add-hook 'eldoc-documentation-functions #'code-review-eldoc-context nil t)
+  ;; the reviewed/total files beacon in the modeline (:eval lighter —
+  ;; no update plumbing; see `code-review-viewed--progress-lighter')
+  (code-review-progress-mode 1))
 
 ;; Run after a Code Review buffer is fully rendered
 (defcustom code-review-post-hook

@@ -300,6 +300,7 @@ survives the test's db reset."
     (oset obj title "Local changes (HEAD)")
     (oset obj host "/tmp/somerepo/")
     (oset obj base-ref-name "HEAD")
+    (oset obj head-ref-name "working tree")
     (oset obj saved t)
     (oset obj raw-diff diff)
     (code-review-db-update obj)
@@ -456,6 +457,74 @@ map, and local reviews get the local transient."
   (should (fboundp 'code-review-transient-local))
   (should (commandp 'code-review-local-finish))
   (should (commandp 'code-review-local-comments-send)))
+
+;;; req-2026-10-30-005: viewed-counter-and-progress-beacon
+;; covers: code-review-viewed.el, code-review-section-shared.el
+;; covers-fn: code-review-viewed--heading-counter,
+;; code-review-viewed--progress-lighter
+;; enforcement: test
+(ert-deftest code-review-local/req-2026-10-30-005-viewed-counter-updates-and-beacon ()
+  "WHEN the reviewer marks a file viewed THE SYSTEM SHALL update
+the Files changed heading's viewed counter in place (not just on
+the next full render) and show the review progress beacon in the
+modeline — the counter froze at its wash-time value because the
+deferred render tail re-runs the mode body and its
+kill-all-local-variables wiped the NON-permanent classification
+table the counter rewrite guards on."
+  (let ((code-review-history-enabled nil)
+        (code-review-budget-focus-enabled nil)
+        (code-review-fold-hunks-by-default nil)
+        (code-review-budget-state-file (make-temp-file "cr-vb-")))
+    (code-review-test--with-db
+      (let ((code-review-local-test--pr
+             (code-review-local-test--make-local-pr
+              (concat "diff --git a/a.el b/a.el\n"
+                      "--- a/a.el\n+++ b/a.el\n"
+                      "@@ -1,1 +1,2 @@\n x\n+y\n"
+                      "diff --git a/b.el b/b.el\n"
+                      "--- a/b.el\n+++ b/b.el\n"
+                      "@@ -1,1 +1,2 @@\n x\n+z\n"))))
+        ;; render (build-buffer into the current buffer, as the
+        ;; deferred chain does); pump the chain dry
+        (let* ((diff (oref code-review-local-test--pr raw-diff)))
+          (code-review--build-buffer "*render target*")
+          (let ((deadline (+ (float-time) 10)) done)
+            (while (and (not done) (< (float-time) deadline))
+              (let ((pr (ignore-errors (code-review-db-get-pullreq))))
+                (when (and pr (null deferred:queue))
+                  (setq done t))
+                (unless done (sit-for 0.05)))))
+          (let ((rbuf (car (cl-remove-if-not
+                            (lambda (b)
+                              (with-current-buffer b
+                                (derived-mode-p 'code-review-mode)))
+                            (buffer-list)))))
+            (unwind-protect
+                (with-current-buffer rbuf
+                  (goto-char (point-min))
+                  (search-forward "Files changed")
+                  (should (string-match-p "0/2 viewed"
+                                          (buffer-substring-no-properties
+                                           (line-beginning-position)
+                                           (line-end-position))))
+                  ;; mark the first file viewed from its heading
+                  (goto-char (point-min))
+                  (search-forward "a.el")
+                  (beginning-of-line)
+                  (code-review-viewed-toggle)
+                  ;; the counter updates IN PLACE: 1/2, not 0/2
+                  (goto-char (point-min))
+                  (search-forward "Files changed")
+                  (should (string-match-p "1/2 viewed"
+                                          (buffer-substring-no-properties
+                                           (line-beginning-position)
+                                           (line-end-position))))
+                  ;; the beacon: the minor mode is on and the lighter
+                  ;; shows the same progress
+                  (should code-review-progress-mode)
+                  (should (equal (code-review-viewed--progress-lighter)
+                                 " 1/2 (50%)")))
+              (kill-buffer rbuf))))))))
 
 (provide 'code-review-local-test)
 ;;; code-review-local-test.el ends here

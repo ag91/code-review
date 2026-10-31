@@ -68,6 +68,13 @@ See `code-review-diff-noise-rules' and
   "Hash table path -> plist (:tag :collapse :hide) for the diff.
 Recomputed by `code-review--diff--classify-diff' on every render.
 For internal usage only.")
+;; permanent-local: the deferred render tail RE-RUNS the mode body
+;; after the wash (kill-all-local-variables), and a wiped table
+;; silently disables the viewed-counter rewrite forever — its
+;; hash-table-p guard just no-ops, leaving the count stale (the
+;; 2026-10-30 counter bug).  The wash recomputes it on every render,
+;; so persistence across mode re-runs is safe.
+(put 'code-review-section--file-classifications 'permanent-local t)
 
 (defconst code-review-section--viewed-tag "  [VIEWED]"
   "The [VIEWED] tag on a file heading.

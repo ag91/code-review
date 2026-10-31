@@ -4586,22 +4586,48 @@ which double as the budget's booking events:
   standard-value =set= (the defcustom-won't-overwrite gotcha).
 - The reviewer's THIRD finding became the tracker (2026-10-30,
   req-2026-10-30-004): MEASURED minutes replace the booking.
-  =code-review-budget-focus.el= ticks on
-  =buffer-list-update-hook=, attributing selected-window focus
-  seconds to the review buffer's pr (idle gaps over 60s are
-  walk-aways; flush throttled to 15s into the state's =:focus=
-  key).  =--finished-today-cost= books the MEASURED minutes and
-  keeps the diff-shape estimate only as the fallback (untracked
-  rows, daemon restarts); the estimate keeps the queue's
-  ex-ante jobs (rank, bounce, per-PR cap) which no measurement
-  can do before the buffer is ever opened.  Bonus: the
-  measured-vs-estimate delta per PR is the data that calibrates
-  the 0.75/hunk dial.  The per-buffer pr id
-  (=code-review-review-buffer-pr-id=) is the attribution key —
-  the global =code-review-db--pullreq-id= is clobbered by
-  commit-focus renders.  Render-level tests bind
-  =code-review-budget-focus-enabled= nil: the live hook must not
-  accrue real focus seconds into a test's state file.
+  =code-review-budget-focus.el= ticks on =post-command-hook=,
+  attributing selected-window focus seconds to the review buffer's
+  pr (idle gaps over 60s are walk-aways; flush throttled to 15s
+  into the state's =:focus= key).  =--finished-today-cost= books
+  the MEASURED minutes and keeps the diff-shape estimate only as
+  the fallback (untracked rows, daemon restarts); the estimate
+  keeps the queue's ex-ante jobs (rank, bounce, per-PR cap) which
+  no measurement can do before the buffer is ever opened.  Bonus:
+  the measured-vs-estimate delta per PR is the data that
+  calibrates the 0.75/hunk dial.
+- The tracker's first build FAILED IN LIVE USE (the reviewer got
+  told to bounce a PR after "exhausting" 90 minutes they never
+  spent), for two reasons, both now gotchas: (1) the tick hook was
+  =buffer-list-update-hook= — it does NOT fire while you sit in
+  one buffer, so a whole reading session ticked once and read as
+  one discarded idle gap; =post-command-hook= is the honest tick
+  (commands resume = attention resumes).  (2) The attribution key
+  was the buffer's closql pr id — a uuidgen-4 that
+  =code-review-db--pullreq-create= regenerates on every re-open —
+  so the booking scan (canonical =owner/repo#N=) could never find
+  the accrued seconds and every finish fell back to the estimate.
+  The canonical key is resolved once per buffer from the row and
+  cached buffer-locally; it survives row rebuilds.  Diagnosed from
+  the ABSENT state file (no =:focus= flush ever happened) plus an
+  advice-spy on =--diff--classify-diff= / =code-review-mode= /
+  =kill-local-variable= in a batch probe.
+- The SECOND reviewer finding was the frozen viewed counter in the
+  Files changed heading (2026-10-30, req-2026-10-30-005): the
+  counter rewrote in place on marks, but its guard needs the
+  classification table — and the deferred render tail re-runs the
+  mode body, whose =kill-all-local-variables= wiped
+  =--file-classifications= (the one non-permanent sibling) AFTER
+  the wash.  The heading text survived (locals are not text), the
+  guard silently failed forever.  Fix: =permanent-local= on the
+  table (the wash recomputes it every render anyway).  The batch
+  probe caught it by comparing the heading before/after a real
+  =v= toggle: =0/2 -> 0/2= with =:classifications nil= was the
+  whole story.
+- BONUS, same req: the modeline PROGRESS BEACON
+  (=code-review-progress-mode=, enabled by =code-review-mode=): an
+  =:eval= lighter showing N/M reviewed + percentage, recomputed by
+  redisplay — a mark needs zero update plumbing.  Suite 381/381.
 
 Gotchas (this round's harvest — one MAJOR):
 

@@ -32,12 +32,20 @@
 ;; keeps its own job: the queue's ex-ante decisions (rank, bounce,
 ;; per-PR cap) happen before any focus second exists.
 ;;
-;; Mechanics: `buffer-list-update-hook' ticks; each tick attributes
-;; the elapsed gap to the PREVIOUSLY focused PR (when the gap is
-;; within `code-review-budget-focus-idle-seconds' — a long think
-;; without a window change reads as idle and is discarded by the NEXT
-;; tick), then flushes to the state file at most every 15 seconds.
-;; Bounded per tick, no timers, no polling loops.
+;; Mechanics: `post-command-hook' ticks (buffer-list-update-hook does
+;; NOT fire while you sit in one buffer reading — a whole reading
+;; session would tick once, read as one huge idle gap, and be
+;; wrongly discarded).  Each tick attributes the elapsed gap to the
+;; PREVIOUSLY focused PR (when the gap is within
+;; `code-review-budget-focus-idle-seconds'), then flushes to the
+;; state file at most every 15 seconds.  Bounded per tick, no timers,
+;; no polling loops.
+;;
+;; Attribution key: the CANONICAL owner/repo#N key, resolved once per
+;; buffer from its db row.  The buffer's `code-review-review-buffer-pr-id'
+;; is a closql uuid that `code-review-db--pullreq-create' REGENERATES
+;; on every re-open — keying on it would orphan the accrued minutes
+;; of any review whose row got rebuilt between open and finish.
 
 ;;; Code:
 
@@ -48,6 +56,11 @@
 
 (defvar code-review-db--pullreq-id)         ; code-review-db.el, global
 (defvar code-review-review-buffer-pr-id)    ; code-review-section.el, local
+
+(defvar-local code-review-budget-focus--key nil
+  "Canonical pr key (owner/repo#N) of this review buffer.
+Resolved once from the buffer's db row: the buffer's pr id is a
+regenerated uuid, the canonical key survives re-opens.")
 
 (defgroup code-review-budget-focus nil
   "Measured review time for the budget (phase 25b)."
@@ -77,17 +90,38 @@ tracker's honesty."
 
 (defvar code-review-budget-focus--last-flush 0.0)
 
+(defun code-review-budget-focus--resolve-key (uuid)
+  "Canonical owner/repo#N key for the db row UUID, or nil.
+nil means \"not resolvable yet\" (row not built, db mid-reset):
+the next tick retries."
+  (and uuid
+       (condition-case err
+           (let* ((db (code-review-db))
+                  (pr (and db (slot-boundp db :connection)
+                           (closql-get db uuid
+                                       'code-review-db-pullreq))))
+             (and pr (code-review-budget--pr-key pr)))
+         (error
+          (code-review-utils--log
+           "code-review-budget-focus"
+           (format "key resolution failed: %s"
+                   (error-message-string err)))
+          nil))))
+
 (defun code-review-budget-focus--pr-of-buffer (buf)
-  "The pr key of BUFFER, or nil.
-Only code-review-mode buffers are attributable.  Prefer the
-buffer-local pr id captured at build time: the global
-`code-review-db--pullreq-id' is clobbered by commit-focus
-renders (AGENTS.md gotcha), the buffer-local one is not."
+  "The canonical pr key of BUFFER, or nil.
+Only code-review-mode buffers are attributable.  The key is
+resolved lazily from the buffer's db row and cached in the
+buffer: the buffer's pr id is a closql uuid that row
+re-creation regenerates, while the canonical key is stable
+across re-opens."
   (and (buffer-live-p buf)
        (with-current-buffer buf
          (and (derived-mode-p 'code-review-mode)
-              (or code-review-review-buffer-pr-id
-                  code-review-db--pullreq-id)))))
+              (or code-review-budget-focus--key
+                  (setq code-review-budget-focus--key
+                        (code-review-budget-focus--resolve-key
+                         code-review-review-buffer-pr-id)))))))
 
 (defun code-review-budget-focus--buffer-pr-id ()
   "The pr key of the selected window's buffer, or nil."
@@ -152,7 +186,7 @@ explicitly."
 
 (defun code-review-budget-focus--disable ()
   "Stop the tracker (hook removal is process-local to this session)."
-  (remove-hook 'buffer-list-update-hook #'code-review-budget-focus--hook)
+  (remove-hook 'post-command-hook #'code-review-budget-focus--hook)
   (remove-hook 'kill-emacs-hook #'code-review-budget-focus--flush))
 
 (defun code-review-budget-focus-minutes-for (pr-key)
@@ -167,7 +201,7 @@ current."
                                 :focus)))))
       (and seconds (/ seconds 60.0)))))
 
-(add-hook 'buffer-list-update-hook #'code-review-budget-focus--hook)
+(add-hook 'post-command-hook #'code-review-budget-focus--hook)
 (add-hook 'kill-emacs-hook #'code-review-budget-focus--flush)
 
 (provide 'code-review-budget-focus)

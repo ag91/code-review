@@ -386,6 +386,27 @@ never grow private copies of this rule."
                code-review-section--viewed)
       viewed)))
 
+(defun code-review-viewed--progress-lighter ()
+  "The modeline beacon: reviewed/total files and the percentage.
+Empty string when there is nothing to show (no rendered diff, or
+a classification table that has not been built yet).  A `:eval'
+lighter: redisplay recomputes it, so a mark needs no update
+plumbing."
+  (and (hash-table-p code-review-section--viewed)
+       (hash-table-p code-review-section--file-classifications)
+       (> (hash-table-count code-review-section--file-classifications) 0)
+       (let* ((total (hash-table-count
+                      code-review-section--file-classifications))
+              (done (code-review-viewed--count-files)))
+         (format " %d/%d (%d%%)" done total
+                 (/ (* 100 done) total)))))
+
+(define-minor-mode code-review-progress-mode
+  "Show the viewed-files progress beacon in the modeline.
+Enabled by `code-review-mode': N/M files reviewed and the
+percentage of the review behind it."
+  :lighter (:eval (code-review-viewed--progress-lighter)))
+
 ;;; Expiry: GitHub's reset semantics, locally
 
 (defun code-review-viewed--expire (news-files)

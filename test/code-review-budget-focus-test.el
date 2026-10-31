@@ -55,27 +55,40 @@ saw."
   "WHEN focus leaves the review buffer for longer than the idle
 threshold, or the buffer is not a code-review buffer at all, THE
 SYSTEM SHALL count no focus time."
-  (let ((code-review-budget-state-file (make-temp-file "cr-focus2-")))
-    ;; a long gap between two ticks of the same pr: discarded
-    (setq code-review-budget-focus--last nil
-          code-review-budget-focus--accrued nil
-          code-review-budget-focus--last-flush 0.0)
-    (setq code-review-budget-focus--last (list :time 100.0 :pr "o/r#9"))
-    (code-review-budget-focus--note 300.0 "o/r#9")
-    (should (null code-review-budget-focus--accrued))
-    ;; a non-review buffer is unattributable
-    (with-temp-buffer
-      (should (null (code-review-budget-focus--pr-of-buffer
-                     (current-buffer)))))
-    ;; a code-review-mode buffer with a pr id is attributable
-    (let ((buf (generate-new-buffer " *cr-focus-test*")))
-      (unwind-protect
-          (progn
-            (with-current-buffer buf
-              (delay-mode-hooks (code-review-mode))
-              (setq code-review-review-buffer-pr-id "o/r#1"))
-            (should (equal (code-review-budget-focus--pr-of-buffer buf)
-                           "o/r#1")))
-        (kill-buffer buf)))))
+  (let ((code-review-budget-state-file (make-temp-file "cr-focus2-"))
+        (code-review-history-enabled nil))
+    (code-review-test--with-db
+      ;; a long gap between two ticks of the same pr: discarded
+      (setq code-review-budget-focus--last nil
+            code-review-budget-focus--accrued nil
+            code-review-budget-focus--last-flush 0.0)
+      (setq code-review-budget-focus--last (list :time 100.0 :pr "o/r#9"))
+      (code-review-budget-focus--note 300.0 "o/r#9")
+      (should (null code-review-budget-focus--accrued))
+      ;; a non-review buffer is unattributable
+      (with-temp-buffer
+        (should (null (code-review-budget-focus--pr-of-buffer
+                       (current-buffer)))))
+      ;; a code-review buffer resolves its CANONICAL key from the db
+      ;; row — and the key survives the row being rebuilt (the uuid
+      ;; regenerates on every re-open, the canonical key does not)
+      (let* ((pr (code-review-budget-test--make-pr
+                  "o" "r" "1" code-review-budget-test--diff "T"))
+             (uuid-a (oref pr id))
+             (buf (generate-new-buffer " *cr-focus-test*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer buf
+                (delay-mode-hooks (code-review-mode))
+                (setq code-review-review-buffer-pr-id uuid-a))
+              (should (equal (code-review-budget-focus--pr-of-buffer buf)
+                             "o/r#1"))
+              ;; rebuild the row: NEW uuid, same canonical key; the
+              ;; buffer's cached key keeps attributing correctly
+              (code-review-budget-test--make-pr
+               "o" "r" "1" code-review-budget-test--diff "T")
+              (should (equal (code-review-budget-focus--pr-of-buffer buf)
+                             "o/r#1")))
+          (kill-buffer buf))))))
 
 ;;; code-review-budget-focus-test.el ends here
