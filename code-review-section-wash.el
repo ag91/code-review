@@ -233,15 +233,27 @@ in the diff nothing changes (no empty section, no heading)."
                            tags
                            ", "))))))
 (defun code-review-section-insert-files-changed ()
-  (let ((files (a-get (code-review-db--pullreq-raw-infos) 'files)))
+  (let* ((files (a-get (code-review-db--pullreq-raw-infos) 'files))
+         ;; local diffs carry no forge file stats: compute them from
+         ;; the raw diff text (DOC files split out in parentheses)
+         (local-stats (when (null files)
+                        (ignore-errors
+                          (let ((diff (code-review-db--pullreq-raw-diff)))
+                            (and diff
+                                 (not (string-empty-p diff))
+                                 (code-review-diff--stats diff)))))))
     (let-alist files
       (insert (propertize
                (concat "Files changed"
-                       (when files
+                       (cond
+                        (files
                          (format " (%s files; %s additions, %s deletions)"
                                  (length .nodes)
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .nodes))
                                  (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .nodes))))
+                        (local-stats
+                         (format " (%s)"
+                                 (code-review-diff--stats-string local-stats))))
                        ;; phase 13 slice 2: the read-tracking counter
                        ;; (explicit marks + the all-hunks rollup)
                        (when (and (hash-table-p code-review-section--viewed)

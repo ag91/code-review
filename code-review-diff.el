@@ -169,6 +169,54 @@ sets a property wins for that property."
                 (setq info (plist-put info key val)))))))
       info))))
 
+(defun code-review-diff--stats (diff-text)
+  "Compute the add/del line stats over raw DIFF-TEXT.
+Return a plist (:files N :add A :del D :add-doc AD :del-doc DD):
+`:add'/`:del' count every changed line, `:add-doc'/`:del-doc' only
+the lines of DOC-classified files (the \"excluding docs\"
+parenthetical).  Pure: the forge stats local reviews never have,
+computed from the same diff text the wash renders.  Binary blocks
+(\"GIT binary patch\" / \"Binary files ... differ\") carry no
+line counts."
+  (let ((files 0) (add 0) (del 0) (add-doc 0) (del-doc 0))
+    (dolist (blk (code-review--diff--split-by-files diff-text))
+      (let* ((path (car blk))
+             (block (cdr blk))
+             (doc? (equal (plist-get (code-review--diff--classify-path path)
+                                     :tag)
+                          "DOC"))
+            (a 0) (d 0))
+        (setq files (1+ files))
+        (unless (string-match-p "^GIT binary patch\\|^Binary files " block)
+          (dolist (line (split-string block "\n"))
+            (cond
+             ((string-prefix-p "+++" line)) ; file header
+             ((string-prefix-p "---" line)) ; file header
+             ((string-prefix-p "+" line) (setq a (1+ a)))
+             ((string-prefix-p "-" line) (setq d (1+ d))))))
+        (setq add (+ add a)
+              del (+ del d))
+        (when doc?
+          (setq add-doc (+ add-doc a)
+                del-doc (+ del-doc d)))))
+    (list :files files :add add :del del
+          :add-doc add-doc :del-doc del-doc)))
+
+(defun code-review-diff--stats-string (stats)
+  "Format STATS (`code-review-diff--stats' output) as one line.
+The DOC share lands in parentheses only when docs actually
+changed: no parens noise on pure-code diffs."
+  (concat (format "%d files; %d additions, %d deletions"
+                  (plist-get stats :files)
+                  (plist-get stats :add)
+                  (plist-get stats :del))
+          (when (> (+ (plist-get stats :add-doc)
+                      (plist-get stats :del-doc))
+                   0)
+            (format " (%d additions, %d deletions excluding docs)"
+                    (plist-get stats :add-doc)
+                    (plist-get stats :del-doc)))))
+
 (defun code-review--diff--ws-normalize (line)
   "Collapse whitespace in LINE for whitespace-only comparisons."
   (string-join (split-string line "\\s-+" t) " "))

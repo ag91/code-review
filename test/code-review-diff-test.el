@@ -51,6 +51,54 @@ its trailing newline, like a trimmed stored diff."
                        :tag))))
 
 
+;;; Local diff stats: WHEN the reviewer opens a local diff review
+;;; THE SYSTEM SHALL report the changed line counts computed from
+;;; the raw diff text, splitting the DOC-file share into a
+;;; parenthetical so doc-heavy changes are visible at a glance.
+(ert-deftest code-review-diff/stats-count-lines-and-doc-split ()
+  (let ((stats (code-review-diff--stats
+                (code-review-test--diff-sample))))
+    (should (equal 2 (plist-get stats :files)))
+    (should (equal 2 (plist-get stats :add)))
+    (should (equal 1 (plist-get stats :del)))
+    ;; README.md is DOC: its single added line is the doc share
+    (should (equal 1 (plist-get stats :add-doc)))
+    (should (equal 0 (plist-get stats :del-doc)))))
+
+(ert-deftest code-review-diff/stats-ignore-binary-blocks ()
+  ;; binary patch payloads can carry lines that start with +/-;
+  ;; they must never count as changed lines
+  (let ((stats (code-review-diff--stats
+                (concat
+                 "diff --git asset.png asset.png\n"
+                 "index 111..222 100644\n"
+                 "Binary files asset.png and asset.png differ\n"))))
+    (should (equal 1 (plist-get stats :files)))
+    (should (equal 0 (plist-get stats :add)))
+    (should (equal 0 (plist-get stats :del)))))
+
+(ert-deftest code-review-diff/stats-string-parens-only-with-docs ()
+  ;; docs changed: the DOC share lands in parentheses
+  (should (string-match-p "(1 additions, 0 deletions excluding docs)"
+                          (code-review-diff--stats-string
+                           (code-review-diff--stats
+                            (code-review-test--diff-sample)))))
+  ;; pure-code diff: no parenthetical noise
+  (let ((stats (code-review-diff--stats
+                (concat
+                 "diff --git src/main.py src/main.py\n"
+                 "index 1111111..2222222 100644\n"
+                 "--- src/main.py\n"
+                 "+++ src/main.py\n"
+                 "@@ -1 +1 @@\n"
+                 "-old\n"
+                 "+new"))))
+    (should (string-prefix-p "1 files; 1 additions, 1 deletions"
+                             (code-review-diff--stats-string stats)))
+    (should (not (string-match-p "excluding docs"
+                                 (code-review-diff--stats-string stats))))))
+
+
 (ert-deftest code-review-diff/reorder-never-glues-blocks ()
   "Reordering must never glue two file blocks on one line.
 Regression: a diff trimmed of its trailing newline used to end

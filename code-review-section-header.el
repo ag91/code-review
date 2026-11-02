@@ -43,6 +43,9 @@
 (defvar code-review-budget--current-pr)
 (declare-function code-review-budget--assess "code-review-budget")
 (declare-function code-review-budget--signals "code-review-budget")
+(declare-function code-review-diff--stats "code-review-diff")
+(declare-function code-review-diff--stats-string "code-review-diff")
+(declare-function code-review-db--pullreq-raw-diff "code-review-db")
 (declare-function code-review-budget--remaining "code-review-budget")
 (declare-function code-review-utils--log "code-review-utils")
 (require 'a)
@@ -94,18 +97,34 @@
   "Insert the one-line change summary right under the PR url.
 The same numbers the \"Files changed\" heading reports, but at
 the top of the buffer: the main signal for whether this PR can be
-reviewed quickly (the phase 25 review-budget view)."
+reviewed quickly (the phase 25 review-budget view).  Forge PRs
+read the numbers from the GraphQL infos; local diffs have none,
+so the same numbers (plus the \"excluding docs\" split) are
+computed from the raw diff text."
   (let-alist (code-review-db--pullreq-raw-infos)
-    (when .files.nodes
-      (magit-insert-section (code-review-files-summary-section)
-        (insert (format "%-17s" "Changes: "))
-        (insert (propertize
-                 (format "%d files; %s additions, %s deletions"
-                         (length .files.nodes)
-                         (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .files.nodes))
-                         (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .files.nodes)))
-                 'font-lock-face 'code-review-url-header-face))
-        (insert ?\n)))))
+    (if .files.nodes
+        (magit-insert-section (code-review-files-summary-section)
+          (insert (format "%-17s" "Changes: "))
+          (insert (propertize
+                   (format "%d files; %s additions, %s deletions"
+                           (length .files.nodes)
+                           (apply #'+ (mapcar (lambda (x) (alist-get 'additions x)) .files.nodes))
+                           (apply #'+ (mapcar (lambda (x) (alist-get 'deletions x)) .files.nodes)))
+                   'font-lock-face 'code-review-url-header-face))
+          (insert ?\n))
+      ;; local diffs: compute the stats from the raw diff text
+      ;; (DOC files split out in parentheses — the doc-wording signal)
+      (when-let* ((diff (ignore-errors (code-review-db--pullreq-raw-diff)))
+                  (stats (and diff
+                              (not (string-empty-p diff))
+                              (code-review-diff--stats diff)))
+                  ((> (plist-get stats :files) 0)))
+        (magit-insert-section (code-review-files-summary-section)
+          (insert (format "%-17s" "Changes: "))
+          (insert (propertize
+                   (code-review-diff--stats-string stats)
+                   'font-lock-face 'code-review-url-header-face))
+          (insert ?\n))))))
 (defun code-review-section-insert-author ()
   "Insert the author of the PR in the buffer."
   (let-alist (code-review-db--pullreq-raw-infos)
