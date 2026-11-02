@@ -37,9 +37,11 @@
 ;; session would tick once, read as one huge idle gap, and be
 ;; wrongly discarded).  Each tick attributes the elapsed gap to the
 ;; PREVIOUSLY focused PR (when the gap is within
-;; `code-review-budget-focus-idle-seconds'), then flushes to the
-;; state file at most every 15 seconds.  Bounded per tick, no timers,
-;; no polling loops.
+;; `code-review-budget-focus-idle-seconds' — the buffer is still
+;; selected, so the gap was READING, not absence; only gaps over the
+;; threshold mean you left the machine), then flushes to the state
+;; file at most every 15 seconds.  Bounded per tick, no timers, no
+;; polling loops.
 ;;
 ;; Attribution key: the CANONICAL owner/repo#N key, resolved once per
 ;; buffer from its db row.  The buffer's `code-review-review-buffer-pr-id'
@@ -73,12 +75,16 @@ estimated cost."
   :group 'code-review-budget-focus
   :type 'boolean)
 
-(defcustom code-review-budget-focus-idle-seconds 60
-  "Focus gaps longer than this many seconds do not count.
-The buffer being selected is not the same as you looking at it:
-reading the screen with hands off stays under this threshold,
-leaving for lunch does not.  The calibration dial for the
-tracker's honesty."
+(defcustom code-review-budget-focus-idle-seconds 900
+  "Gaps between commands longer than this do not count.
+Between two commands with the review buffer still selected you
+were READING — that is the review, and the gap books as focus
+time (the first build's 60s default discarded exactly that:
+deliberate slow reviews booked nothing and the estimate leaked
+back in).  Only being AWAY should stop the clock: a gap over
+this threshold ( Emacs had no commands for a quarter of an
+hour ) reads as having left the machine, and is discarded.  The
+calibration dial for the tracker's honesty."
   :group 'code-review-budget-focus
   :type 'number)
 

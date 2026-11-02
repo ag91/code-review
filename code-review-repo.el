@@ -33,6 +33,8 @@
 (require 'code-review-github)
 (require 'code-review-gitlab)
 
+(declare-function code-review-utils--log "code-review-utils")
+
 (defgroup code-review-repo nil
   "Local repository integration for code-review."
   :group 'code-review)
@@ -354,6 +356,163 @@ Return nil when the worktree or the base ref are unavailable."
                                           (not (string= dels "0")))
                                   (nth 2 cols))))))
                         (split-string out "\n" t))))))))
+
+;;; Worktree cleanup
+
+(defcustom code-review-repo-cleanup-days 14
+  "Prune finished reviews' worktrees older than this many days.
+Age is the last time the review updated the worktree's head (the
+gitdir's HEAD file mtime): a re-render hard-updates it, so an
+active review's worktree never ages out.  Worktrees of UNFINISHED
+reviews are never pruned, regardless of age."
+  :group 'code-review
+  :type 'natnum)
+
+(defun code-review-repo--git-common-dir (repo-dir)
+  "The repository REPO-DIR's git common directory, absolute."
+  (let ((gitdir (or (code-review-repo--git repo-dir
+                                          "rev-parse" "--git-common-dir")
+                    ".git")))
+    (if (file-name-absolute-p gitdir)
+        (directory-file-name gitdir)
+      (expand-file-name gitdir repo-dir))))
+
+(defun code-review-repo--worktree-head-file (repo-dir num)
+  "The gitdir HEAD file of worktree NUM of REPO-DIR.
+Rewritten on every head update (create, `reset --hard',
+`checkout --detach'): its mtime is the worktree's age signal."
+  (expand-file-name (format "worktrees/%s/HEAD" num)
+                    (code-review-repo--git-common-dir repo-dir)))
+
+(defun code-review-repo--worktree-age-days (repo-dir num)
+  "Days since worktree NUM of REPO-DIR was last touched, or nil."
+  (let* ((head (code-review-repo--worktree-head-file repo-dir num))
+         (attr (and (file-exists-p head) (file-attributes head))))
+    (and attr
+         (/ (- (float-time) (float-time (nth 5 attr))) 86400.0))))
+
+(defun code-review-repo--unfinished-worktree-nums (owner repo)
+  "Numbers (strings) of UNFINISHED review rows protected from cleanup.
+With OWNER and REPO, only that repository's rows count; without
+them (cleanup on an arbitrary directory) this is deliberately
+conservative: every unfinished row's number is protected, whatever
+repository it belongs to.  Never signals: a db problem returns
+the symbol `all' (protect everything, prune nothing)."
+  (condition-case err
+      (let* ((rows (code-review-db-all-unfinished))
+             ;; a row's worktree is protected when no identity is
+             ;; given (protect everything), or the row belongs to the
+             ;; repository being cleaned
+             (protected-row?
+              (lambda (row)
+                (and (slot-boundp row 'number)
+                     (or (and (null owner) (null repo))
+                         (and (slot-boundp row 'owner)
+                              (equal (oref row owner) owner)
+                              (slot-boundp row 'repo)
+                              (equal (oref row repo) repo)))))))
+        (->> rows
+             (-filter protected-row?)
+             (-map (lambda (row) (format "%s" (oref row number))))
+             (-distinct)))
+    (error
+     (code-review-utils--log
+      "code-review-repo"
+      (format "cleanup unfinished scan failed: %s"
+              (error-message-string err)))
+     'all)))
+
+(defun code-review-repo--cleanup-plan (dir owner repo)
+  "The stale worktrees of repository DIR: (NUM AGE-DAYS) pairs.
+Stale = past `code-review-repo-cleanup-days' since its head was
+last updated, and its review (when identifiable) is finished."
+  (let* ((protected (code-review-repo--unfinished-worktree-nums owner repo))
+         (wtdir (expand-file-name "code-review-worktrees"
+                                  (code-review-repo--git-common-dir dir)))
+         (nums (and (file-directory-p wtdir)
+                    (directory-files wtdir nil
+                                     directory-files-no-dot-files-regexp))))
+    (nreverse
+     (->> nums
+          (--map (list it (code-review-repo--worktree-age-days dir it)))
+          (-filter (lambda (entry)
+                     (and (nth 1 entry)
+                          (> (nth 1 entry) code-review-repo-cleanup-days)
+                          (not (or (eq protected 'all)
+                                   (member (nth 0 entry) protected))))))))))
+
+(defun code-review-repo--cleanup-execute (dir plan)
+  "Prune PLAN's worktrees of repository DIR.  Return (PRUNED FAILED)."
+  ;; stale metadata first: dirs deleted out from under git
+  (code-review-repo--git dir "worktree" "prune")
+  (let ((results
+         (--map (cons (nth 0 it)
+                      (let ((wt (expand-file-name
+                                 (format "code-review-worktrees/%s"
+                                         (nth 0 it))
+                                 (code-review-repo--git-common-dir dir))))
+                        (cond
+                         ((not (file-directory-p wt)) 'gone)
+                         ((and (file-exists-p (expand-file-name ".git" wt))
+                               (code-review-repo--git
+                                dir "worktree" "remove" "--force" wt))
+                          'removed)
+                         ;; git does not know the dir: it is a leftover,
+                         ;; not a worktree — delete it as a directory
+                         ((progn (ignore-errors (delete-directory wt t)) t)
+                          'removed))))
+                plan)))
+    (list (--count (eq (cdr it) 'removed) results)
+          (--map (car it)
+                 (-filter (lambda (it) (eq (cdr it) 'failed)) results)))))
+
+;;;###autoload
+(defun code-review-repo-cleanup (dir)
+  "Prune old review worktrees of the repository at DIR.
+A worktree is pruned when its review's head was last updated more
+than `code-review-repo-cleanup-days' days ago and its review is
+finished (unfinished reviews' worktrees are never pruned).  Worktree
+branches' commits live on their refs and survive the removal; the
+worktrees themselves are re-created by the next render."
+  (interactive
+   (list (or (and (derived-mode-p 'code-review-mode)
+                  code-review-repo-dir)
+             (read-directory-name
+              "Repository: "
+              (or (ignore-errors (magit-toplevel)) default-directory)))))
+  (let* ((dir (directory-file-name (expand-file-name dir)))
+         ;; exact unfinished-row protection when run from the review
+         ;; buffer whose repository this is; conservative otherwise
+         (in-review? (and (derived-mode-p 'code-review-mode)
+                          code-review-repo-dir
+                          (equal (directory-file-name
+                                  (expand-file-name code-review-repo-dir))
+                                 dir)))
+         (pr (and in-review? (ignore-errors (code-review-db-get-pullreq))))
+         (owner (and pr (slot-boundp pr 'owner) (oref pr owner)))
+         (repo (and pr (slot-boundp pr 'repo) (oref pr repo)))
+         (plan (code-review-repo--cleanup-plan dir owner repo)))
+    (if (null plan)
+        (message "code-review: no stale review worktrees in %s" dir)
+      (if (y-or-n-p
+           (format "Prune %d review worktree(s) older than %d days (%s)? "
+                   (length plan)
+                   code-review-repo-cleanup-days
+                   (mapconcat (lambda (e)
+                                (format "#%s (%.0fd)"
+                                        (nth 0 e) (nth 1 e)))
+                              plan ", ")))
+          (let* ((res (code-review-repo--cleanup-execute dir plan))
+                 (pruned (nth 0 res))
+                 (failed (nth 1 res)))
+            (message
+             "code-review: pruned %d worktree(s)%s"
+             pruned
+             (if failed
+                 (format ", FAILED: %s"
+                         (mapconcat #'identity failed ", "))
+               "")))
+        (message "code-review: cleanup cancelled")))))
 
 (provide 'code-review-repo)
 ;;; code-review-repo.el ends here

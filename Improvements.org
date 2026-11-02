@@ -4612,6 +4612,21 @@ which double as the budget's booking events:
   the ABSENT state file (no =:focus= flush ever happened) plus an
   advice-spy on =--diff--classify-diff= / =code-review-mode= /
   =kill-local-variable= in a batch probe.
+- SECOND LIVE FAILURE, the reviewer's own report (2026-10-31):
+  a deliberately SHORT review still booked the estimate — the
+  tracker accrued nothing.  The key and hook were fixed, but the
+  60s idle threshold ate the review itself: a slow review IS a
+  sequence of multi-minute command gaps with the buffer still
+  selected (reading the code!), and every one was discarded as
+  "idle" — zero accrual, no state file at all, estimate fallback
+  (16.3 for a review the reviewer deliberately kept to ~a third
+  of that).  The threshold's job is ONLY "you left the machine":
+  now 900s (15 min, the per-PR ideal slot) — a gap under it with
+  the buffer still selected is READING and books; over it is
+  absence and is discarded.  Daemon reload needed the
+  standard-value =setq= for the defcustom (the value 60 stayed
+  bound otherwise).  The already-finished review's estimate
+  booking is sunk accounting — the NEXT review books measured.
 - The SECOND reviewer finding was the frozen viewed counter in the
   Files changed heading (2026-10-30, req-2026-10-30-005): the
   counter rewrote in place on marks, but its guard needs the
@@ -5301,6 +5316,49 @@ protectively, and a re-render under the nil binding skips the fold walk
 entirely (which LOOKS like the production bug while testing a state no
 real buffer is in).
 
+* Review worktree cleanup — 2026-10-31 :STATUS:done:
+
+The =code-review-repo-cleanup= future idea: =--ensure-worktree=
+creates a detached checkout at
+=REPO/.git/code-review-worktrees/NUM= per reviewed PR and
+hard-updates it on re-render — and nothing ever pruned them, so
+every reviewed PR left a full checkout inside the repository's
+=.git= forever.
+
+- =code-review-repo--cleanup-plan= / =--cleanup-execute= (the
+  testable core) + interactive =code-review-repo-cleanup=
+  (autoloaded): prunes worktrees whose head has not moved for
+  =code-review-repo-cleanup-days= (14) days — the gitdir's
+  =worktrees/NUM/HEAD= file mtime is the age signal (rewritten on
+  every create/checkout/reset, so an ACTIVE review's worktree
+  never ages out).
+- UNFINISHED reviews' worktrees are NEVER pruned regardless of
+  age: =--cleanup-plan= protects the unfinished rows' numbers —
+  exactly the current repo's rows when run from that review
+  buffer, conservatively ALL unfinished rows' numbers when run on
+  an arbitrary directory — and a db failure protects everything
+  (the =code-review-repo--unfinished-worktree-nums= ='all=
+  sentinel: unknown state prunes nothing).
+- =git worktree prune= runs first (metadata for dirs deleted out
+  from under git); =remove --force= never loses committed work
+  (the phase 27 regression branches' refs survive removal), and a
+  leftover dir git no longer knows about is deleted as a plain
+  directory.  The command confirms with the full prune list
+  before touching anything.
+- ERT (req-2026-10-31-001): stale+finished prunes,
+  fresh+finished stays, stale+UNFINISHED stays, refs survive.
+  The fixture's silent git failures ate two red runs — the
+  helper now signals with the captured stderr (a discarded-stderr
+  fixture failure looks exactly like "rev-parse returned nil for
+  no reason").
+- Review-fix round: the row predicate lifted into the
+  surrounding =let*= (=protected-row?=, one-off per the reviewer)
+  and the cleanup loops rewritten with dash (=->> =/-filter/
+  =--map= / =--count=) — which the reviewer promoted to HOUSE
+  STYLE in AGENTS.md: dash.el is the project's preferred list
+  library; hand-rolled dolist/push/nreverse chains and bare
+  cl-loop are out.
+
 * The viewed toggle stops re-rendering — 2026-10-29 :STATUS:done:
 
 Marking a file read used to rebuild the whole review
@@ -5336,8 +5394,6 @@ suite run to learn):
 
 * Future ideas
 
-- =code-review-repo-cleanup=: prune old worktrees (older than N
-  days).
 - =code-compass= integrate information from code-compass analyses to prioritize review
 
   things like addding to an hotspot file, or the author not having experience with the module should contribute to inform the reviewer of how much attention to put in the review or what bits are most critical

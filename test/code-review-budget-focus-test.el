@@ -20,7 +20,8 @@ focus minutes for that PR instead of the diff-shape estimate,
 falling back to the estimate only for rows the tracker never
 saw."
   (let ((code-review-budget-state-file (make-temp-file "cr-focus-"))
-        (code-review-history-enabled nil))
+        (code-review-history-enabled nil)
+        (code-review-budget-focus-idle-seconds 900))
     (code-review-test--with-db
       ;; two finished rows, same diff (estimate 2.8): one tracked, one not
       (let ((tracked (code-review-budget-test--make-pr
@@ -31,32 +32,34 @@ saw."
           (oset pr finished t)
           (oset pr finished-at (current-time-string))
           (code-review-db-update pr))
-        ;; 110 focused seconds on o/r#1, ticked in two intervals
-        ;; inside the idle threshold
+        ;; focused seconds on o/r#1: 60 + 50 + a 180s deliberate
+        ;; READING gap (buffer still selected: books), then a gap
+        ;; over the threshold (left the machine: discarded)
         (let ((code-review-budget-focus--last nil)
               (code-review-budget-focus--accrued nil)
               (code-review-budget-focus--last-flush 0.0))
           (code-review-budget-focus--note 1030.0 "o/r#1")
           (code-review-budget-focus--note 1090.0 "o/r#1") ; +60s
           (code-review-budget-focus--note 1140.0 "o/r#1") ; +50s
-          ;; a gap over the threshold is a walk-away: discarded
-          (code-review-budget-focus--note 1500.0 "o/r#1")
+          (code-review-budget-focus--note 1320.0 "o/r#1") ; +180s read
+          (code-review-budget-focus--note 2500.0 "o/r#1") ; 1180s: away
           (code-review-budget-focus--flush)
-          ;; the state file carries the measured seconds: 110s
+          ;; the state file carries the measured seconds: 290s
           (let ((measured (code-review-budget-focus-minutes-for "o/r#1")))
-            (should (< (- measured (/ 110.0 60.0)) 0.001))
+            (should (< (- measured (/ 290.0 60.0)) 0.001))
             (should (null (code-review-budget-focus-minutes-for "o/r#2"))))
           ;; the booking: measured replaces the estimate for the
           ;; tracked row, the untracked row falls back to 2.8
           (let ((spent (code-review-budget--spent-today)))
-            (should (< (- spent (+ (/ 110.0 60.0) 2.8)) 0.01))))))))
+            (should (< (- spent (+ (/ 290.0 60.0) 2.8)) 0.01))))))))
 
 (ert-deftest code-review-budget-focus/req-2026-10-30-004-idle-and-non-review ()
   "WHEN focus leaves the review buffer for longer than the idle
 threshold, or the buffer is not a code-review buffer at all, THE
 SYSTEM SHALL count no focus time."
   (let ((code-review-budget-state-file (make-temp-file "cr-focus2-"))
-        (code-review-history-enabled nil))
+        (code-review-history-enabled nil)
+        (code-review-budget-focus-idle-seconds 60))
     (code-review-test--with-db
       ;; a long gap between two ticks of the same pr: discarded
       (setq code-review-budget-focus--last nil
