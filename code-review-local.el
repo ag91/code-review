@@ -357,13 +357,19 @@ completing."
          (repo (oref pr host)))
     (if (null comments)
         (user-error "No pending local comments to send (RET on a hunk line writes one)")
-      (let ((prompt (code-review-local-agent--prompt comments repo)))
-        (if code-review-local-agent-dispatch-function
-            (progn
-              (funcall code-review-local-agent-dispatch-function
-                       prompt repo)
-              (message "code-review: %d finding(s) handed to the agent session (draft-not-push; finish with code-review-local-finish)"
-                       (length comments)))
+      ;; let* NOT let: a binding referencing a sibling of the SAME
+      ;; plain let reads void on this Emacs build (the house gotcha)
+      (let* ((prompt (code-review-local-agent--prompt comments repo))
+             ;; the reference dispatcher returns non-nil when handed
+             ;; off; nil (agent-shell absent, or no session picked in
+             ;; the agent-shell-switch-buffer prompt) keeps the L0
+             ;; fallback — the work item never evaporates
+             (dispatched (and code-review-local-agent-dispatch-function
+                              (funcall code-review-local-agent-dispatch-function
+                                       prompt repo))))
+        (if dispatched
+            (message "code-review: %d finding(s) handed to the agent session (draft-not-push; finish with code-review-local-finish)"
+                     (length comments))
           ;; L0: no agent wired — nothing evaporates
           (kill-new prompt)
           (with-current-buffer

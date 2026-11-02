@@ -54,6 +54,8 @@
 (defvar code-review-local-agent-dispatch-function)
 (declare-function code-review-registry--repo-dir "code-review-registry")
 (declare-function agent-shell-prompt-queue "agent-shell-prompt-queue")
+(declare-function agent-shell--shell-buffer "agent-shell")
+(declare-function agent-shell--read-shell-buffer "agent-shell")
 
 (defun code-review-agents-shell--worktree ()
   "The directory the drafter's agent should work in.
@@ -124,15 +126,22 @@ evaporates."
                  (plist-get criterion :id))
         nil)
     (let* ((worktree (code-review-agents-shell--worktree))
-           ;; agent-shell resolves the session by CURRENT PROJECT,
-           ;; so bind the directory: the comment buffer at C-c C-t
-           ;; time is not the worktree.
-           (default-directory worktree))
-      (agent-shell-prompt-queue
-       (code-review-agents-shell-prompt criterion worktree))
-      (message "code-review: criterion %s handed to the agent session (draft-not-push)"
-               (plist-get criterion :id))
-      t)))
+           ;; the session is resolved BY HANDOFF below: the project of
+           ;; the worktree first, else the user picks (or declines)
+           (default-directory worktree)
+           (shell-buffer (code-review-agents-shell--resolve-session
+                          worktree)))
+      (if shell-buffer
+          (progn
+            (code-review-agents-shell--send
+             shell-buffer
+             (code-review-agents-shell-prompt criterion worktree))
+            (message "code-review: criterion %s handed to the agent session (draft-not-push)"
+                     (plist-get criterion :id))
+            t)
+        (message "code-review: no agent session picked; criterion %s stays ledger-only"
+                 (plist-get criterion :id))
+        nil))))
 
 ;; Wire the hook when agent-shell is present, the phase 27 file
 ;; plan: only fill the DEFAULT-EMPTY slot, never clobber a user's
@@ -148,19 +157,51 @@ evaporates."
 ;;; agent-shell resolves the session the reviewer started there.
 ;;; Every hook stays nil without agent-shell — the L0 is no AI.
 
+(defun code-review-agents-shell--resolve-session (worktree)
+  "The agent-shell buffer to hand a work item to, or nil.
+The reviewer's session on WORKTREE (this project) resolves first,
+silently.  When the project has none, the user is asked: any
+running agent-shell buffer, via `agent-shell--read-shell-buffer'
+(the same `completing-read' mechanism `agent-shell-switch-buffer'
+uses) — or quit.  Resolving never CREATES anything: declining the
+pick (or no agent-shell buffer running at all) returns nil and
+the caller keeps its no-evaporation fallback."
+  (or (let ((default-directory worktree))
+        (agent-shell--shell-buffer :no-error t :no-create t))
+      (condition-case nil
+          (agent-shell--read-shell-buffer
+           :prompt "No agent in this project; switch to agent-shell buffer: ")
+        (quit nil)
+        (error nil))))
+
+(defun code-review-agents-shell--send (shell-buffer prompt)
+  "Submit PROMPT into SHELL-BUFFER.
+`agent-shell-prompt-queue' semantics pointed at an explicit
+buffer: inside a shell buffer it resolves to exactly that buffer
+— busy queues, idle submits, no focus steal."
+  (with-current-buffer shell-buffer
+    (agent-shell-prompt-queue prompt)))
+
 (defun code-review-agents-shell--handoff (prompt worktree &optional label)
   "The shared send: PROMPT into the worktree's agent session.
 LABEL names the work item for the message.  Non-nil when handed
-off; agent-shell absent returns nil with a message."
+off; agent-shell absent, or no session picked, returns nil with a
+message — the callers' L0 fallbacks keep the work item."
   (if (not (fboundp 'agent-shell-prompt-queue))
       (progn
         (message "code-review: agent-shell not loaded; %s runs hand-written"
                  (or label "this station"))
         nil)
-    (let ((default-directory worktree))
-      (agent-shell-prompt-queue prompt)
-      (message "code-review: %s handed to the agent session" label)
-      t)))
+    (let ((shell-buffer (code-review-agents-shell--resolve-session worktree)))
+      (if (not shell-buffer)
+          (progn
+            (message "code-review: no agent session picked; %s stays undelivered"
+                     (or label "this station"))
+            nil)
+        ;; busy queues, idle submits, no focus steal
+        (code-review-agents-shell--send shell-buffer prompt)
+        (message "code-review: %s handed to the agent session" label)
+        t))))
 
 (defun code-review-agents-shell-brief-prompt (title body paths worktree)
   "The station-1 BRIEF drafting prompt (pure).

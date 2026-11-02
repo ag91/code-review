@@ -373,6 +373,36 @@ finding never evaporates."
             (and (get-buffer "*Local Review Findings*")
                  (kill-buffer "*Local Review Findings*"))))))))
 
+;;; req-2026-11-02-001: local-comments-declined-dispatch-keeps-work-item
+;; covers: code-review-local.el
+;; covers-fn: code-review-local-comments-send
+;; enforcement: test
+(ert-deftest code-review-local/req-2026-11-02-001-declined-dispatch-keeps-work-item ()
+  "WHEN the wired transport does not hand off the work item (the
+reviewer declined the agent-session picker, or no session was
+resolved) THE SYSTEM SHALL keep the work item in the findings
+buffer and the kill ring, so the findings never evaporate."
+  (let ((code-review-history-enabled nil))
+    (code-review-test--with-db
+      (code-review-local-test--make-local-pr
+       "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,1 +1,2 @@\n x\n+y\n")
+      (code-review-db--pullreq-raw-comments-update
+       code-review-local-test--local-comment-alist)
+      (let ((code-review-local-agent-dispatch-function
+             ;; the picker was declined: no handoff happened
+             (lambda (_prompt _repo) nil)))
+        (unwind-protect
+            (progn
+              (code-review-local-comments-send)
+              (with-current-buffer "*Local Review Findings*"
+                (should (string-match-p
+                         "this duplicate logic must go"
+                         (buffer-string)))))
+          (and (get-buffer "*Local Review Findings*")
+               (kill-buffer "*Local Review Findings*")))
+        (should (string-match-p "this duplicate logic must go"
+                                (current-kill 0)))))))
+
 (ert-deftest code-review-local/comments-send-requires-comments ()
   "Sending with no pending comments is a friendly error, and the
 send refuses to run outside a LOCAL review."
