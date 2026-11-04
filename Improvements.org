@@ -540,7 +540,10 @@ SLACK CLICK POISONED THE DB (2026-09-25 incident, fixed).
   buffer's row reads ("780" "OPEN"), zero poisoned rows remain.
   Delete the backup file once satisfied.
 
-* Phase 8 — Diff drill-down: ediff and base views                :STATUS:todo
+* Phase 8 — Diff drill-down: ediff and base views                :STATUS:skip
+:PROPERTIES:
+:ID:       5087eb91-e087-462b-a1d6-4eb141fc81b4
+:END:
 
 Nearly free now that phase 1 gives us the worktree and the base
 ref.
@@ -5391,9 +5394,115 @@ suite run to learn):
   exact tag span), and inserted text must capture its neighbor's
   text properties (the section identity rides on them).
 
-* Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
+* Future ideas
 
-** The local-comment wipe (req-2026-11-03-001)
+- =code-compass= integrate information from code-compass analyses to prioritize review
+
+  things like addding to an hotspot file, or the author not having experience with the module should contribute to inform the reviewer of how much attention to put in the review or what bits are most critical
+
+  (Designed 2026-09-24 as phases 14-18: the heat reading order
+  and the coupling cross-check consume code-compass's code-maat
+  analyses when present, or a pure-elisp harvest otherwise; see
+  the shared harvest layer under phase 14.)
+- Commit buffer should reuse the same worktree context.
+
+DONE since: per-PR review buffers
+(=*Code Review: owner/repo#N*=, fallback =*Code Review*=) so
+several reviews stay open at once.  Each buffer remembers the
+database id of its PR; a buffer-local =post-command-hook= makes
+the DB current pullreq follow the buffer you act in, and comment
+buffers record the review buffer they were opened for.  The
+review/worktree locals are =permanent-local= so the
+=(code-review-mode)= activation that follows rendering does not
+wipe them.
+
+* Field report 2026-11-03 — consolidation over extension
+
+Six findings from live use (the reviewer's own review of the
+mode's features), and what each does to the roadmap:
+
+1. The criteria loop is unusable outside this repo: phases
+   23/27/29 assume the repository defines criteria in tests
+   (definition-in-test).  Coworking repos did not adopt the
+   convention, so the checklist renders empty noise there.
+   → DISPOSITION: criteria PORTABILITY stays a candidate
+   (bootstrap a starter ledger from the diff via the phase 27
+   drafter hooks, or a clean per-repo OFF) but is DEFERRED —
+   not scheduled until the consolidation phases land.
+2. The incident features (phase 22) are unused: no incident
+   history, no trailer discipline to mine.  → FROZEN: passive
+   signal consumer only; zero investment.
+3. The Analysis section (phase 5 heuristics) is noisy and
+   skipped — a skipped feature is NEGATIVE value (scroll time,
+   lost trust).  → Phase 31 below.
+4. Test-impact (phase 17) lost its premise: "has tests" was a
+   quality signal when humans wrote tests; on AI-generated PRs
+   the tests are AI-generated too.  The static NO-TEST /
+   coverage tags de-emphasize; the execution-based pieces
+   (CI-gaming detector, the probe) keep their value.
+   → folded into phase 31's scope.
+5. Bouncing is socially impossible in a fast-paced team — the
+   reviewer cannot block colleagues.  The budget's OUTPUT side
+   was wrong, not its INPUT side.  → phase 32: the budget
+   becomes BOUNDARY ENFORCEMENT for the reviewer (pushback is a
+   win, not a gate).
+6. The mode still fails to render (large markdown files, after
+   adding a comment) and large PRs block Emacs on open.
+   → phase 30: STABILITY FIRST, and no open command may ever
+   block.
+
+PRIORITIZATION VERDICT: consolidation over extension.  Phases
+19 (cross-repo) and 26 (telemetry) stay designed but DEFERRED
+until phases 30-32 land; the only extension kept in the active
+list is the PR search (phase 33) — the last regular reason to
+leave Emacs for the GitHub site — plus the people cache its
+search needs (phase 33) and two ergonomics fixes that make the
+diff the focus (34) and the progress beacon honest (35).
+
+* Phase 30 — Render stability and async lazy loading :STATUS:todo:
+
+P0. Two faces of one invariant: OPENING A PR MUST NEVER COST
+WORK TIME, and a rendered buffer must never be corrupt.
+
+- Stability: the field-reported failure (large markdown + a
+  comment → render failure) reproduced FIRST, hermetically.
+  The suspects are the known unbounded-text classes: megabyte
+  lines meeting per-line regexps (the phase 5 cap-line rule
+  applied everywhere), and shr's HTML rendering of huge
+  comment bodies (bounded, condition-cased, degrade to plain
+  text).  A TORTURE FIXTURE SUITE covers the render path
+  (huge markdown, minified one-liners, unicode, renames,
+  empty diffs, comment-on-huge-file); every fixture green
+  before any feature lands in this file again.
+- Async lazy loading: the deferred chain already fetches
+  async, but the WASH is synchronous over the whole diff —
+  that is what blocks.  Design: render the SKELETON first
+  (header + estimate line + file headings with tags and
+  sizes), fill hunks lazily per file section on
+  expansion/scroll (wash-on-demand per file section; magit's
+  section visibility is the natural hook), and chunk the
+  initial wash through the deferred queue so no single
+  render step exceeds a frame budget.  The budget estimate
+  line is pure and renders instantly either way.
+- L0: pure git + local db throughout; the lazy loader never
+  fetches anything new.
+- VERIFICATION: timing assertions in batch (first paint of a
+  pathological diff under a fixed budget), the torture suite,
+  and the deferred-queue-drained pattern for every async
+  piece.
+
+** Stability half LANDED — 2026-11-03/04
+
+The P0 stability work shipped ahead of the async lazy loading:
+safe rerenders with full rollback, the guarded wash, durable
+drafts, the missing-anchor confinement, the SHR point fix and
+the composer origin binding — the engineering log lives in the
+subsections below.  The megabyte-line torture fixture suite and
+the async lazy loader remain open.
+
+** Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
+
+*** The local-comment wipe (req-2026-11-03-001)
 
 =code-review-db--pullreq-raw-infos-update= blind-overwrote
 =raw-comments= with the fetch's fresh =.reviews.nodes=.  A full
@@ -5414,7 +5523,7 @@ Draft saves retain their internal id and replace atomically, so
 retrying after a render failure does not duplicate a comment.
 Sending an existing draft removes it only after forge success.
 
-** Forge's browse-url predicate took the dispatch head
+*** Forge's browse-url predicate took the dispatch head
 
 =browse-url= dispatches to the FIRST matching entry of
 =browse-url-default-handlers=.  forge registers a PREDICATE
@@ -5431,7 +5540,7 @@ steal precedence later.  General rule: any package that installs a
 first-match-wins =browse-url= handler must RE-ASSERT its position
 after other packages load, not just register once.
 
-** Probing lesson from the companion investigation
+*** Probing lesson from the companion investigation
 
 The earlier claim that stale loaded code explained the vanished
 faces was NOT established; recurrence on PR-1106 contradicted it.
@@ -5440,7 +5549,7 @@ instead of the washer's result.  This turned the washer's nil
 termination into non-nil and exhausted Emacs.  That crash was an
 investigation bug, not evidence about the user's diff.
 
-** Safe rerenders and durable drafts (req-2026-11-03-002 through -005)
+*** Safe rerenders and durable drafts (req-2026-11-03-002 through -005)
 
 - The mode used to be re-entered AFTER the diff was painted on
   every render.  A regression using Emacs's supported
@@ -5472,7 +5581,7 @@ investigation bug, not evidence about the user's diff.
   56 hunks, 1,366 painted added lines and its one pending comment.
   The pristine snapshot remains intact with permissions 0600.
 
-** Missing-anchor comment insertion crossed the file boundary — 2026-11-03
+*** Missing-anchor comment insertion crossed the file boundary — 2026-11-03
 
 The new incomplete-wash guard exposed a real insertion bug:
 =code-review-section-insert-comment= starts with =forward-line=
@@ -5502,7 +5611,7 @@ inspection or reload was performed.  The user had not knowingly
 restarted or reloaded the earlier fixes, so the exact live
 definition/configuration responsible remains unverified.
 
-** Displayed-review HTML measurement moved the washer point — 2026-11-04
+*** Displayed-review HTML measurement moved the washer point — 2026-11-04
 
 The user confirmed a full restart and still reproduced the guarded
 =code-review-wash-hunk= failure.  Stale runtime code was therefore
@@ -5558,27 +5667,142 @@ normal guarded washer.  Activation checked the new function
 docstrings without initiating a live render or submission; draft
 text was left untouched.  The user performs the live retest.
 
-* Future ideas
+* Phase 31 — Analysis and test-impact precision pass :STATUS:todo:
 
-- =code-compass= integrate information from code-compass analyses to prioritize review
+P1. Both features over-promise and get skipped (field report
+3+4); a skipped feature is negative value.
 
-  things like addding to an hotspot file, or the author not having experience with the module should contribute to inform the reviewer of how much attention to put in the review or what bits are most critical
+- PRECISION PASS on the phase 5 heuristics: high-confidence
+  findings only (per-kind thresholds, hard caps, no
+  near-duplicate noise), each finding class measured against
+  the reviewer's actual disposition history before it earns
+  its line.
+- ON DEMAND by default: the Analysis section collapses to a
+  one-line summary (counts only); the findings summon like
+  the dossier does.  The diff stays the focus.
+- TEST-IMPACT repositioning: the CI-GAMING detector STAYS
+  (adversarial-proof: it fires on evidence in the diff text);
+  the static coverage machinery (=[NO-TEST]= tags, the
+  covering-test mapping) moves behind the same on-demand
+  summon and its weight in the Analysis shrinks — on
+  AI-generated PRs "has tests" no longer means what it meant.
+- REMOVAL GATE: after a bounded trial on the precision list,
+  if the section still earns no dispositions, the phase 5
+  heuristics are REMOVED from the default surface entirely
+  (CI-gaming, delicacy and heat survive — the budget and the
+  beacon consume them).
+- VERIFICATION: ERT on thresholds/caps (pure), a render test
+  asserting the collapsed one-liner, and the removal gate
+  spelled out here so "keep tuning forever" is not the
+  default.
 
-  (Designed 2026-09-24 as phases 14-18: the heat reading order
-  and the coupling cross-check consume code-compass's code-maat
-  analyses when present, or a pure-elisp harvest otherwise; see
-  the shared harvest layer under phase 14.)
-- Commit buffer should reuse the same worktree context.
+* Phase 32 — The budget enforces boundaries: the polite bounce :STATUS:todo:
 
-DONE since: per-PR review buffers
-(=*Code Review: owner/repo#N*=, fallback =*Code Review*=) so
-several reviews stay open at once.  Each buffer remembers the
-database id of its PR; a buffer-local =post-command-hook= makes
-the DB current pullreq follow the buffer you act in, and comment
-buffers record the review buffer they were opened for.  The
-review/worktree locals are =permanent-local= so the
-=(code-review-mode)= activation that follows rendering does not
-wipe them.
+P1. Reframe (field report 5): the reviewer CANNOT block
+colleagues — but saying "I will not have time for this today,
+here is why, and here is the shape that would fit" is a WIN:
+the boundary is honest, the contributor gets actionable data,
+and the reviewer's time went to what deserved it.
+
+- The BOUNCE MESSAGE becomes the feature: generated from the
+  budget's own evidence —
+  - size: the diff shape's added lines and file count;
+  - complexity: the PHASE 15 delicacy reasons name the actual
+    files ("lib/x.py: blast radius 12 call sites") — the
+    hardest files first;
+  - the offer: "I could review some of it today if it is
+    split into reviewer-friendly parts".
+  A new template spec (%f for the delicate-file list) and a
+  rewrite of `code-review-review-bounce-template' toward the
+  polite, evidence-backed shape.  Still ONE KEY, still never
+  automatic: the reviewer decides, the message does the work.
+- The queue's bounce tier keeps RANKING (a bounded day lists
+  what fits); the estimate line and measured minutes are
+  untouched — the personal accounting (what do I read deeply
+  today) is the part that works and is used.
+- L0: everything above is pure shape+delicacy data; nothing
+  posts without the reviewer's keypress.
+- VERIFICATION: template substitution tests (the new spec),
+  an ERT asserting the delicate files appear in the message,
+  and the existing queue tests unchanged.
+
+* Phase 33 — PR search and the people cache :STATUS:todo:
+
+P1 (explicitly prioritized by the reviewer).  Completes phase
+7's open half: the last regular reason to open the GitHub site.
+
+- `code-review-search': the GitHub SEARCH API with the
+  reviewer's proven recipe —
+  #+begin_src elisp
+  (defvar me-github-pr-search-base
+    "sort=created&per_page=30&order=desc&q=")
+  (format "%sorg:WriterInternal+is:pr+author:%s+-review:approved+state:open+created:>=%s"
+          me-github-pr-search-base
+          user-id
+          (code-compass-request-date "5d"))
+  #+end_src
+  One search per author in `code-review-search-authors' (a
+  defcustom list of GitHub logins — MYSELF and the close
+  colleagues whose open PRs I review), fetched in PARALLEL
+  (deferred:parallel), pooled into ONE completing-read /
+  tabulated-list view (the phase 25 queue template: sortable
+  columns, RET opens, `g' refreshes).
+- THE PEOPLE CACHE (infrastructure the search needs): org
+  members fetched once and cached with a background TTL
+  refresh (the phase 14 harvest shape); searchable by DISPLAY
+  NAME, not just the slug — the reviewer knows the people,
+  not the usernames.  Feeds: the search-by-author filters
+  above, the =C-c @= mention completion, and (later) author
+  rendering.
+- ghub gotchas apply (the sync/`#s` unwrap trap, AGENTS.md);
+  L1 feature — needs the forge — with the probe-and-degrade
+  pattern (no forge: the command explains and stops).
+- VERIFICATION: ERT on the query builder (pure: authors, date
+  window, filters), response-parsing tests against recorded
+  fixture shapes, and the people-cache name matching.
+
+* Phase 34 — The diff is the focus: auxiliary sections become popups :STATUS:todo:
+
+P2. CI checks and friends take main-buffer estate the sorted
+diff should own (field report 5 of the consolidation round).
+
+- The commits/CI-checks section moves OUT of the main flow
+  into a POPUP, the way `d' summons the PR description
+  (`code-review-popup-pr-description' is the template): a
+  keyable popup with the checks, their details and the jump
+  buttons; nothing inline but a one-line summary with the
+  count.
+- GENERALIZE the pattern: any section that is not the sorted
+  diff (CI, description, feedback heading) gets the
+  popup-or-one-line treatment — the review buffer's main
+  space is the diff, everything else is summoned.
+- L0 throughout; the popups reuse the rendered sections, no
+  new fetches.
+- VERIFICATION: render tests asserting the inline footprint
+  (one line + counts), popup content tests, and the
+  existing anchor-jump tests (phase 7's discussion anchors
+  must still land when their section moved into a popup).
+
+* Phase 35 — Importance-weighted review progress :STATUS:todo:
+
+P2. The N/M beacon is encouraging (field report: it works) —
+but flat.  Reviewing the two hotspot files IS more of the
+review than reviewing eight cold ones.
+
+- WEIGHT the completion: file importance from the phase 14
+  heat (HOT/WARM/COLD), the phase 15 delicacy scores and the
+  code-compass hotspots when present — the beacon shows
+  weighted completion ("42% of the meaning reviewed") beside
+  the flat count, and the viewed-marking feels like progress
+  proportional to what the files actually are.
+- The same weight feeds the queue: "meaning left" per open PR
+  ranks what still deserves the day's budget.
+- L0: heat + delicacy are pure-git signals already computed
+  in the render; code-compass hotspots only sharpen the
+  weights when present.
+- VERIFICATION: pure weight arithmetic ERT (known fixtures:
+  hot+viewed vs cold+viewed orderings flip), a beacon render
+  test with the weighted string, no new harvests.
 
 * References — phase research (phases 14-19: 2026-09-24; phase 20: 2026-09-28; phases 22-26: 2026-09-29)
 
