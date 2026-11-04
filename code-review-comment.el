@@ -176,25 +176,29 @@ Returns plist with :side :line and optionally :start-side :start-line."
 (defun code-review-comment-add (&optional msg)
   "Add comment.
 Optionally define a MSG."
-  (let ((buffer (get-buffer-create code-review-comment-buffer-name)))
+  (let ((buffer (get-buffer-create code-review-comment-buffer-name))
+        (review-buffer (code-review-review-buffer)))
     (with-current-buffer buffer
       (erase-buffer)
       (insert (if msg msg code-review-comment-buffer-msg))
       (insert ?\n)
       (switch-to-buffer-other-window buffer)
-      (code-review-comment-mode))))
+      (code-review-comment-mode)
+      (setq code-review-comment-review-buffer review-buffer))))
 
 (defun code-review-comment-edit ()
   "Edit comment."
   (with-slots (value) (magit-current-section)
-    (let ((buffer (get-buffer-create code-review-comment-buffer-name)))
+    (let ((buffer (get-buffer-create code-review-comment-buffer-name))
+          (review-buffer (code-review-review-buffer)))
       (with-current-buffer buffer
         (erase-buffer)
         (insert (oref value msg))
         (insert ?\n)
         (goto-char (point-min)))
       (switch-to-buffer-other-window buffer)
-      (code-review-comment-mode))))
+      (code-review-comment-mode)
+      (setq code-review-comment-review-buffer review-buffer))))
 
 ;;; handlers ADD or EDIT
 
@@ -425,6 +429,21 @@ stay closed."
 
 ;;; handlers COMMIT
 
+(defun code-review-comment--save-draft (obj entry)
+  "Persist OBJ's draft ENTRY, replacing an earlier save atomically.
+Keep its identity on OBJ so a render failure followed by retry cannot
+duplicate the comment."
+  (let* ((previous (and (slot-boundp obj 'internalId) (oref obj internalId)))
+         (node (car (a-get-in entry '(comments nodes))))
+         (id (or previous (a-get node 'internal-id)))
+         (entry (a-assoc-in entry '(comments nodes)
+                            (list (a-assoc node 'internal-id id)))))
+    (closql-with-transaction (code-review-db)
+      (when previous
+        (code-review-db-delete-raw-comment previous))
+      (code-review-db--pullreq-raw-comments-update entry))
+    (oset obj internalId id)))
+
 (cl-defmethod code-review-comment-handler-commit ((obj code-review-reply-comment-section) default-buff-msg)
   "Commit the reply OBJ and clean the DEFAULT-BUFF-MSG from the text if any."
   (let* ((reply-pos (- (+ (oref obj position)
@@ -444,7 +463,9 @@ stay closed."
                                           (outdated)
                                           (local?)
                                           (reply? . t)))))))
-    (code-review-db--pullreq-raw-comments-update raw-comment)
+    (when (string-empty-p clean-msg)
+      (user-error "Comment is empty"))
+    (code-review-comment--save-draft obj raw-comment)
     (code-review--build-buffer)
     (setq code-review-comment-uncommitted nil)))
 
@@ -463,7 +484,7 @@ stay closed."
                                           (path . ,(oref obj path))
                                           ;; keep position slot out for GitHub; internal uses may read it as nil
                                           (position . ,(oref obj position))
-                                          (line . ,(ignore-errors (and (setq x obj) (oref obj line))))
+                                          (line . ,(oref obj line))
                                           (side . ,(ignore-errors (oref obj side)))
                                           (startLine . ,(ignore-errors (oref obj start-line)))
                                           (startSide . ,(ignore-errors (oref obj start-side)))
@@ -474,21 +495,23 @@ stay closed."
                                           (line-type . ,(oref obj line-type))
                                           (local? . t)))))))
 
-    (when (oref obj edit?)
-      ;;; delete old comment from raw
-      (code-review-db-delete-raw-comment (oref obj internalId)))
-
+    (when (string-empty-p clean-msg)
+      (user-error "Comment is empty"))
     (if (oref obj send?)
-        (progn
+        (let ((pr-id code-review-db--pullreq-id)
+              (draft-id (and (slot-boundp obj 'internalId) (oref obj internalId))))
           (oset obj msg clean-msg)
           (code-review-new-code-comment
            (code-review-db-get-pullreq)
            obj
            (lambda (&rest _)
-             (let ((code-review-section-full-refresh? t))
+             (let ((code-review-section-full-refresh? t)
+                   (code-review-db--pullreq-id pr-id))
+               (when draft-id
+                 (code-review-db-delete-raw-comment draft-id))
                (code-review--build-buffer buff-name)))))
       (progn
-        (code-review-db--pullreq-raw-comments-update raw-comment)
+        (code-review-comment--save-draft obj raw-comment)
         (code-review--build-buffer buff-name)))))
 
 (cl-defmethod code-review-comment-handler-commit ((obj code-review-comment-promote-to-issue) _default-buff-msg)
@@ -529,7 +552,7 @@ comment buffer; the helper header is stripped first."
                     (oref obj msg)
                     code-review-comment-edit-remote-msg)))
     (if (string-empty-p new-body)
-        (message "Empty comment: edit not sent.")
+        (user-error "Comment is empty")
       (code-review-update-comment
        pr kind comment-id new-body
        (lambda (&rest _)
@@ -538,89 +561,94 @@ comment buffer; the helper header is stripped first."
            (setq code-review-db--pullreq-id pr-id)
            (code-review--build-buffer buff-name nil "Comment edited")))))))
 
+(defun code-review-comment--refresh (pr)
+  "Refresh PR without depending on the current review's global context."
+  (let ((code-review-db--pullreq-id (oref pr id)))
+    (code-review--build-buffer (code-review-pr-buffer-name pr))))
+
+(defun code-review-comment--commit-text (pr comment-text)
+  "Dispatch COMMENT-TEXT for PR while the composer remains available."
+  (cond
+   (code-review-comment-description?
+    (oset pr raw-infos (-> (oref pr raw-infos)
+                          (a-assoc 'bodyText comment-text)
+                          (a-assoc 'bodyHTML nil)))
+    (code-review-send-description
+     pr
+     (lambda ()
+       (code-review-db-update pr)
+       (code-review-comment--refresh pr)
+       (code-review-comment-reset-global-vars))))
+   (code-review-comment-title?
+    (oset pr title comment-text)
+    (code-review-send-title
+     pr
+     (lambda ()
+       (code-review-db-update pr)
+       (code-review-comment--refresh pr)
+       (code-review-comment-reset-global-vars))))
+   (code-review-comment-feedback?
+    (let ((msg (code-review-utils--comment-clean-msg
+                comment-text code-review-comment-feedback-msg)))
+      (code-review-db--pullreq-feedback-update msg)
+      (code-review--build-buffer)
+      (code-review-comment-reset-global-vars)))
+   (code-review-promote-comment-to-issue?
+    (oset code-review-comment-uncommitted buffer-text comment-text)
+    (code-review-comment-handler-commit
+     code-review-comment-uncommitted code-review-comment-buffer-msg)
+    (code-review-comment-reset-global-vars))
+   (code-review-comment-send?
+    (oset code-review-comment-uncommitted msg comment-text)
+    (code-review-comment-handler-commit
+     code-review-comment-uncommitted code-review-comment-single-comment-msg)
+    (code-review-comment-reset-global-vars))
+   (code-review-comment-single-comment?
+    (let ((msg (code-review-utils--comment-clean-msg
+                comment-text code-review-comment-single-comment-msg))
+          (callback (lambda (&rest _)
+                      (let ((code-review-section-full-refresh? t))
+                        (code-review-comment--refresh pr)
+                        (code-review-comment-reset-global-vars)))))
+      (when (string-empty-p msg)
+        (user-error "Comment is empty"))
+      (code-review-new-issue-comment pr msg callback)))
+   (t
+    (oset code-review-comment-uncommitted msg comment-text)
+    (code-review-comment-handler-commit
+     code-review-comment-uncommitted
+     (if code-review-comment-suggestion?
+         code-review-comment-suggestion-msg
+       code-review-comment-buffer-msg))
+    (code-review-comment-reset-global-vars))))
+
 ;;;###autoload
 (defun code-review-comment-commit ()
-  "Commit comment."
+  "Commit to the composer's recorded review, retaining it if saving fails."
   (interactive)
-  (unwind-protect
-      (let* ((buffer (get-buffer code-review-comment-buffer-name))
-             (comment-text (string-trim
-                            (with-current-buffer buffer
-                              (save-excursion
-                                (buffer-substring-no-properties (point-min) (point-max))))))
-             (pr (code-review-db-get-pullreq)))
-
-        (kill-buffer (current-buffer))
-        (if (= 1 (length (window-list (window-frame (selected-window)))))
-            (delete-frame (window-frame (selected-window)))
-          (delete-window (selected-window)))
-
-        (cond
-
-         (code-review-comment-description?
-          (oset pr raw-infos (-> (oref pr raw-infos)
-                                 (a-assoc 'bodyText comment-text)
-                                 (a-assoc 'bodyHTML nil)))
-          (code-review-send-description
-           pr
-           (lambda ()
-             (code-review-db-update pr)
-             (code-review--build-buffer)
-             (code-review-comment-reset-global-vars))))
-
-         (code-review-comment-title?
-          (oset pr title comment-text)
-          (code-review-send-title
-           pr
-           (lambda ()
-             (code-review-db-update pr)
-             (code-review--build-buffer)
-             (code-review-comment-reset-global-vars))))
-
-         (code-review-comment-feedback?
-          (let ((msg
-                 (code-review-utils--comment-clean-msg
-                  comment-text
-                  code-review-comment-feedback-msg)))
-            (code-review-db--pullreq-feedback-update msg)
-            (code-review--build-buffer)
-            (code-review-comment-reset-global-vars)))
-
-         (code-review-promote-comment-to-issue?
-          (progn
-            (oset code-review-comment-uncommitted buffer-text comment-text)
-            (code-review-comment-handler-commit
-             code-review-comment-uncommitted
-             code-review-comment-buffer-msg)
-            (code-review-comment-reset-global-vars)))
-
-         (code-review-comment-send?
-          (progn
-            (oset code-review-comment-uncommitted msg comment-text)
-            (code-review-comment-handler-commit
-             code-review-comment-uncommitted
-             code-review-comment-single-comment-msg)
-            (code-review-comment-reset-global-vars)))
-
-         (code-review-comment-single-comment?
-          (let ((msg
-                 (code-review-utils--comment-clean-msg
-                  comment-text
-                  code-review-comment-single-comment-msg))
-                (callback (lambda (&rest _)
-                            (let ((code-review-section-full-refresh? t))
-                              (code-review--build-buffer)
-                              (code-review-comment-reset-global-vars)))))
-            (code-review-new-issue-comment pr msg callback)))
-         (t
-          (progn
-            (oset code-review-comment-uncommitted msg comment-text)
-            (code-review-comment-handler-commit
-             code-review-comment-uncommitted
-             (if code-review-comment-suggestion?
-                 code-review-comment-suggestion-msg
-               code-review-comment-buffer-msg))
-            (code-review-comment-reset-global-vars)))))))
+  (let* ((buffer (get-buffer code-review-comment-buffer-name))
+         (window (get-buffer-window buffer t))
+         (review-buffer (buffer-local-value 'code-review-comment-review-buffer buffer))
+         (code-review-db--pullreq-id
+          (if review-buffer
+              (or (and (buffer-live-p review-buffer)
+                       (buffer-local-value 'code-review-review-buffer-pr-id review-buffer))
+                  (user-error "Original review is no longer available"))
+            code-review-db--pullreq-id))
+         (comment-text (string-trim
+                        (with-current-buffer buffer
+                          (buffer-substring-no-properties (point-min) (point-max)))))
+         (pr (or (code-review-db-get-pullreq)
+                 (user-error "Original review is no longer available"))))
+    (code-review-comment--commit-text pr comment-text)
+    ;; The handler must persist the draft before the composer disappears.
+    ;; Use the captured buffer/window: rendering can change the selection.
+    (kill-buffer buffer)
+    (when (window-live-p window)
+      (if (= 1 (length (window-list (window-frame window))))
+          (when (> (length (frame-list)) 1)
+            (delete-frame (window-frame window)))
+        (delete-window window)))))
 
 ;;; ----
 

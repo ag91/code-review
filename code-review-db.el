@@ -501,7 +501,8 @@ One row per (OWNER REPO NUMBER) exists at any time: rows for the
 same PR left over from earlier opens (and their
 buffer/path/comment children) are deleted first, so opening a PR
 always starts from fresh path bookkeeping.  Carry the previous
-diff snapshot and viewed marks into the new row for the same review."
+diff snapshot, pending comments and viewed marks into the new row
+for the same review."
   (let* ((db (code-review-db))
          (pr-id (uuidgen-4))
          (rows (emacsql db [:select [id] :from pullreq
@@ -523,7 +524,8 @@ diff snapshot and viewed marks into the new row for the same review."
                       (code-review-db--reviewed-rows (oref previous id)))))
     (when same-review
       (oset obj raw-diff (oref previous raw-diff))
-      (oset obj raw-infos (oref previous raw-infos)))
+      (oset obj raw-infos (oref previous raw-infos))
+      (oset obj raw-comments (oref previous raw-comments)))
     (closql-with-transaction db
       (dolist (row rows)
         (code-review-db--delete-pullreq-tree db (car row)))
@@ -540,6 +542,28 @@ diff snapshot and viewed marks into the new row for the same review."
     (oset pr sha sha-value)
     (closql-insert (code-review-db) pr t)))
 
+(defun code-review-db--local-comment-entry-p (entry)
+  "Return non-nil when raw-comments ENTRY holds unsubmitted local work.
+Local comment entries are built elisp-side and carry the
+\"LOCAL COMMENT\" state (the same signal
+`code-review-local--pending-comments' keys on).  Pending replies
+instead carry an internal UUID and reply flag; neither signal
+comes from forge-fetched reviews."
+  (or (equal (a-get entry 'state) "LOCAL COMMENT")
+      (--any? (and (a-get it 'internal-id) (a-get it 'reply?))
+              (a-get-in entry '(comments nodes)))))
+
+(defun code-review-db--reconcile-raw-comments (new-reviews old-reviews)
+  "Merge OLD-REVIEWS' local-comment entries into NEW-REVIEWS.
+`code-review-db--pullreq-raw-infos-update' receives the forge's
+fresh `.reviews.nodes'; a blind overwrite of `raw-comments' erased
+every LOCAL COMMENT the reviewer had not submitted yet.  Forge
+data comes first; unsubmitted comments and replies follow it.
+Sending a saved local comment removes its draft only after the
+forge confirms success."
+  (append new-reviews
+          (-filter #'code-review-db--local-comment-entry-p old-reviews)))
+
 (defun code-review-db--pullreq-raw-infos-update (infos)
   "Save INFOS to the PULLREQ entity."
   (let ((pullreq (code-review-db-get-pullreq)))
@@ -551,7 +575,9 @@ diff snapshot and viewed marks into the new row for the same review."
       (oset pullreq head-ref-name .headRefName)
       (oset pullreq description .bodyHTML)
       (oset pullreq sha .headRefOid)
-      (oset pullreq raw-comments .reviews.nodes)
+      (oset pullreq raw-comments
+            (code-review-db--reconcile-raw-comments
+             .reviews.nodes (oref pullreq raw-comments)))
       (oset pullreq assignees .assignees.nodes)
       (oset pullreq milestones `((title . ,.milestone.title)
                                  (perc . ,.milestone.progressPercentage)
@@ -691,20 +717,16 @@ IDENTIFIER can be our local 'internal-id' (string UUID) or the provider
                        ((stringp identifier) identifier)
                        (t (format "%s" identifier))))
          (new-comments
-          (-filter
-           (lambda (c)
-             (let* ((nodes (a-get-in c (list 'comments 'nodes)))
-                    (res (-filter
-                          (lambda (node)
-                            (let* ((iid (a-get node 'internal-id))
-                                   (dbid (a-get node 'databaseId))
-                                   (dbid-str (when dbid (number-to-string dbid)))
-                                   (fullid (a-get node 'fullDatabaseId)))
-                              (not (or (and iid (string-equal iid id-str))
-                                       (and dbid-str (string-equal dbid-str id-str))
-                                       (and fullid (string-equal fullid id-str))))))
-                          nodes)))
-               res))
+          (--keep
+           (let ((nodes
+                  (-remove
+                   (lambda (node)
+                     (--any? (and it (equal (format "%s" it) id-str))
+                             (list (a-get node 'internal-id)
+                                   (a-get node 'databaseId)
+                                   (a-get node 'fullDatabaseId))))
+                   (a-get-in it '(comments nodes)))))
+             (when nodes (a-assoc-in it '(comments nodes) nodes)))
            (oref pr raw-comments))))
     (oset pr raw-comments new-comments)
     (closql-insert (code-review-db) pr t)))

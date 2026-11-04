@@ -452,15 +452,26 @@ with a message."
 
 ;;; Handler registration
 
+;;;###autoload
 (defun code-review-browse-url-install ()
   "Register the GitHub PR handler in `browse-url-default-handlers'.
 Idempotent.  Run automatically when this file loads; also run at
 startup through the package autoloads, so PR links open inside
 Emacs even before any code-review command has been used."
   (interactive)
-  (unless (rassoc 'code-review-browse-url browse-url-default-handlers)
-    (push (cons code-review-browse-url-regexp 'code-review-browse-url)
-          browse-url-default-handlers)))
+  (let ((ours (rassoc 'code-review-browse-url browse-url-default-handlers)))
+    (if ours
+        ;; Already registered: keep our entry at the HEAD of the
+        ;; list.  `browse-url' dispatches to the FIRST matching
+        ;; handler, and forge registers a predicate handler for the
+        ;; same github.com URLs.  When forge loads after us, its
+        ;; add-to-list lands at the head and PR links open in forge
+        ;; instead of code-review.
+        (unless (equal ours (car browse-url-default-handlers))
+          (setq browse-url-default-handlers
+                (cons ours (delete ours browse-url-default-handlers))))
+      (push (cons code-review-browse-url-regexp 'code-review-browse-url)
+            browse-url-default-handlers))))
 
 (defun code-review-browse-url-uninstall ()
   "Remove the code-review handler from `browse-url-default-handlers'."
@@ -477,11 +488,16 @@ Emacs even before any code-review command has been used."
 ;; Register at startup as well: the package autoloads execute this
 ;; form when Emacs starts, before `browse-url' itself is loaded (the
 ;; `with-eval-after-load' defers until the first link is opened).
+;; Route through the install so the forge-entry reorder (see above)
+;; runs at browse-url load time too — forge may load after us and
+;; take the head of the dispatch list.
 ;;;###autoload
 (with-eval-after-load 'browse-url
-  (add-to-list 'browse-url-default-handlers
-               '("\\`https?://github\\.com/[^/?#]+/[^/?#]+/pull/[0-9]+"
-                 . code-review-browse-url)))
+  (code-review-browse-url-install))
+
+;;;###autoload
+(with-eval-after-load 'forge
+  (code-review-browse-url-install))
 
 (provide 'code-review-browse)
 ;;; code-review-browse.el ends here

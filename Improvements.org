@@ -62,10 +62,9 @@ DONE (implementation notes):
   rules, noise rules, textual detection and the worktree check
   into a hash table used by the wash (tags, collapse) and by
   focus-mode filtering.  Classification happens on every render
-  and is deliberately NOT permanent-local (the re-activation of
-  =code-review-mode= at the end of =code-review--trigger-hooks=
-  kills buffer-locals; everything reads it during the wash, so
-  this is fine).
+  and is permanent-local for compatibility with earlier mode
+  re-activation.  As of 2026-11-03 the mode is initialized before
+  rendering and is no longer re-entered on every refresh.
 - Whitespace-only files: textual pairwise hunk comparison
   (=code-review--diff--block-ws-only-p=) plus, when the worktree
   exists, one =git diff --no-renames -w --ignore-blank-lines
@@ -5391,6 +5390,173 @@ suite run to learn):
   spans (insert before the heading's trailing newline, delete the
   exact tag span), and inserted text must capture its neighbor's
   text properties (the section identity rides on them).
+
+* Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
+
+** The local-comment wipe (req-2026-11-03-001)
+
+=code-review-db--pullreq-raw-infos-update= blind-overwrote
+=raw-comments= with the fetch's fresh =.reviews.nodes=.  A full
+refresh therefore ERASED pending LOCAL COMMENT entries.  Reopening
+also lost them independently: =--pullreq-create= regenerated the
+row without copying =raw-comments=.  The first refresh-only fix
+did NOT fix reopening.  The recovery script for the two lost
+PR-1066 comments manually merged them from a stale db copy.
+
+The fix is a reconcile
+(=code-review-db--reconcile-raw-comments=): the forge data comes
+first, the old entries whose review-level state is "LOCAL
+COMMENT" (the exact signal =code-review-local--pending-comments=
+keys on) and pending reply entries are preserved after it.
+Reopening the same review now carries =raw-comments= into the new
+row; a different local diff range does not inherit its drafts.
+Draft saves retain their internal id and replace atomically, so
+retrying after a render failure does not duplicate a comment.
+Sending an existing draft removes it only after forge success.
+
+** Forge's browse-url predicate took the dispatch head
+
+=browse-url= dispatches to the FIRST matching entry of
+=browse-url-default-handlers=.  forge registers a PREDICATE
+handler (=forge--browse-url-handler-predicate=) for the same
+github.com URLs; when forge loads after code-review, its
+=add-to-list= lands at the HEAD and GitHub PR links opened in
+forge instead of the code-review buffer.  The registration now
+re-asserts the code-review entry at the head on every install
+(=code-review-browse-url-install= is idempotent AND reorder-safe),
+and the autoloads' =with-eval-after-load 'browse-url= routes
+through the now-autoloaded installer.  A second callback reasserts
+the registration after forge loads; otherwise forge can still
+steal precedence later.  General rule: any package that installs a
+first-match-wins =browse-url= handler must RE-ASSERT its position
+after other packages load, not just register once.
+
+** Probing lesson from the companion investigation
+
+The earlier claim that stale loaded code explained the vanished
+faces was NOT established; recurrence on PR-1106 contradicted it.
+An instrumentation wrapper subsequently returned its growing log
+instead of the washer's result.  This turned the washer's nil
+termination into non-nil and exhausted Emacs.  That crash was an
+investigation bug, not evidence about the user's diff.
+
+** Safe rerenders and durable drafts (req-2026-11-03-002 through -005)
+
+- The mode used to be re-entered AFTER the diff was painted on
+  every render.  A regression using Emacs's supported
+  =font-lock-defontify= cleanup hook reproduces erased faces.
+  Initialize the mode BEFORE rendering, once per buffer.  This
+  demonstrates a real failure path, but the exact hook/configuration
+  responsible for the original live incident remains unconfirmed.
+- Keep the previous review's text, markers, section tree and
+  folding overlays in a private backup buffer during the wash.
+  An error or quit restores them; success discards the backup.
+  A partial wash now fails explicitly instead of leaving raw,
+  uncolored diff text on screen.
+- Owned wash loops preserve nil termination and reject a truthy
+  result that neither advances point nor consumes input.  Folding
+  a hidden section preserves the washer's point.
+- The comment editor closes only after the synchronous save
+  handler returns successfully.  Persistence failure keeps the
+  editor available; a later asynchronous render failure leaves
+  the already-persisted draft intact.  This does not change
+  asynchronous remote-send error recovery.
+- The initial post-crash validation used isolated batch Emacs
+  processes and copied sqlite files, without live reloads or
+  renders.  The later, explicitly approved bounded live diagnostic
+  is documented below.
+- Validation: =make compile= completed with zero errors and fresh
+  bytecode (existing warnings remain); =make test= passed 402/402,
+  including fresh-process startup checks in three load orders.
+  Three renders of the PR-1106 snapshot each retained 18 files,
+  56 hunks, 1,366 painted added lines and its one pending comment.
+  The pristine snapshot remains intact with permissions 0600.
+
+** Missing-anchor comment insertion crossed the file boundary — 2026-11-03
+
+The new incomplete-wash guard exposed a real insertion bug:
+=code-review-section-insert-comment= starts with =forward-line=
+because inline comments are inserted AFTER the addressed patch
+line.  The missing-anchor fallback reused it while already
+positioned at the NEXT file's =diff --git= header.  Saving a
+comment whose anchor was not found skipped that header, inserted
+the comment among the extended headers, and made the outer wash
+return nil.  Without the guard the remaining files stayed raw and
+uncolored; with the guard the save reported "Code review stopped
+before the end of the diff".
+
+The fallback now narrows to an initially empty insertion region.
+Both the leading =forward-line= and nested outdated-hunk washers
+are confined to the inserted comment text, never the remaining
+raw diff.  Req-2026-11-03-007 exercises the actual composer save
+with two stale anchors before another file.  Companion tests cover
+the final file and an outdated hunk lacking a trailing newline.
+The safety check and draft-preserving rollback remain enabled.
+
+Validation: =make compile= reported zero errors and fresh renderer
+bytecode; =make test= passed 405/405.  The current PR-1106 database
+snapshot's two pending comments render successfully.  Adding an
+unmatched draft to a COPY of that snapshot also retained all 20
+files and 61 hunks on two successive renders.  No live Emacs
+inspection or reload was performed.  The user had not knowingly
+restarted or reloaded the earlier fixes, so the exact live
+definition/configuration responsible remains unverified.
+
+** Displayed-review HTML measurement moved the washer point — 2026-11-04
+
+The user confirmed a full restart and still reproduced the guarded
+=code-review-wash-hunk= failure.  Stale runtime code was therefore
+not an adequate explanation.  With the user's explicit permission,
+a diagnostic retained at most 32 function/position/size events,
+preserved every wrapped return value, and never initiated a render.
+The user-triggered capture showed an outdated-thread insertion
+moving point from 128,111 back to 42,567.  The outer hunk then
+failed the progress guard (128,094 -> 42,567); the semantic painter
+did not move point, and render depth remained one.
+
+The missing batch condition was a review DISPLAYED in a nonselected
+window with =shr-use-fonts= enabled.  =code-review--html-written-loc=
+renders HTML into a scratch buffer to estimate its height.  SHR's
+pixel/table measurements temporarily display that scratch buffer
+inside =save-window-excursion=.  Restoring the window configuration
+also restores the review window's old point, even though the caller
+is currently washing much later in that buffer.  =with-temp-buffer=
+restores the current buffer, but does NOT protect its point from
+these window-side effects.
+
+An isolated PR snapshot reproduced the backward movement in the
+estimator (144,259 -> 137,890) and the incomplete-diff failure.  A
+small real-SHR table fixture reproduced point 150 becoming 10.
+The estimator now uses =save-excursion= around the complete
+measurement.  Req-2026-11-04-001 and its companion exercise the
+displayed-window condition and an actual composer save with an
+inline outdated HTML table, including the remaining diff's face.
+Both tests failed before the fix and pass afterward.
+
+The reported redirect exposed a separate composer bug.  The composer
+remembered a review buffer, but saving still used the GLOBAL current
+PR; another review or callback could replace it while the composer
+was open.  Add/edit now capture the actual originating review before
+switching windows.  Commit binds the DB context to that review, and
+title/description/issue-comment callbacks capture their refresh PR.
+A closed or unavailable origin fails without falling back to another
+PR.  Empty local comments, replies, issue comments and remote edits
+raise a user error before persistence/submission and leave the
+composer open.  Req-2026-11-04-002/-003 and companion tests cover
+origin capture, context drift, editing, closed origins, empty text,
+and asynchronous refresh.  Remote-send failure recovery otherwise
+remains unchanged.
+
+Validation: full =make compile= output inspected, zero errors and
+fresh bytecode; =make test= passed 413/413.  Three displayed,
+font-measured renders of the preserved PR-1106 snapshot retained
+20 files, 65 hunks and 1,653 painted added lines each.  The pristine
+snapshot's five pending entries remain untouched.  Generated native
+compilation caches were purged.  On explicit approval, the compiled
+fix modules were loaded and the diagnostic removed, restoring the
+normal guarded washer.  Activation checked the new function
+docstrings without initiating a live render or submission; draft
+text was left untouched.  The user performs the live retest.
 
 * Future ideas
 

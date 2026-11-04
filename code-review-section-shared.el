@@ -207,28 +207,32 @@ refinement details)."
       (goto-char (oref section start))
       (magit-section-paint section nil))))
 (defun code-review--html-written-loc (body &optional indent)
-  "Compute how many lines the HTML BODY will have in the buffer.
+  "Compute HTML BODY's line count, preserving the review point.
 INDENT is an optional."
-  (let ((shr-indentation (* (or indent 0) (shr-string-pixel-width "-")))
-        (image-scaling-factor code-review-section-image-scaling)
-        (shr-width code-review-fill-column)
-        start
-        dom)
-    (with-temp-buffer
-      (insert body)
-      (setq dom (libxml-parse-html-region (point-min) (point-max))))
-    (-> (with-temp-buffer
-          (setq start (point))
-          (insert " ")
-          (narrow-to-region start (1+ start))
-          (goto-char start)
-          (shr-insert-document dom)
-          ;; delete the inserted " "
-          (delete-char 1)
-          (buffer-substring-no-properties (point-min) (point-max)))
-        (split-string "\n")
-        (length)
-        (- 1))))
+  ;; SHR can temporarily display its scratch buffer for pixel measurements.
+  ;; Restoring that window configuration also restores other windows' points,
+  ;; including this review's stale window-point during a composer save.
+  (save-excursion
+    (let ((shr-indentation (* (or indent 0) (shr-string-pixel-width "-")))
+          (image-scaling-factor code-review-section-image-scaling)
+          (shr-width code-review-fill-column)
+          start
+          dom)
+      (with-temp-buffer
+        (insert body)
+        (setq dom (libxml-parse-html-region (point-min) (point-max))))
+      (-> (with-temp-buffer
+            (setq start (point))
+            (insert " ")
+            (narrow-to-region start (1+ start))
+            (goto-char start)
+            (shr-insert-document dom)
+            ;; delete the inserted " "
+            (delete-char 1)
+            (buffer-substring-no-properties (point-min) (point-max)))
+          (split-string "\n")
+          (length)
+          (- 1)))))
 (defun code-review--dom-string (dom)
   "Return string of DOM."
   (mapconcat (lambda (sub)
@@ -320,7 +324,8 @@ buffers directly, so sections that should start collapsed
 explicitly."
   (when (and (oref section hidden)
              (not (eq section magit-root-section)))
-    (magit-section-hide section)))
+    (save-excursion
+      (magit-section-hide section))))
 
 (defun code-review-section--file-collapse-p (path info)
   "Return PATH's default collapse policy from classification INFO.

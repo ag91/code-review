@@ -558,19 +558,24 @@ Safeguards against non-outdated/local comments accidentally passed in."
              safe-hunk metadata1 hunk-comments amount-loc-cell)))))))
 (defun code-review-section-insert-outdated-comment-missing (path-name missing-paths grouped-comments)
   "Write missing outdated comments in the end of the current path.
-We need PATH-NAME, MISSING-PATHS, and GROUPED-COMMENTS to make this work."
-  (dolist (path-pos missing-paths)
-    (let* ((comment-written-pos
-            (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal)
-                0))
-           (comments (code-review-utils--comment-get grouped-comments path-pos))
-           (first (car comments)))
-      (when comments
-        (if (and (ignore-errors (oref first outdated?))
-                 (oref first outdated?))
-            (code-review-section-insert-outdated-comment comments comment-written-pos)
-          (code-review-section-insert-comment comments comment-written-pos)))
-      (push path-pos code-review-section-hold-written-comment-ids))))
+We need PATH-NAME, MISSING-PATHS, and GROUPED-COMMENTS to make this work.
+Unlike inline insertion, point is already AFTER the file's hunks.
+Confine insertion to an empty region so the comment inserter's
+`forward-line' and any outdated-hunk wash cannot consume the next file."
+  (save-restriction
+    (narrow-to-region (point) (point))
+    (dolist (path-pos missing-paths)
+      (let* ((comment-written-pos
+              (or (alist-get path-name code-review-section-hold-written-comment-count nil nil 'equal)
+                  0))
+             (comments (code-review-utils--comment-get grouped-comments path-pos))
+             (first (car comments)))
+        (when comments
+          (if (and (ignore-errors (oref first outdated?))
+                   (oref first outdated?))
+              (code-review-section-insert-outdated-comment comments comment-written-pos)
+            (code-review-section-insert-comment comments comment-written-pos)))
+        (push path-pos code-review-section-hold-written-comment-ids)))))
 (defun code-review-section-insert-comment (comments amount-loc)
   "Insert COMMENTS to PULLREQ-ID keep the AMOUNT-LOC of comments written.
 A quite good assumption: every comment in an outdated hunk will be outdated."

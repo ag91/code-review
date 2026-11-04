@@ -475,4 +475,56 @@ changed; everything else stays."
         (should (member "-1,2 +1,3" keys))
         (should-not (member "-99,9 +99,9" keys))))))
 
+;;; req-2026-11-03-001: full-refresh-preserves-unsubmitted-local-comments
+;; covers: code-review-db.el
+;; covers-fn: code-review-db--pullreq-raw-infos-update,
+;; code-review-db--reconcile-raw-comments
+;; enforcement: test
+(ert-deftest code-review-db/req-2026-11-03-001-full-refresh-keeps-local-comments ()
+  "WHEN a full refresh fetches fresh forge reviews THE SYSTEM SHALL
+keep the row's unsubmitted LOCAL COMMENT entries in raw-comments,
+so a refresh (or a re-open of the PR) never erases the reviewer's
+pending work."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    ;; the reviewer added a pending local comment earlier
+    (code-review-db--pullreq-raw-comments-update
+     '((author (login . "me"))
+       (state . "LOCAL COMMENT")
+       (comments (nodes ((internal-id . "id1")
+                         (bodyText . "this duplicate logic must go")
+                         (path . "lib.py")
+                         (line . 3)
+                         (side . "RIGHT")
+                         (local? . t))))))
+    ;; a full refresh fetches forge data: one review node, one comment
+    (code-review-db--pullreq-raw-infos-update
+     '((title . "t") (state . "OPEN")
+       (baseRefName . "main") (headRefName . "pr")
+       (bodyHTML . "d") (headRefOid . "abc")
+       (reviews (nodes ((author (login . "alice"))
+                         (state . "CHANGES_REQUESTED")
+                         (comments (nodes ((body . "please fix")
+                                           (path . "lib.py")
+                                           (line . 3)
+                                           (databaseId . 42)))))))))
+    ;; the forge review is there...
+    (let ((raw (oref (code-review-db-get-pullreq) raw-comments)))
+      (should (= (length (-filter
+                          (lambda (entry)
+                            (equal (a-get entry 'state) "CHANGES_REQUESTED"))
+                          raw))
+                 1))
+      ;; ...and the LOCAL COMMENT entry survived the overwrite
+      (let ((locals (-filter #'code-review-db--local-comment-entry-p raw)))
+        (should (= (length locals) 1))
+        (should (equal (a-get-in (car locals) '(comments nodes))
+                       (list
+                        '((internal-id . "id1")
+                          (bodyText . "this duplicate logic must go")
+                          (path . "lib.py")
+                          (line . 3)
+                          (side . "RIGHT")
+                          (local? . t)))))))))
+
 ;;; code-review-db-test.el ends here

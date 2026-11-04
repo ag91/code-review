@@ -63,6 +63,7 @@
 (require 'code-review-section-analysis)
 (require 'code-review-section-criteria)
 (require 'code-review-section-comment)
+(require 'code-review-render)
 (require 'code-review-section-wash)
 ;; the render's default folds (the defcustoms + the fold walkers
 ;; --fold-and-mark calls below live there)
@@ -306,8 +307,11 @@ washed diff under the files-report container."
         (save-restriction
           (narrow-to-region (point) (point-max))
           (run-hooks 'magit-diff-wash-diffs-hook)
-          (magit-wash-sequence
-           #'code-review-wash-diff))))))
+          (code-review-render--wash-sequence
+           #'code-review-wash-diff)
+          (skip-chars-forward " \t\r\n")
+          (unless (eobp)
+            (error "Code review stopped before the end of the diff")))))))
 
 (defun code-review-section--fold-and-mark (fresh-render? &optional commit-focus?)
   "Fold bot-authored comment threads (AI chatter) and add the
@@ -357,10 +361,8 @@ be worth it."
 
 (defun code-review-section--activate-review-buffer (buff-name window ws
                                                     commit-focus?)
-  "Display BUFF-NAME (restoring WINDOW's start WS) and switch it
-into `code-review-mode' with its per-buffer bookkeeping.  Done in
-this order because `code-review-mode' kills local variables and
-hooks."
+  "Display BUFF-NAME (restoring WINDOW's start WS) and set up its hooks.
+The mode is initialized BEFORE rendering, never after painting the diff."
   (if window
       (progn
         (pop-to-buffer buff-name)
@@ -368,7 +370,6 @@ hooks."
     (progn
       (funcall code-review-new-buffer-window-strategy buff-name)
       (goto-char (point-min))))
-  (code-review-mode)
   ;; per-PR review buffers: remember which PR this buffer
   ;; shows, and make commands issued here act on that PR.
   (setq code-review-review-buffer-pr-id code-review-db--pullreq-id)
@@ -405,6 +406,8 @@ If you want to display a minibuffer MSG in the end."
       (setq code-review-section--new-since-last-review
             (a-get infos 'new-since-last-review))))
   (with-current-buffer (get-buffer-create buff-name)
+    (unless (derived-mode-p 'code-review-mode)
+      (code-review-mode))
     (code-review-section--setup-worktree)
     (let* ((window (get-buffer-window buff-name))
            (ws (window-start window))
@@ -412,9 +415,11 @@ If you want to display a minibuffer MSG in the end."
            ;; before the render replaces it: t when this buffer
            ;; has never been rendered before
            (fresh-render? (not magit-root-section)))
-      (code-review-section--insert-pr-text commit-focus?)
-      (code-review-section--render-diff-tree commit-focus?)
-      (code-review-section--fold-and-mark fresh-render? commit-focus?)
+      (code-review-render--call
+       (lambda ()
+         (code-review-section--insert-pr-text commit-focus?)
+         (code-review-section--render-diff-tree commit-focus?)
+         (code-review-section--fold-and-mark fresh-render? commit-focus?)))
       (code-review-section--activate-review-buffer
        buff-name window ws commit-focus?)
       (when code-review-comment-cursor-pos

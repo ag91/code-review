@@ -34,6 +34,8 @@
 
 ;;; Code:
 
+(require 'code-review-render)
+
 (require 'code-review-section-shared)
 (require 'magit-section)
 (require 'magit-diff)
@@ -208,7 +210,7 @@ in the diff nothing changes (no empty section, no heading)."
       (magit-insert-section (code-review-specs-report-section)
         (code-review-section-insert-specs-changed)
         (magit-insert-section (code-review-specs-chnged-section)
-          (magit-wash-sequence #'code-review-wash-spec-diff))))))
+          (code-review-render--wash-sequence #'code-review-wash-spec-diff))))))
 
 (defun code-review-section--focus-summary ()
   "One-line summary of the files hidden by focus mode, or nil."
@@ -457,7 +459,7 @@ this is non-nil."
                             'help-echo "Visit the file in Dired buffer"
                             'keymap 'code-review-binary-file-section-map))
         (magit-insert-heading)))
-    (magit-wash-sequence #'code-review-wash-hunk)
+    (code-review-render--wash-sequence #'code-review-wash-hunk)
     ;; After washing all hunks for this file, insert any remaining
     ;; comments (e.g., local or outdated ones keyed by side/line)
     ;; that weren’t anchored to a concrete diff position.
