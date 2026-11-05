@@ -366,6 +366,35 @@ Delegates to magit's utility when available; identity otherwise."
   (if (fboundp 'magit-decode-git-path)
       (magit-decode-git-path path)
     path))
+(defun code-review-wash--insert-file-tags (clean-path info)
+  "Insert the classification tags for CLEAN-PATH on a file heading.
+INFO is the classification plist from
+`code-review-section--file-classifications'.  Called with point at
+the end of the heading text, before `magit-insert-heading'.  Shared
+by the file washer and the phase 30 lazy placeholders."
+  (let ((tag (plist-get info :tag)))
+    (when tag
+      (insert (propertize (format "  [%s]" tag)
+                          'font-lock-face 'code-review-diff-tag-face)))
+    (when (plist-get info :new)
+      (insert (propertize "  [NEW]"
+                          'font-lock-face 'code-review-diff-tag-face)))
+    ;; phase 17: hard tag on files with CI-gaming findings (skip
+    ;; markers, gated/removed CI steps, lowered thresholds)
+    (when (code-review-testimpact--file-tag-for clean-path)
+      (insert (propertize "  [CI-GAME]"
+                          'font-lock-face 'font-lock-warning-face)))
+    ;; phase 22: incident count on the file heading (permanent
+    ;; review heat from the incident registry)
+    (when-let ((itag (code-review-registry--file-tag clean-path)))
+      (insert (propertize (format "  %s" itag)
+                          'font-lock-face
+                          'code-review-delicate-hunk-face)))
+    ;; phase 13 slice 2: the reviewer marked this file viewed
+    (when (plist-get info :viewed)
+      (insert (propertize code-review-section--viewed-tag
+                          'font-lock-face 'code-review-dimmed)))))
+
 (defun code-review-wash-insert-file-section
     (file orig status modes rename header binary long-status
           &optional canonical-path)
@@ -392,7 +421,6 @@ this is non-nil."
          (info (and code-review-section--file-classifications
                     (gethash clean-path
                              code-review-section--file-classifications)))
-         (tag (plist-get info :tag))
          (collapse (code-review-section--file-collapse-p clean-path info)))
     (code-review-db--curr-path-update clean-path)
     ;;; --- end -- code-review specific code.
@@ -416,27 +444,7 @@ this is non-nil."
                                     (format "%s -> %s" orig file)))
                           'font-lock-face 'magit-diff-file-heading
                           'code-review-path clean-path))
-      (when tag
-        (insert (propertize (format "  [%s]" tag)
-                            'font-lock-face 'code-review-diff-tag-face)))
-      (when (plist-get info :new)
-        (insert (propertize "  [NEW]"
-                            'font-lock-face 'code-review-diff-tag-face)))
-      ;; phase 17: hard tag on files with CI-gaming findings (skip
-      ;; markers, gated/removed CI steps, lowered thresholds)
-      (when (code-review-testimpact--file-tag-for clean-path)
-        (insert (propertize "  [CI-GAME]"
-                            'font-lock-face 'font-lock-warning-face)))
-      ;; phase 22: incident count on the file heading (permanent
-      ;; review heat from the incident registry)
-      (when-let ((itag (code-review-registry--file-tag clean-path)))
-        (insert (propertize (format "  %s" itag)
-                            'font-lock-face
-                            'code-review-delicate-hunk-face)))
-      ;; phase 13 slice 2: the reviewer marked this file viewed
-      (when (plist-get info :viewed)
-        (insert (propertize code-review-section--viewed-tag
-                            'font-lock-face 'code-review-dimmed)))
+      (code-review-wash--insert-file-tags clean-path info)
       (when long-status
         (insert (format " (%s)" long-status)))
       (magit-insert-heading)

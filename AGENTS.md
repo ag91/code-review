@@ -1122,6 +1122,43 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   `code-review-db-database-file` at the copy, set
   `code-review-db--pullreq-id`, re-run `--trigger-hooks`) — no
   network or auth needed.
+- `buffer-swap-text` re-points ALL markers in the swapped buffer:
+  `code-review-render--call` swaps the whole buffer text into
+  `*code-review-render-backup*`, so any section `start`/`end`
+  marker captured before the call follows the text into the
+  BACKUP buffer — a partial edit driven afterwards dies with
+  "Args out of range: #<buffer ...>, #<marker in no buffer>, ..."
+  (the live TAB-on-placeholder failure, 2026-11-05).  Never use
+  `render--call` (or any swap-text rebuild) for a partial
+  in-place edit: delete/insert within the existing buffer and
+  own the rollback manually (see `code-review-lazy--expand-at`).
+- `code-review-autoloads.el` is package.el-GENERATED and
+  gitignored — a broad cleanup (cache purge, `make clean`-style
+  glob) can delete it silently, and the only symptom is the
+  fresh-process startup test failing with `wrong-type-argument
+  stringp nil` from `(load nil)` inside `locate-library`-based
+  code.  Regenerate the package.el way: delete any remnant, then
+  `(package-generate-autoloads "code-review" PKG-DIR)` — a FRESH
+  file keeps the `add-to-list` extra-data form (the autoloads
+  regeneration gotcha above); verify the form is present.
+- `advice-member-p` compares the advice PIECE as stored: advice
+  added as the SYMBOL `#'fn` is found by `(advice-member-p 'fn
+  'sym)`, but probing with `(symbol-function 'fn)` (the compiled
+  object) can return nil even though the advice is live — probe
+  with the symbol, not the function object.
+- A MACRO defined in file A and called in file B fails at runtime
+  with `(invalid-function A--macro)` when B was byte-compiled
+  BEFORE A in the same `make compile` pass: `make compile` goes
+  alphabetically, so when the macro is NEW in section.el, every
+  earlier-alphabet file (local.el, actions.el, ...) compiles
+  against the PREVIOUS section.elc and leaves the macro call
+  UNEXPANDED in the bytecode.  The compile prints only a warning;
+  the failure surfaces later as a render-time error (found via
+  the log: `code-review--build-buffer - (invalid-function
+  code-review--stage-time)`, 2026-11-05).  Fix: run `make
+  compile` a SECOND time (or `make compile && make compile` after
+  adding cross-file macros), and grep the new .elc for the macro
+  NAME — an expanded call site no longer contains it.
 
 
 

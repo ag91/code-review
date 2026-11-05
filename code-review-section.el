@@ -64,6 +64,7 @@
 (require 'code-review-section-criteria)
 (require 'code-review-section-comment)
 (require 'code-review-render)
+(require 'code-review-lazy)
 (require 'code-review-section-wash)
 ;; the render's default folds (the defcustoms + the fold walkers
 ;; --fold-and-mark calls below live there)
@@ -307,11 +308,12 @@ washed diff under the files-report container."
         (save-restriction
           (narrow-to-region (point) (point-max))
           (run-hooks 'magit-diff-wash-diffs-hook)
-          (code-review-render--wash-sequence
-           #'code-review-wash-diff)
-          (skip-chars-forward " \t\r\n")
+          ;; phase 30: one file block at a time; large blocks become
+          ;; placeholders whose hunks load through the deferred queue
+          (code-review-lazy--wash-files)
           (unless (eobp)
-            (error "Code review stopped before the end of the diff")))))))
+            (error "Code review stopped before the end of the diff")))
+        (code-review-lazy--schedule commit-focus?)))))
 
 (defun code-review-section--fold-and-mark (fresh-render? &optional commit-focus?)
   "Fold bot-authored comment threads (AI chatter) and add the
@@ -388,11 +390,12 @@ The mode is initialized BEFORE rendering, never after painting the diff."
   "Trigger magit section hooks and draw BUFF-NAME.
 Run code review commit buffer hook when COMMIT-FOCUS? is non-nil.
 If you want to display a minibuffer MSG in the end."
-  (setq code-review-section-grouped-comments
-        (code-review-utils-make-group
-         (code-review-db--pullreq-raw-comments))
-        code-review-section-hold-written-comment-count nil
-        code-review-section-hold-written-comment-ids nil)
+  (code-review--stage-time "grouped-comments"
+    (setq code-review-section-grouped-comments
+          (code-review-utils-make-group
+           (code-review-db--pullreq-raw-comments))
+          code-review-section-hold-written-comment-count nil
+          code-review-section-hold-written-comment-ids nil))
   ;; phase 13: re-derive the new-since-last-review value from the
   ;; persisted infos on every render.  Local reviews carry no
   ;; infos blob: their internal-build stashed the value directly.
@@ -408,7 +411,8 @@ If you want to display a minibuffer MSG in the end."
   (with-current-buffer (get-buffer-create buff-name)
     (unless (derived-mode-p 'code-review-mode)
       (code-review-mode))
-    (code-review-section--setup-worktree)
+    (code-review--stage-time "setup-worktree"
+      (code-review-section--setup-worktree))
     (let* ((window (get-buffer-window buff-name))
            (ws (window-start window))
            (inhibit-read-only t)
@@ -417,11 +421,16 @@ If you want to display a minibuffer MSG in the end."
            (fresh-render? (not magit-root-section)))
       (code-review-render--call
        (lambda ()
-         (code-review-section--insert-pr-text commit-focus?)
-         (code-review-section--render-diff-tree commit-focus?)
-         (code-review-section--fold-and-mark fresh-render? commit-focus?)))
-      (code-review-section--activate-review-buffer
-       buff-name window ws commit-focus?)
+         (code-review--stage-time "insert-pr-text"
+           (code-review-section--insert-pr-text commit-focus?))
+         (code-review--stage-time "render-diff-tree"
+           (code-review-section--render-diff-tree commit-focus?))
+         (code-review--stage-time "fold-and-mark"
+           (code-review-section--fold-and-mark fresh-render? commit-focus?)))
+       )
+      (code-review--stage-time "activate-review-buffer"
+        (code-review-section--activate-review-buffer
+         buff-name window ws commit-focus?))
       (when code-review-comment-cursor-pos
         (goto-char code-review-comment-cursor-pos))
       (when msg
@@ -479,36 +488,56 @@ If you want to display a minibuffer MSG in the end."
                                 (format "Data returned by GraphQL API: \n %s" (prin1-to-string res)))
         (error "Missing required data")))
 
-    ;; 1. save raw diff data
-    (progress-reporter-update progress 3)
-    (let* ((new-diff (code-review-utils--clean-diff-prefixes
-                      (a-get (-first-item res) 'message)))
-           (fixed-infos (code-review-github-fix-infos raw-infos))
-           ;; phase 13: compare against the PREVIOUS snapshot before
-           ;; this fetch overwrites it
-           (news (code-review-section--compute-new-since-last-review
-                  new-diff fixed-infos)))
-      (code-review-db--pullreq-raw-diff-update new-diff)
-
-      ;; 1.1 save raw info data e.g. data from GraphQL API
-      (progress-reporter-update progress 4)
-      (code-review-db--pullreq-raw-infos-update
-       (if news
-           ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
-           (cons (cons 'new-since-last-review news) fixed-infos)
-         fixed-infos))
-      ;; phase 13 slice 2: the read tracking.  Expire the marks the
-      ;; new diff invalidated (hunk keys gone, changed files), then
-      ;; let GitHub's Viewed state (fetched in the infos) win for
-      ;; the file-level rows.
-      (code-review-viewed--expire (a-get news 'files))
-      (code-review-viewed--seed-github)
-
-      ;; 1.2 trigger renders
-      (progress-reporter-update progress 5)
-      (let ((code-review-section--just-refetched t))
-        (code-review--trigger-hooks buff-name nil msg))
-      (progress-reporter-done progress))))
+    ;; The stages run as a deferred CHAIN (one stage per timer tick):
+    ;; a single callback here froze Emacs from progress ~80% to the
+    ;; end of the render on megabyte PRs — the reporter could never
+    ;; repaint.  Results thread through the mutable let bindings.
+    (let (new-diff fixed-infos news)
+      (deferred:$
+        (deferred:next
+          (lambda ()
+            (progress-reporter-update progress 3)
+            (code-review--stage-time "clean-diff-prefixes"
+              (setq new-diff (code-review-utils--clean-diff-prefixes
+                              (a-get (-first-item res) 'message))))
+            (code-review--stage-time "fix-infos"
+              (setq fixed-infos (code-review-github-fix-infos raw-infos)))
+            ;; phase 13: compare against the PREVIOUS snapshot before
+            ;; this fetch overwrites it
+            (code-review--stage-time "new-since-last-review"
+              (setq news (code-review-section--compute-new-since-last-review
+                          new-diff fixed-infos)))))
+        (deferred:nextc it
+          (lambda (_)
+            ;; 1. save raw diff data
+            (code-review--stage-time "db raw-diff write"
+              (code-review-db--pullreq-raw-diff-update new-diff))))
+        (deferred:nextc it
+          (lambda (_)
+            (progress-reporter-update progress 4)
+            ;; 1.1 save raw info data e.g. data from GraphQL API
+            (code-review--stage-time "db raw-infos write"
+              (code-review-db--pullreq-raw-infos-update
+               (if news
+                   ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
+                   (cons (cons 'new-since-last-review news) fixed-infos)
+                 fixed-infos)))
+            ;; phase 13 slice 2: the read tracking.  Expire the marks the
+            ;; new diff invalidated (hunk keys gone, changed files), then
+            ;; let GitHub's Viewed state (fetched in the infos) win for
+            ;; the file-level rows.
+            (code-review--stage-time "viewed expire/seed"
+              (code-review-viewed--expire (a-get news 'files))
+              (code-review-viewed--seed-github))))
+        (deferred:nextc it
+          (lambda (_)
+            ;; 1.2 trigger renders
+            (progress-reporter-update progress 5)
+            (code-review--stage-time "render"
+              (let ((code-review-section--just-refetched t))
+                (code-review--trigger-hooks buff-name nil msg)))
+            (progress-reporter-done progress)))
+        (deferred:error it #'code-review--report-build-error)))))
 
 (cl-defmethod code-review--internal-build ((obj code-review-gitlab-repo) progress res &optional buff-name msg)
   "Helper function to build process for GITLAB based on the fetched RES informing PROGRESS."
@@ -521,38 +550,57 @@ If you want to display a minibuffer MSG in the end."
      "code-review--internal-build"
      (format "Data returned by GraphQL API: \n%s" (prin1-to-string err))))
 
-  ;; 1. save raw diff data
-  (progress-reporter-update progress 3)
-  (let* ((new-diff (code-review-gitlab-fix-diff
-                    (a-get (-first-item res) 'changes)))
-         (fixed-infos (code-review-gitlab-fix-infos
-                       (code-review-github-fix-infos
-                        (a-get-in (-second-item res) (list 'data 'repository 'pullRequest)))))
-         (news (code-review-section--compute-new-since-last-review
-                new-diff fixed-infos)))
-    (code-review-db--pullreq-raw-diff-update new-diff)
-
-    ;; 1.1. compute position line numbers to diff line numbers
-    (progress-reporter-update progress 4)
-    (code-review-gitlab-pos-line-number->diff-line-number
-     (a-get (-first-item res) 'changes))
-
-    ;; 1.2. save raw info data e.g. data from GraphQL API
-    (progress-reporter-update progress 5)
-    (code-review-db--pullreq-raw-infos-update
-     (if news
-         ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
-         (cons (cons 'new-since-last-review news) fixed-infos)
-       fixed-infos))
-    ;; phase 13 slice 2: expire the read-tracking marks the new diff
-    ;; invalidated (GitLab has no Viewed API: the state is local)
-    (code-review-viewed--expire (a-get news 'files))
-
-    ;; 1.3. trigger renders
-    (progress-reporter-update progress 6)
-    (let ((code-review-section--just-refetched t))
-      (code-review--trigger-hooks buff-name nil msg))
-    (progress-reporter-done progress)))
+  ;; 1. save raw diff data — stages run as a deferred chain (see the
+  ;; github method: one stage per tick so the reporter repaints).
+  (let (new-diff fixed-infos news)
+    (deferred:$
+      (deferred:next
+        (lambda ()
+          (progress-reporter-update progress 3)
+          (code-review--stage-time "gitlab fix-diff"
+            (setq new-diff (code-review-gitlab-fix-diff
+                            (a-get (-first-item res) 'changes))))
+          (code-review--stage-time "fix-infos"
+            (setq fixed-infos (code-review-gitlab-fix-infos
+                               (code-review-github-fix-infos
+                                (a-get-in (-second-item res) (list 'data 'repository 'pullRequest))))))
+          (code-review--stage-time "new-since-last-review"
+            (setq news (code-review-section--compute-new-since-last-review
+                        new-diff fixed-infos)))))
+      (deferred:nextc it
+        (lambda (_)
+          (code-review--stage-time "db raw-diff write"
+            (code-review-db--pullreq-raw-diff-update new-diff))))
+      (deferred:nextc it
+        (lambda (_)
+          ;; 1.1. compute position line numbers to diff line numbers
+          (progress-reporter-update progress 4)
+          (code-review--stage-time "pos->diff-line-numbers"
+            (code-review-gitlab-pos-line-number->diff-line-number
+             (a-get (-first-item res) 'changes)))))
+      (deferred:nextc it
+        (lambda (_)
+          ;; 1.2. save raw info data e.g. data from GraphQL API
+          (progress-reporter-update progress 5)
+          (code-review--stage-time "db raw-infos write"
+            (code-review-db--pullreq-raw-infos-update
+             (if news
+                 ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
+                 (cons (cons 'new-since-last-review news) fixed-infos)
+               fixed-infos)))
+          ;; phase 13 slice 2: expire the read-tracking marks the new diff
+          ;; invalidated (GitLab has no Viewed API: the state is local)
+          (code-review--stage-time "viewed expire"
+            (code-review-viewed--expire (a-get news 'files)))))
+      (deferred:nextc it
+        (lambda (_)
+          ;; 1.3. trigger renders
+          (progress-reporter-update progress 6)
+          (code-review--stage-time "render"
+            (let ((code-review-section--just-refetched t))
+              (code-review--trigger-hooks buff-name nil msg)))
+          (progress-reporter-done progress)))
+      (deferred:error it #'code-review--report-build-error))))
 
 (cl-defmethod code-review--internal-build ((obj code-review-bitbucket-repo) progress res &optional buff-name msg)
   "Helper function to build process for BITBUCKET based on the fetched RES informing PROGRESS."
@@ -576,43 +624,91 @@ If you want to display a minibuffer MSG in the end."
                         (commits . ,.commits)
                         (reviews (nodes . ,.reviews.nodes))))))
 
-    ;; 1. save raw diff data
-    (progress-reporter-update progress 3)
-    (let* ((new-diff (code-review-utils--clean-diff-prefixes
-                      (a-get (-first-item res) 'message)))
-           (fixed-infos (code-review-bitbucket--fix-diff-comments raw-infos))
-           ;; phase 13: compare against the PREVIOUS snapshot before
-           ;; this fetch overwrites it
-           (news (code-review-section--compute-new-since-last-review
-                  new-diff fixed-infos)))
-      (code-review-db--pullreq-raw-diff-update new-diff)
-
-      ;; 1.1. compute position line numbers to diff line numbers
-      (progress-reporter-update progress 4)
-      (code-review-bitbucket-pos-line-number->diff-line-number
-       (a-get (-first-item res) 'message))
-
-      ;; 1.2 save raw info data e.g. data from GraphQL API
-      (progress-reporter-update progress 4)
-      (code-review-db--pullreq-raw-infos-update
-       (if news
-           ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
-           (cons (cons 'new-since-last-review news) fixed-infos)
-         fixed-infos))
-      ;; phase 13 slice 2: expire the read-tracking marks the new
-      ;; diff invalidated (Bitbucket has no Viewed API: local only)
-      (code-review-viewed--expire (a-get news 'files))
-
-      ;; 1.3. trigger renders
-      (progress-reporter-update progress 5)
-      (let ((code-review-section--just-refetched t))
-        (code-review--trigger-hooks buff-name nil msg))
-      (progress-reporter-done progress))))
+    ;; 1. save raw diff data — deferred chain (see the github method).
+    (let (new-diff fixed-infos news)
+      (deferred:$
+        (deferred:next
+          (lambda ()
+            (progress-reporter-update progress 3)
+            (code-review--stage-time "clean-diff-prefixes"
+              (setq new-diff (code-review-utils--clean-diff-prefixes
+                              (a-get (-first-item res) 'message))))
+            (code-review--stage-time "fix-diff-comments"
+              (setq fixed-infos (code-review-bitbucket--fix-diff-comments raw-infos)))
+            ;; phase 13: compare against the PREVIOUS snapshot before
+            ;; this fetch overwrites it
+            (code-review--stage-time "new-since-last-review"
+              (setq news (code-review-section--compute-new-since-last-review
+                          new-diff fixed-infos)))))
+        (deferred:nextc it
+          (lambda (_)
+            (code-review--stage-time "db raw-diff write"
+              (code-review-db--pullreq-raw-diff-update new-diff))))
+        (deferred:nextc it
+          (lambda (_)
+            ;; 1.1. compute position line numbers to diff line numbers
+            (progress-reporter-update progress 4)
+            (code-review--stage-time "pos->diff-line-numbers"
+              (code-review-bitbucket-pos-line-number->diff-line-number
+               (a-get (-first-item res) 'message)))))
+        (deferred:nextc it
+          (lambda (_)
+            ;; 1.2 save raw info data e.g. data from GraphQL API
+            (code-review--stage-time "db raw-infos write"
+              (code-review-db--pullreq-raw-infos-update
+               (if news
+                   ;; `a' has no a-cons: plain cons of the (KEY . VALUE) pair
+                   (cons (cons 'new-since-last-review news) fixed-infos)
+                 fixed-infos)))
+            ;; phase 13 slice 2: expire the read-tracking marks the new
+            ;; diff invalidated (Bitbucket has no Viewed API: local only)
+            (code-review--stage-time "viewed expire"
+              (code-review-viewed--expire (a-get news 'files)))))
+        (deferred:nextc it
+          (lambda (_)
+            ;; 1.3. trigger renders
+            (progress-reporter-update progress 5)
+            (code-review--stage-time "render"
+              (let ((code-review-section--just-refetched t))
+                (code-review--trigger-hooks buff-name nil msg)))
+            (progress-reporter-done progress)))
+        (deferred:error it #'code-review--report-build-error)))))
 
 (defcustom code-review-log-raw-request-responses nil
   "Log the Raw request responses from your VC provider."
   :type 'string
   :group 'code-review)
+
+(defcustom code-review-stage-timing? nil
+  "Non-nil means every refresh stage logs its wall-clock seconds to `code-review-log-file'.
+Turn it on to find which stage of a large PR's fetch/render blocks
+Emacs (the 80%-freeze investigation, 2026-11-05)."
+  :type 'boolean
+  :group 'code-review)
+
+(defmacro code-review--stage-time (stage &rest body)
+  "Run BODY, logging its wall-clock seconds as STAGE when `code-review-stage-timing?'.
+The log entry lands in `code-review-log-file' via `code-review-utils--log'."
+  (declare (indent 1))
+  (let ((beg (make-symbol "beg")))
+    `(let ((,beg (and code-review-stage-timing? (float-time))))
+       (unwind-protect
+           (progn ,@body)
+         (when ,beg
+           (code-review-utils--log
+            "stage-timing"
+            (format "%s: %.3fs" ,stage (- (float-time) ,beg))))))))
+
+(defun code-review--report-build-error (err)
+  "Log a build-chain ERR and message the user; shared by every build chain."
+  (code-review-utils--log
+   "code-review--build-buffer"
+   (prin1-to-string err))
+  (if (and (sequencep err)
+           (stringp (-second-item err))
+           (string-prefix-p "BUG: Unknown extended header:" (-second-item err)))
+      (message "Your PR might have diffs too large. Currently not supported.")
+    (message "Got an error from your VC provider. Check `code-review-log-file'.")))
 
 (defun code-review--build-buffer (&optional buf-name commit-focus? msg)
   "Build BUF-NAME set COMMIT-FOCUS? mode to use commit list of hooks.
@@ -654,16 +750,7 @@ BUF-NAME defaults to the per-PR buffer name."
                                             "Gitlab")
                                            (t "Unknown"))))
                              (code-review--internal-build obj progress x buff-name msg))))
-         (deferred:error it
-                         (lambda (err)
-                           (code-review-utils--log
-                            "code-review--build-buffer"
-                            (prin1-to-string err))
-                           (if (and (sequencep err)
-                                    (stringp (-second-item err))
-                                    (string-prefix-p "BUG: Unknown extended header:" (-second-item err)))
-                               (message "Your PR might have diffs too large. Currently not supported.")
-                             (message "Got an error from your VC provider. Check `code-review-log-file'.")))))))))
+         (deferred:error it #'code-review--report-build-error))))))
 
 ;;; * commit buffer
 ;;; Rebuild commit buffer focusing on a single commit's diff.

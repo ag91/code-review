@@ -238,26 +238,41 @@ stops responding to G (full reload)."
   ;; This runs in a timer: the db's current pullreq may have been
   ;; switched to another buffer's PR meanwhile, so re-assert it.
   (setq code-review-db--pullreq-id (oref obj id))
-  (progress-reporter-update progress 3)
-  (let* ((new-diff (code-review-utils--clean-diff-prefixes
-                    (a-get (-first-item res) 'message)))
-         ;; phase 13: local reviews have no infos blob — the diff
-         ;; comparison still applies (re-reviewing a working tree
-         ;; highlights what changed since the last run); the news
-         ;; value is stashed in the render-time defvar because
-         ;; trigger-hooks only re-derives it from persisted infos.
-         (news (code-review-section--compute-new-since-last-review
-                new-diff nil)))
-    (setq code-review-section--new-since-last-review news)
-    (oset obj raw-diff new-diff)
-    (closql-insert (code-review-db) obj t)
-    ;; phase 13 slice 2: expire the read-tracking marks the new diff
-    ;; invalidated (local reviews: the state is local by definition)
-    (code-review-viewed--expire (a-get news 'files)))
-  (progress-reporter-update progress 5)
-  (let ((code-review-section--just-refetched t))
-    (code-review--trigger-hooks buff-name nil msg))
-  (progress-reporter-done progress))
+  ;; Deferred chain (see the github method in section.el): one
+  ;; stage per tick so the progress reporter repaints.
+  (let (new-diff news)
+    (deferred:$
+      (deferred:next
+        (lambda ()
+          (progress-reporter-update progress 3)
+          (code-review--stage-time "clean-diff-prefixes"
+            (setq new-diff (code-review-utils--clean-diff-prefixes
+                            (a-get (-first-item res) 'message))))
+          ;; phase 13: local reviews have no infos blob — the diff
+          ;; comparison still applies (re-reviewing a working tree
+          ;; highlights what changed since the last run); the news
+          ;; value is stashed in the render-time defvar because
+          ;; trigger-hooks only re-derives it from persisted infos.
+          (code-review--stage-time "new-since-last-review"
+            (setq news (code-review-section--compute-new-since-last-review
+                        new-diff nil)))))
+      (deferred:nextc it
+        (lambda (_)
+          (code-review--stage-time "db raw-diff write"
+            (setq code-review-section--new-since-last-review news)
+            (oset obj raw-diff new-diff)
+            (closql-insert (code-review-db) obj t)
+            ;; phase 13 slice 2: expire the read-tracking marks the new diff
+            ;; invalidated (local reviews: the state is local by definition)
+            (code-review-viewed--expire (a-get news 'files)))))
+      (deferred:nextc it
+        (lambda (_)
+          (progress-reporter-update progress 5)
+          (code-review--stage-time "render"
+            (let ((code-review-section--just-refetched t))
+              (code-review--trigger-hooks buff-name nil msg)))
+          (progress-reporter-done progress)))
+      (deferred:error it #'code-review--report-build-error))))
 
 ;;; Local review outcomes (phase 25b): the two honest exits of a
 ;;; self-review are (1) issues found -> dispatch the pending local

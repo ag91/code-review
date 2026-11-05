@@ -5459,7 +5459,7 @@ leave Emacs for the GitHub site — plus the people cache its
 search needs (phase 33) and two ergonomics fixes that make the
 diff the focus (34) and the progress beacon honest (35).
 
-* Phase 30 — Render stability and async lazy loading :STATUS:todo:
+* Phase 30 — Render stability and async lazy loading :STATUS:done:
 
 P0. Two faces of one invariant: OPENING A PR MUST NEVER COST
 WORK TIME, and a rendered buffer must never be corrupt.
@@ -5491,6 +5491,53 @@ WORK TIME, and a rendered buffer must never be corrupt.
   and the deferred-queue-drained pattern for every async
   piece.
 
+** Async lazy loading — implementation plan (estimated ~750–1,100 LOC)
+
+The lazy unit is the FILE BLOCK: =code-review--diff--split-by-files=
+already splits the raw diff into per-file blocks (pure function), so
+the wash only needs to stop consuming every block in one synchronous
+=magit-wash-sequence= pass.
+
+- Stage 0, characterization + torture fixtures (~100–150 LOC, tests
+  only): new =test/code-review-lazy-test.el= — huge markdown,
+  minified one-liner, unicode, renames, empty diff,
+  comment-on-huge-file; batch timing assertions (first paint under a
+  fixed budget).  Green BEFORE any code moves.
+- Stage 1, skeleton render (~200–300 LOC, new =code-review-lazy.el=):
+  =--insert-pr-text= stops inserting the whole raw diff; per file it
+  inserts a PLACEHOLDER file section (heading, classification/heat/
+  NEW/viewed tags, a "N hunks, +X -Y" size line computed purely from
+  the block text).  Thresholds: small blocks (< ~2KB) wash inline;
+  SPEC criteria blocks keep the synchronous wash — making tiny files
+  lazy is a UX loss for no gain.  Store per-block raw text in a
+  buffer-local hash table keyed by canonical path, marked
+  =permanent-local= (the deferred render tail re-runs the mode body
+  and wipes non-permanent locals — the 2026-10-30 counter bug).
+- Stage 2, wash-on-demand (~200–300 LOC, -wash.el + -section.el):
+  hook section expansion (=magit-section-toggle=/=magit-section-show=);
+  on first expansion narrow to the section region (the missing-anchor
+  confinement pattern) and run the owned wash-diff/wash-hunk
+  machinery over the stored block, then paint + interleave comments.
+  The incomplete-diff guard becomes PER-BLOCK, not per-whole-diff.
+  Hardest part: comment bookkeeping
+  (=code-review-section-hold-written-comment-count=, grouped
+  comments) assumes one synchronous pass — must become
+  per-file-on-demand; a comment save targeting an UNWASHED file must
+  force-wash that section first.
+- Stage 3, chunked initial paint (~80–150 LOC): optionally pre-wash
+  the first N visible files through =deferred:nextc= chunks.  Async
+  chunks carry a render-generation token or they can land inside a
+  failed render's rollback (=code-review-render--call= swaps text —
+  an async insert into a swapped buffer corrupts it).
+- Stage 4, integration verification (~150–250 LOC, mostly tests):
+  re-render stability on a lazy buffer, comment-save end-to-end
+  against an unwashed file, viewed marks/folds/jump commands
+  (C-c C-d, top-K) against placeholder sections, hide-viewed filter,
+  budget estimate line instant.
+- Totals: source ~500–750, tests ~250–400; roughly 2-4 focused
+  sessions.  Stage 2's comment bookkeeping is the risk
+  concentration; everything else is mechanical.
+
 ** Stability half LANDED — 2026-11-03/04
 
 The P0 stability work shipped ahead of the async lazy loading:
@@ -5499,6 +5546,124 @@ drafts, the missing-anchor confinement, the SHR point fix and
 the composer origin binding — the engineering log lives in the
 subsections below.  The megabyte-line torture fixture suite and
 the async lazy loader remain open.
+
+** Async lazy loading LANDED — 2026-11-05 :STATUS:done:
+
+The FILE-BLOCK lazy loader is in (=code-review-lazy.el~, ~250
+lines; 7 ERT tests; suite 422/422, compile clean, loaded into
+the live daemon):
+
+- Skeleton render: =--render-diff-tree= now splits the raw diff
+  per file block and, for blocks above
+  =code-review-lazy-threshold= (8KB), inserts a PLACEHOLDER file
+  section instead of washing inline — heading with the shared
+  tag helper (=code-review-wash--insert-file-tags=, extracted
+  from the washer so SPEC/NEW/CI-GAME/incident/viewed tags
+  render on placeholders too), plus a "(N hunks, +X -Y — load
+  with TAB)" size line.  Small blocks wash inline as before.
+- Expansion: TAB on a placeholder (=magit-section-toggle= and
+  =magit-section-show= :around advices) deletes the placeholder,
+  inserts the stored raw block, and runs the owned wash
+  (=code-review-wash-diff=) NARROWED to the section.  A failed
+  wash rolls the placeholder back in full (text, heading,
+  parent's children list) and re-queues nothing.
+- Deferred initial paint: after the skeleton wash, remaining
+  lazy blocks drain one file per timer tick
+  (=--schedule=, =--load-next=); every chunk captures a fresh
+  =code-review-lazy--epoch= cons and aborts if the epoch was
+  invalidated — a rollback or a re-render kills pending chunks.
+- =code-review-render--call= :around advice invalidates the
+  epoch before and after every full render.
+
+*** The live TAB failure (WriterInternal/be.service.billing#1132) — root cause
+
+The first implementation delegated placeholder expansion to
+=code-review-render--call= — the full-rebuild tool.  It swaps the
+whole buffer text into a backup via =buffer-swap-text=, and THE
+SWAP RE-POINTS EVERY MARKER IN THE BUFFER: the placeholder's
+=start=/=end= markers followed the text into
+=*code-review-render-backup*=, so the expansion thunk edited the
+wrong buffer and TAB died with ="Args out of range: #<buffer
+...>, #<marker in no buffer>, #<marker at ...>"=.  A step-probe
+printout (start marker = "#<marker at 69 in
+*code-review-render-backup*>") proved it in one line.
+
+GOTCHA: =buffer-swap-text= re-points ALL markers — never use
+=code-review-render--call= (or any swap-text-based rebuild) for a
+PARTIAL in-place edit; it is for full buffer rebuilds only.  A
+partial edit must delete/insert within the existing buffer and
+own its rollback manually.
+
+GOTCHA (stale bytecode, third bite): the lazy tests kept failing
+with the OLD error after the fix was written — the
+=code-review-lazy.elc= on disk predated the rewrite and the
+loader preferred it.  When a test contradicts a correct-looking
+fix, prove the ARTIFACT is fresh first (mtime + grep the .elc
+for a new symbol) before re-debugging the source.
+
+** Fetch/render responsiveness for large PRs — 2026-11-05
+
+Field report (live, litellm-scale PR): the =Fetch diff PR...=
+progress bar FREEZES around 80% for tens of seconds.  Reading the
+code explains it: the fetch (GraphQL, paginated) yields fine, but
+from progress 2 on ONE deferred callback runs =clean-diff-prefixes=
+(a megabyte-class regexp pass) → the phase-13 news compute → BOTH
+db writes (emacsql serializes megabyte payloads with =prin1=) →
+the whole render — with no redisplay opportunity, so the reporter
+never repaints.  The phase-14 history harvest (5000-commit =git
+log= child, minutes on litellm) adds a sentinel full RE-RENDER
+when it lands.  Plan, in measurement order:
+
+- Step 0, stage timing probe (~40 LOC): a
+  =code-review-stage-timing?= defcustom; when non-nil every
+  refresh stage (clean-diff, news, each db write, viewed pass,
+  worktree setup, pr-text, diff tree, fold/mark, activate,
+  grouped comments) logs its wall-clock seconds to
+  =code-review-log-file=.  MEASURE on the big PR before cutting
+  anything; the rest of the plan is re-ranked by what it says.
+- Step 1, yield between stages (~100 LOC): the monolithic
+  =--internal-build= callback becomes a =deferred:next= chain —
+  one stage per timer tick, so Emacs redispers and the reporter
+  actually moves.  Converts any bounded-but-slow stage from a
+  freeze into progress.  Landed together with Step 0 (same
+  slice, see the landed note below).
+- Step 2, bounded hot stages (ranked by Step 0's output; NOT yet
+  landed): candidates — skip the news compute + db rewrite when
+  the head diff hash is unchanged; shrink the =raw-infos= blob
+  (drop fields nothing reads); defer the phase-5 analysis pass
+  to a post-first-paint chunk (the lazy-loader pattern).
+- Step 3, history harvest (~150 LOC): time-box the child's =git
+  log= (stop at N seconds, cache what landed); the sentinel
+  PATCHES the heat tags in place instead of re-rendering (the
+  viewed-toggle in-place discipline); adaptive cap for huge
+  repos.
+- Step 4, fetch payload slimming (later): the complete query
+  drags =commits(first:100)= with =statusCheckRollup
+  contexts(first:50)= per commit on every refresh; the commits/CI
+  section becomes its own lazy section for large PRs.
+
+*** Step 0+1 LANDED — 2026-11-05
+
+=code-review-stage-timing?= (nil default) + the
+=code-review--stage-time= macro wrap every refresh stage in the
+internal-builds and =--trigger-hooks=; =--internal-build= (all
+three forges + local) is now a =deferred:next= chain whose stages
+yield to redisplay; the build-error message dispatch is shared
+(=code-review--report-build-error=).  Suite green 422/422;
+reloaded into the daemon (macrop probe, not just fboundp).
+
+One new gotcha from the landing (AGENTS.md): the new macro in
+=code-review-section.el= was UNEXPANDED in
+=code-review-local.elc= — =make compile= compiles alphabetically,
+so local.el compiled against the PREVIOUS section.elc and the
+runtime error was =(invalid-function code-review--stage-time)=,
+surfacing as "Got an error from your VC provider" on every local
+review (and making the whole suite LOOK hung: every local-render
+test burned its 15s deadline poll).  Second compile pass fixed
+it; the .elc no longer contains the macro NAME when expanded.
+
+NEXT: run one timed refresh of the big PR with
+=code-review-stage-timing?= t and rank Step 2 by the log.
 
 ** Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
 
