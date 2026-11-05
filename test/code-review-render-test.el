@@ -282,6 +282,43 @@
               (should (equal (buffer-string) "Do not lose this draft"))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+;;; req-2026-11-05-001: shr-render-failure-degrades-not-kills
+;; covers: code-review-section-shared.el
+;; covers-fn: code-review--insert-html
+;; covers-fn: code-review--html-written-loc
+;; enforcement: test
+(ert-deftest code-review-render/req-2026-11-05-001-sub-at-buffer-start-renders ()
+  "WHEN a comment body's first element is a <sub> THE SYSTEM SHALL render \
+it without signaling: shr's own `shr-tag-sub' does (forward-char -1) at bol, \
+which is (beginning-of-buffer) at the start of the narrowing \
+(the 2026-11-05 litellm#50080 greptile-badge render kill)."
+  (let ((body (concat "<p dir=\"auto\"><strong><sub><sub>"
+                      "<a href=\"https://camo.example/badge\">"
+                      "<img src=\"https://camo.example/badge.svg\" "
+                      "alt=\"P2 Badge\"></a></sub></sub>  Some finding</strong></p>"
+                      "<p dir=\"auto\">Useful? React with \U0001F44D.</p>")))
+    (with-temp-buffer
+      (code-review--insert-html body)
+      (should (> (buffer-size) 10))
+      ;; shr wraps the fill column between words (the AGENTS.md
+      ;; shr-width gotcha): never assert on a phrase with a space
+      (should (string-match-p
+               "Some[[:space:]\n]*finding" (buffer-string)))))
+  ;; the line estimator takes the same path and must not signal either
+  (with-temp-buffer
+    (should (numberp (code-review--html-written-loc
+                      "<p><strong><sub><sub>x</sub></sub>y</strong></p>")))))
+
+(ert-deftest code-review-render/req-2026-11-05-001-shr-crash-degrades-to-raw-text ()
+  "WHEN shr signals on a comment body THE SYSTEM SHALL log the failure \
+and insert the raw body as plain text instead of killing the render."
+  (let ((body "<p>particular body</p>"))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'shr-insert-document)
+                 (lambda (&rest _) (error "Beginning of buffer"))))
+        (code-review--insert-html body)
+        (should (string-match-p "particular body" (buffer-string)))))))
+
 ;;; req-2026-11-04-001: displayed-comment-save-preserves-review
 ;; covers: code-review-section-shared.el
 ;; covers-fn: code-review--html-written-loc

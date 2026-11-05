@@ -1106,6 +1106,22 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   `owner/repo#number` key, resolved once per buffer from the row
   (the buffer's `code-review-review-buffer-pr-id` holds the uuid of
   ITS build; the canonical key survives row rebuilds).
+- shr HTML rendering crashes KILL the whole render ("Got an error
+  from your VC provider"), and the interesting signals are
+  C-level and unique-tagged: a `<sub>` as a comment body's FIRST
+  element hit `shr-tag-sub`'s `(forward-char -1)` at the start of
+  the one-char narrowing and signaled `(beginning-of-buffer)` —
+  grep for the tag finds nothing in elisp (2026-11-05, litellm
+  #50080).  `code-review--insert-html`/`--html-written-loc` are
+  now condition-cased (log the error + body snippet, degrade to
+  raw text); if a new shr crash appears, the log entry carries
+  the body snippet to reproduce.  Debugging such a kill: the
+  error tag tells you nothing — spy entry/exit around the
+  suspects (`magit-wash-sequence` nesting names the washer), and
+  reproduce hermetically from a COPY of the real db (point
+  `code-review-db-database-file` at the copy, set
+  `code-review-db--pullreq-id`, re-run `--trigger-hooks`) — no
+  network or auth needed.
 
 
 

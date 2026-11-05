@@ -5667,6 +5667,49 @@ normal guarded washer.  Activation checked the new function
 docstrings without initiating a live render or submission; draft
 text was left untouched.  The user performs the live retest.
 
+** A single greptile =<sub>= badge killed every render — 2026-11-05 :STATUS:done
+
+litellm#50080 failed EVERY =code-review-start= with "Got an error
+from your VC provider"; the error log held only a bare
+=(beginning-of-buffer)= from the =deferred:error= handler.
+
+*** Root cause
+
+The comment body's FIRST element is a =<sub>= inside
+=<p><strong>= (the greptile P2 badge).  =code-review--insert-html=
+narrows the buffer to a ONE-CHAR region before
+=shr-insert-document=; stock =shr-tag-sub= does
+=(forward-char -1)= at bol to delete the newline before the
+subscript — and at the narrowing's start that is POINT-MIN, so C
+=forward-char= signals =(beginning-of-buffer)=, which unwinds the
+entire wash (the history child's re-render died the same way).
+Nothing in the package or its deps signals that tag: only the C
+level does, which is why grep found nothing.
+
+*** The fix (req-2026-11-05-001)
+
+Twice over.  =shr-external-rendering-functions= now maps =sub= to
+a guarded =code-review--shr-tag-sub= (=forward-char= only when
+not =bobp=) — the badge renders properly.  AND the renders are
+condition-cased: =code-review--insert-html= and
+=--html-written-loc= catch any shr crash, log the error plus the
+body's size and a 300-char snippet to =code-review-log-file= (so
+the construct is fixable WHEN it happens), clean the partial
+output out of the narrowed region, and degrade to the raw body as
+plain text — a lower-resolution comment beats no diff buffer.
+The line estimator mirrors the fallback's line-count
+approximation so the two paths agree.
+
+Debugging note: the PR data was already in the db, so the render
+was reproduced HERMETICALLY (copy the db file, point the
+singleton at the copy, re-run =--trigger-hooks= in batch — no
+network, no auth); =signal-hook-function= and a custom =debugger=
+both failed to trap the C-level signal, but per-function
+entry/exit spying named =shr-insert-document= as the last
+entering frame.  Guards:
+=code-review-render/req-2026-11-05-001-sub-at-buffer-start-renders=
+and =...-shr-crash-degrades-to-raw-text=.
+
 * Phase 31 — Analysis and test-impact precision pass :STATUS:todo:
 
 P1. Both features over-promise and get skipped (field report

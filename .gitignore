@@ -11,3 +11,5 @@ tmp/
 # `code-review-registry-generate' on a fresh clone
 specs/index.md
 incidents/index.md
+code-review-autoloads.el
+code-review-pkg.el

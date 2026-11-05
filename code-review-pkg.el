@@ -1,2 +1,0 @@
-;;; Generated package description from code-review.el  -*- no-byte-compile: t; lexical-binding: t -*-
-(define-package "code-review" "0.0.7" "Perform code review from Github, Gitlab, and Bitbucket Cloud" '((emacs "28.1") (closql "2.3") (magit "3.0.0") (transient "0.3.7") (a "1.0.0") (ghub "5.0.0") (uuidgen "1.2") (deferred "0.5.1") (markdown-mode "2.4") (forge "0.3.0") (emojify "1.2") (s "1.13.1")) :kind vc :maintainer '("Wanderson Ferreira" . "wand@hey.com") :commit "5dcbe59d56f6d05d7bda662ccafeab5fa5dfac33")

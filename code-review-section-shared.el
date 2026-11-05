@@ -208,10 +208,10 @@ refinement details)."
       (magit-section-paint section nil))))
 (defun code-review--html-written-loc (body &optional indent)
   "Compute HTML BODY's line count, preserving the review point.
-INDENT is an optional."
-  ;; SHR can temporarily display its scratch buffer for pixel measurements.
-  ;; Restoring that window configuration also restores other windows' points,
-  ;; including this review's stale window-point during a composer save.
+INDENT is an optional.
+SHR can temporarily display its scratch buffer for pixel measurements.
+Restoring that window configuration also restores other windows' points,
+including this review's stale window-point during a composer save."
   (save-excursion
     (let ((shr-indentation (* (or indent 0) (shr-string-pixel-width "-")))
           (image-scaling-factor code-review-section-image-scaling)
@@ -221,18 +221,33 @@ INDENT is an optional."
       (with-temp-buffer
         (insert body)
         (setq dom (libxml-parse-html-region (point-min) (point-max))))
-      (-> (with-temp-buffer
-            (setq start (point))
-            (insert " ")
-            (narrow-to-region start (1+ start))
-            (goto-char start)
-            (shr-insert-document dom)
-            ;; delete the inserted " "
-            (delete-char 1)
-            (buffer-substring-no-properties (point-min) (point-max)))
-          (split-string "\n")
-          (length)
-          (- 1)))))
+      (let ((res (catch 'shr-failed
+                   (with-temp-buffer
+                     (setq start (point))
+                     (insert " ")
+                     (narrow-to-region start (1+ start))
+                     (goto-char start)
+                     (condition-case err
+                         (progn
+                           (shr-insert-document dom)
+                           ;; delete the inserted " "
+                           (delete-char 1)
+                           (buffer-substring-no-properties
+                            (point-min) (point-max)))
+                       (error
+                        ;; the same shr crash the plain insert would
+                        ;; hit: mirror the plain-text fallback's line
+                        ;; count approximation
+                        (code-review-utils--log
+                         "code-review--html-written-loc"
+                         (format "shr render failed (%s); \
+estimating from raw text"
+                                 (error-message-string err)))
+                        (throw 'shr-failed nil)))))))
+        (if (stringp res)
+            (1- (length (split-string res "\n")))
+          ;; fallback approximation: the raw body's line count
+          (1+ (cl-count ?\n body)))))))
 (defun code-review--dom-string (dom)
   "Return string of DOM."
   (mapconcat (lambda (sub)
@@ -267,13 +282,35 @@ INDENT is an optional."
                                   'face 'diff-added)))
              (t
               (shr-generic td)))))))))
+(defun code-review--shr-tag-sub (dom)
+  "Like `shr-tag-sub', but survive a <sub> at the START of the narrowing.
+shr's version does (forward-char -1) at bol to delete the newline
+before the subscript; at the very beginning of the buffer that
+signals (beginning-of-buffer) and kills the whole render
+(2026-11-05, a greptile badge comment whose first element is a
+<sub> inside the one-char narrowing hack)."
+  (when (bolp)
+    (unless (bobp)
+      (forward-char -1)
+      (delete-char 1)))
+  (let ((start (point)))
+    (shr-generic dom)
+    (put-text-property start (point) 'display `(raise ,shr-sub-raise-factor))
+    (add-face-text-property start (point) 'shr-sup)))
+
 (defun code-review--insert-html (body &optional indent)
   "Insert html content BODY.
 INDENT is an optional number, if provided,
-INDENT count of spaces are added at the start of every line."
+INDENT count of spaces are added at the start of every line.
+A shr crash must never kill the render: it is logged to
+`code-review-log-file' (with the body's size and a snippet, so it
+can be fixed when it happens) and BODY degrades to plain text —
+a lower-resolution comment beats no diff buffer."
   (let ((shr-indentation (* (or indent 0) (shr-string-pixel-width "-")))
         (image-scaling-factor code-review-section-image-scaling)
-        (shr-external-rendering-functions '((div . code-review--shr-tag-div)))
+        (shr-external-rendering-functions
+         '((div . code-review--shr-tag-div)
+           (sub . code-review--shr-tag-sub)))
         (shr-width code-review-fill-column)
         (start (point))
         end
@@ -286,10 +323,30 @@ INDENT count of spaces are added at the start of every line."
       (insert " ")
       (narrow-to-region start (1+ start))
       (goto-char start)
-      (shr-insert-document dom)
-      ;; delete the inserted " "
-      (delete-char 1)
-      (setq end (point)))
+      (condition-case err
+          (progn
+            (shr-insert-document dom)
+            ;; delete the inserted " "
+            (delete-char 1)
+            (setq end (point)))
+        (error
+         (let ((snippet (replace-regexp-in-string
+                         "[\n\t]+" " "
+                         (substring-no-properties
+                          body 0 (min 300 (length body))))))
+           (code-review-utils--log
+            "code-review--insert-html"
+            (format "shr render failed (%s); body %d bytes, \
+starts with: %s"
+                    (error-message-string err)
+                    (length body)
+                    snippet))
+           ;; clean the partial render out of the narrowed region and
+           ;; degrade to the raw body as plain text
+           (delete-region (point-min) (point-max))
+           (goto-char (point-min))
+           (insert body)
+           (setq end (point))))))
     (when (> shr-indentation 0)
       ;; shr-indentation does not work for images and code block
       ;; let's fix it: prepend space for any lines that does not starts with a space
