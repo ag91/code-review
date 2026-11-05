@@ -95,5 +95,50 @@ moved recently: an active review's worktree never ages out."
 
 (defun days-to-seconds (d) (* d 86400.0))
 
+;;; req-2026-11-05-001: worktree-current-skips-refetch
+;; covers: code-review-repo.el, code-review-section.el
+;; covers-fn: code-review-repo--worktree-current?
+;; enforcement: test
+(ert-deftest code-review-repo/req-2026-11-05-001-worktree-current-skips-refetch ()
+  "WHEN the bound worktree's HEAD already equals the PR row's
+`sha' slot THE SYSTEM SHALL report the worktree current (the
+refresh's network refetch is skipped) — and nil when the head
+moved, the row has no sha, or no worktree is bound: a mismatched
+guard must always fall back to the fetch."
+  (let ((code-review-history-enabled nil))
+    (code-review-test--with-db
+      (let* ((dir (code-review-repo-test--make-repo))
+             (head (code-review-repo--git dir "rev-parse" "HEAD"))
+             (num "42")
+             (pr (code-review-repo-test--make-row num nil)))
+        ;; row carries the freshly fetched head (as raw-infos-update does)
+        (oset pr sha head)
+        (code-review-db-update pr)
+        ;; no worktree bound: never current
+        (let ((code-review-repo-worktree nil))
+          (should-not (code-review-repo--worktree-current?)))
+        ;; worktree at the row's head: current
+        (should (code-review-repo--ensure-worktree dir num head))
+        (let ((code-review-repo-worktree
+               (code-review-repo--worktree-dir dir num)))
+          (should (code-review-repo--worktree-current?))
+          ;; head moved on: the fetch brings the NEW head into the
+          ;; row while the worktree still sits at the old one
+          (with-temp-file (expand-file-name "f.txt" dir)
+            (insert "two\n"))
+          (code-review-repo-test--git dir "add" "f.txt")
+          (code-review-repo-test--git dir "-c" "user.name=t"
+                                      "-c" "user.email=t@t"
+                                      "commit" "-m" "two" "--no-verify")
+          (oset pr sha (code-review-repo--git dir "rev-parse" "HEAD"))
+          (code-review-db-update pr)
+          (should-not (code-review-repo--worktree-current?)))
+        ;; row without a sha: never current (fall back to the fetch)
+        (oset pr sha nil)
+        (code-review-db-update pr)
+        (let ((code-review-repo-worktree
+               (code-review-repo--worktree-dir dir num)))
+          (should-not (code-review-repo--worktree-current?)))))))
+
 (provide 'code-review-repo-test)
 ;;; code-review-repo-test.el ends here

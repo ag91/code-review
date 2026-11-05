@@ -225,10 +225,15 @@ head; for a local diff review the repository itself is the worktree."
     (when (and code-review-repo-enable
                (or (not code-review-repo-worktree)
                    code-review-section-full-refresh?))
-      (condition-case err
-          (code-review-repo-setup (code-review-db-get-pullreq))
-        (error (message "code-review: repo setup failed: %s"
-                        (error-message-string err))))))
+      ;; the refresh's network fetches (PR head + base refs) run
+      ;; 3.4s measured on litellm and are pure waste when the
+      ;; worktree already sits at the (freshly fetched) head oid
+      (if (code-review-repo--worktree-current?)
+          nil
+        (condition-case err
+            (code-review-repo-setup (code-review-db-get-pullreq))
+          (error (message "code-review: repo setup failed: %s"
+                          (error-message-string err)))))))
   (when code-review-repo-worktree
     (setq default-directory
           (file-name-as-directory code-review-repo-worktree))))
@@ -296,24 +301,30 @@ sections (via `code-review-sections-hook', or
 washed diff under the files-report container."
   (magit-insert-section section (code-review--root-section)
     (magit-insert-section (code-review)
-      (magit-run-section-hook (if commit-focus?
-                                  'code-review-sections-commit-hook
-                                'code-review-sections-hook)))
+      (code-review--stage-time "sections-hook"
+        (magit-run-section-hook (if commit-focus?
+                                    'code-review-sections-commit-hook
+                                  'code-review-sections-hook))))
     ;; phase 24 stage 1: the criteria files of the diff wash ABOVE
     ;; "Files changed" (specs are first-class review artifacts)
-    (code-review-section--wash-specs)
+    (code-review--stage-time "wash-specs"
+      (code-review-section--wash-specs))
     (magit-insert-section (code-review-files-report-section)
-      (code-review-section-insert-files-changed)
+      (code-review--stage-time "insert-files-changed"
+        (code-review-section-insert-files-changed))
       (magit-insert-section (code-review-files-chnged)
         (save-restriction
           (narrow-to-region (point) (point-max))
-          (run-hooks 'magit-diff-wash-diffs-hook)
+          (code-review--stage-time "diff-wash-hook"
+            (run-hooks 'magit-diff-wash-diffs-hook))
           ;; phase 30: one file block at a time; large blocks become
           ;; placeholders whose hunks load through the deferred queue
-          (code-review-lazy--wash-files)
-          (unless (eobp)
-            (error "Code review stopped before the end of the diff")))
-        (code-review-lazy--schedule commit-focus?)))))
+          (code-review--stage-time "lazy-wash-files"
+            (progn
+              (code-review-lazy--wash-files)
+              (unless (eobp)
+                (error "Code review stopped before the end of the diff"))))
+          (code-review-lazy--schedule commit-focus?))))))
 
 (defun code-review-section--fold-and-mark (fresh-render? &optional commit-focus?)
   "Fold bot-authored comment threads (AI chatter) and add the
@@ -405,12 +416,14 @@ If you want to display a minibuffer MSG in the end."
   ;; would leak its NEW tag/reorder/fold into the commit buffer.
   (if commit-focus?
       (setq code-review-section--new-since-last-review nil)
-    (when-let* ((infos (code-review-db--pullreq-raw-infos)))
-      (setq code-review-section--new-since-last-review
-            (a-get infos 'new-since-last-review))))
+    (code-review--stage-time "rederive-new-since"
+      (when-let* ((infos (code-review-db--pullreq-raw-infos)))
+        (setq code-review-section--new-since-last-review
+              (a-get infos 'new-since-last-review)))))
   (with-current-buffer (get-buffer-create buff-name)
-    (unless (derived-mode-p 'code-review-mode)
-      (code-review-mode))
+    (code-review--stage-time "mode-body"
+      (unless (derived-mode-p 'code-review-mode)
+        (code-review-mode)))
     (code-review--stage-time "setup-worktree"
       (code-review-section--setup-worktree))
     (let* ((window (get-buffer-window buff-name))
@@ -436,8 +449,14 @@ If you want to display a minibuffer MSG in the end."
       (when msg
         (message nil)
         (message msg))
-      ;; Run post hook after everything is rendered and mode is active
-      (run-hooks 'code-review-post-hook))))
+      ;; Run post hook after everything is rendered and mode is active;
+      ;; per-member timing names the expensive one (1.7s observed)
+      (dolist (post-fn (delq nil (if (functionp code-review-post-hook)
+                                     (list code-review-post-hook)
+                                   (copy-sequence code-review-post-hook))))
+        (code-review--stage-time
+            (format "post-hook:%s" post-fn)
+          (funcall post-fn))))))
 
 (cl-defmethod code-review--auth-token-set? ((_github code-review-github-repo) res)
   "Check if the RES has a message for auth token not set for GITHUB."

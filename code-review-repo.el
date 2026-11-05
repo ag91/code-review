@@ -275,6 +275,23 @@ The worktree is hard-updated when the PR head moved."
         ((code-review-gitlab-repo-p pr) 'gitlab)
         (t nil)))
 
+(defun code-review-repo--worktree-current? ()
+  "Non-nil when the bound `code-review-repo-worktree' already sits
+at the PR row's head sha, so `code-review-repo--fetch-refs''s
+network fetch would be redundant.  The row's `sha' slot is the
+head oid fetched FRESH during this refresh (raw-infos-update
+writes it before the render), so a match means the worktree needs
+no update.  The base ref is skipped along with the head: it only
+drifts when the base branch moved while the head stood still, and
+that self-heals on the next fetch."
+  (and code-review-repo-worktree
+       (let* ((pr (ignore-errors (code-review-db-get-pullreq)))
+              (head (and pr (slot-boundp pr 'sha) (oref pr sha))))
+         (and head
+              (equal head (code-review-repo--git
+                           code-review-repo-worktree
+                           "rev-parse" "HEAD"))))))
+
 (defun code-review-repo-setup (pr)
   "Set up local repo context for PR object.
 Stores the repository dir in `code-review-repo-dir' and a worktree

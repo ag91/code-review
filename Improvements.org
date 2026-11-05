@@ -5665,6 +5665,65 @@ it; the .elc no longer contains the macro NAME when expanded.
 NEXT: run one timed refresh of the big PR with
 =code-review-stage-timing?= t and rank Step 2 by the log.
 
+*** Step 2a — the measured 80% freeze, first fix LANDED — 2026-11-05
+
+The timed refresh on the real PR settled the ranking (my db-write
+bet was WRONG — those are milliseconds):
+
+- =setup-worktree= 3.4s — a synchronous NETWORK git fetch (PR head
+  ref + base ref) on EVERY full refresh, even when the worktree
+  already sits at the fetched head.
+- =render-diff-tree= 2.2s — the skeleton wash (split, classify,
+  tags, specs) over a ~400-file diff.
+- ~3.7s INSIDE the render stage but outside its wrapped
+  sub-stages — unaccounted; the mode body, the new-since rederive
+  and the post-hook are now separately timed to pin it on the next
+  run.
+- db writes, news compute, clean-diff, viewed pass: all <0.3s.
+
+LANDED: =code-review-repo--worktree-current?= — the refresh skips
+the network fetch entirely when the worktree's HEAD already
+equals the row's =sha= slot (the FRESH head the GraphQL fetch
+just wrote), turning the 3.4s into a local =rev-parse=.  The
+base-ref fetch is skipped along with it (base drift with a still
+head self-heals on the next head change).  Guard test
+=req-2026-11-05-001= (current / head-moved / no-sha / no-worktree
+all fall back to the fetch on mismatch).  Suite 423/423; live in
+the daemon.
+
+NEXT: one more timed refresh on the real PR — expect
+=setup-worktree= to collapse to milliseconds and the finer probes
+to name the 3.7s owner; then rank the rest of Step 2
+(=render-diff-tree='s 2.2s is the next candidate).
+
+*** Step 2b — second timed refresh — 2026-11-05
+
+Two refreshes after the skip landed:
+
+- Head unchanged: =setup-worktree= **0.003s** (was 3.4s), whole
+  render stage **1.72s** (was 9.46s).  The skip works.
+- Head moved (the one catch-up refresh): the fetch ran (3.4s) AND
+  =post-hook= cost **1.72s** — the unaccounted gap named.  The
+  other refresh showed 0.24s there: the post-hook cost is
+  state-dependent (head-moved ⇒ the registry trailer scan or
+  similar recomputes).
+
+Instrumentation added: =post-hook= now times each MEMBER
+separately (=post-hook:code-review-registry--detect= etc.), and
+=--render-diff-tree= wraps =sections-hook=, =wash-specs=,
+=insert-files-changed=, =diff-wash-hook=, =lazy-wash-files=.
+
+NOTED while instrumenting: the original =--render-diff-tree= was
+the "balanced but MIS-NESTED" trap — a surplus closer after the
+sections-hook block closed the root section early, so wash-specs
+and the files report rendered at DEFUN level.  Adding the probes
+un-nested it; the parse only balanced again after recounting
+(AGENTS.md's phase-20 trap, fourth instance).
+
+Suite 423/423; section.elc reloaded into the daemon.  NEXT: one
+timed refresh per-member names the 1.7s post-hook member; likely
+Step 3 = defer the heavy member to a post-first-paint tick.
+
 ** Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
 
 *** The local-comment wipe (req-2026-11-03-001)
