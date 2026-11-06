@@ -80,13 +80,62 @@ Small blocks always wash inline; see `code-review-lazy-threshold'."
   "Whether the render that built the placeholders was commit-focus.")
 (put 'code-review-lazy--commit-focus? 'permanent-local t)
 
+(defvar-local code-review-lazy--fresh-render? nil
+  "Whether the render that queued the wash is the buffer's first.
+Captured at schedule time: the deferred drain runs long after the
+render's dynamic bindings are gone.  Drives the fresh-render folds
+at the drain.")
+(put 'code-review-lazy--fresh-render? 'permanent-local t)
+
+(defvar-local code-review-lazy--just-refetched? nil
+  "Captured `code-review-section--just-refetched' for the drain.")
+(put 'code-review-lazy--just-refetched? 'permanent-local t)
+
+(defvar-local code-review-lazy--wash-pos nil
+  "Marker at the next unwashed diff block, nil when nothing to wash.")
+(put 'code-review-lazy--wash-pos 'permanent-local t)
+
+(defvar-local code-review-lazy--wash-limit nil
+  "Marker at the end of the wash region (the files-chnged body).")
+(put 'code-review-lazy--wash-limit 'permanent-local t)
+
+(defvar-local code-review-lazy--insert-parent nil
+  "The section the render was inserting into when scheduled.
+The deferred ticks create file sections: magit's insertion context
+is dynamic, and after the render it is gone — a placeholder created
+without it gets a nil parent AND silently REPLACES
+`magit-root-section' (magit treats a parent-less insert as a new
+root), corrupting the whole section tree.")
+(put 'code-review-lazy--insert-parent 'permanent-local t)
+
+(defvar-local code-review-lazy--end-fixups nil
+  "Enclosing sections whose `end' markers the wash must extend.
+The render finishes the files-chnged/report/root sections BEFORE
+the deferred wash paints the hunks: their end markers (insertion
+type nil) stay at the pre-wash position, pointing INTO the painted
+content.  The drain moves them to the wash's true end.")
+(put 'code-review-lazy--end-fixups 'permanent-local t)
+
+(defvar code-review-lazy--wash-limit-dyn nil
+  "Dynamic (non-buffer-local) wash limit for `--block-end' during a step.")
+
+(defvar code-review-section--just-refetched)
+
 (defclass code-review-lazy-placeholder-section (magit-section)
   ())
 
 (defun code-review-lazy--invalidate ()
   "Drop every pending lazy chunk for the current buffer."
   (setq code-review-lazy--epoch (cons 'code-review-lazy nil)
-        code-review-lazy--queue nil))
+        code-review-lazy--queue nil)
+  ;; the wash stepper shares the epoch: drop its state too, or a
+  ;; stale marker keeps a drain loop waiting forever
+  (when (markerp code-review-lazy--wash-pos)
+    (set-marker code-review-lazy--wash-pos nil))
+  (when (markerp code-review-lazy--wash-limit)
+    (set-marker code-review-lazy--wash-limit nil))
+  (setq code-review-lazy--wash-pos nil
+        code-review-lazy--wash-limit nil))
 
 (defun code-review-lazy--render-call (origin &rest args)
   "ORIGIN is `code-review-render--call'; ARGS its arguments.
@@ -95,15 +144,13 @@ pending chunk callbacks would otherwise re-match their captured
 epoch against the restored state.  Invalidate before the render
 (kills chunks of older renders) and again after a failure (kills
 the failed render's own chunks)."
-  (when code-review-lazy-enabled
-    (code-review-lazy--invalidate))
+  (code-review-lazy--invalidate)
   (let ((ok nil))
     (unwind-protect
         (prog1 (apply origin args)
           (setq ok t))
       (unless ok
-        (when code-review-lazy-enabled
-          (code-review-lazy--invalidate))))))
+        (code-review-lazy--invalidate)))))
 (advice-add 'code-review-render--call :around
             #'code-review-lazy--render-call)
 
@@ -121,12 +168,14 @@ ORIGIN is the advised `magit-section-toggle' or `magit-section-show'."
 ;;; large raw blocks with these)
 
 (defun code-review-lazy--block-end ()
-  "End position of the `diff --git' block starting at point."
+  "End position of the `diff --git' block starting at point.
+Bounded by `code-review-lazy--wash-limit-dyn' when the deferred
+stepper runs (the text after the wash region is other sections)."
   (save-excursion
     (forward-line 1)
-    (if (re-search-forward "^diff --git " nil 'move)
+    (if (re-search-forward "^diff --git " code-review-lazy--wash-limit-dyn 'move)
         (line-beginning-position)
-      (point-max))))
+      (or code-review-lazy--wash-limit-dyn (point-max)))))
 
 (defun code-review-lazy--block-stats (text)
   "Return (HUNKS ADDED DELETED) counts for one raw diff block TEXT."
@@ -196,22 +245,95 @@ Point ends after the inserted section, ready for the next block."
                                   'font-lock-face 'code-review-dimmed))
                          (magit-insert-heading)))))))
 
-(defun code-review-lazy--wash-files ()
-  "Wash the diff one file block at a time, lazily for large blocks.
-Replaces the whole-diff `magit-wash-sequence' pass: a block above
-`code-review-lazy-threshold' becomes a placeholder whose hunks load
-later through the deferred queue.  The trailing newline that the
-render appends after the last block is skipped like the old
-post-wash `skip-chars-forward' tail."
-  (while (progn (skip-chars-forward " \t\r\n") (not (eobp)))
+(defun code-review-lazy--wash-all ()
+  "Wash the whole diff synchronously (the `code-review-lazy-enabled'
+nil path): every block inline, large ones through the placeholder
+machinery, no deferred ticks in between."
+  (let ((code-review-lazy--wash-limit-dyn nil))
+    (while (progn (skip-chars-forward " \t\r\n") (not (eobp)))
+      (if (not (looking-at "^diff --git"))
+          (error "Code review stopped before the end of the diff")
+        (if (and code-review-lazy-enabled
+                 (> (- (code-review-lazy--block-end) (point))
+                    code-review-lazy-threshold))
+            (code-review-lazy--insert-placeholder)
+          (unless (code-review-wash-diff)
+            (error "Code review stopped before the end of the diff")))))))
+
+(defun code-review-lazy--precheck ()
+  "Validate the inserted diff is a sequence of `diff --git' blocks.
+Pure motion over the raw text (no washing): milliseconds instead of
+the multi-second wash, so a malformed diff still fails the
+synchronous render and `code-review-render--call' rolls it back.
+The wash itself then runs through the deferred stepper."
+  (save-excursion
+    (while (progn (skip-chars-forward " \t\r\n") (not (eobp)))
+      (if (not (looking-at "^diff --git"))
+          (error "Code review stopped before the end of the diff")
+        (goto-char (code-review-lazy--block-end))))))
+
+(defun code-review-lazy--wash-block ()
+  "Wash ONE file block at point: placeholder when large, inline else.
+Return non-nil when a block was washed, nil when the raw text is
+exhausted."
+  (skip-chars-forward " \t\r\n")
+  (if (eobp)
+      nil
     (if (not (looking-at "^diff --git"))
         (error "Code review stopped before the end of the diff")
       (if (and code-review-lazy-enabled
                (> (- (code-review-lazy--block-end) (point))
                   code-review-lazy-threshold))
-          (code-review-lazy--insert-placeholder)
+          (progn (code-review-lazy--insert-placeholder) t)
         (unless (code-review-wash-diff)
-          (error "Code review stopped before the end of the diff"))))))
+          (error "Code review stopped before the end of the diff"))
+        t))))
+
+(defun code-review-lazy--wash-step (buffer epoch)
+  "Wash one file block in BUFFER per tick while EPOCH is current.
+When the raw text is exhausted, hand over to the placeholder
+expansion phase."
+  (when (and (buffer-live-p buffer)
+             (eq epoch (buffer-local-value 'code-review-lazy--epoch buffer)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t)
+            (code-review-lazy--wash-limit-dyn code-review-lazy--wash-limit)
+            done err)
+        (if (null code-review-lazy--wash-pos)
+            ;; wash phase already drained
+            (code-review-lazy--expand-step buffer epoch)
+          (save-restriction
+            (narrow-to-region (point-min) code-review-lazy--wash-limit)
+            (goto-char code-review-lazy--wash-pos)
+            ;; re-install the render's magit insertion context: the
+            ;; sections created here must become children of the
+            ;; files-chnged section, not a new root
+            (let ((magit-insert-section--parent code-review-lazy--insert-parent)
+                  (magit-insert-section--current code-review-lazy--insert-parent)
+                  (magit-insert-section--oldroot magit-root-section))
+              (setq done
+                    (condition-case e
+                        (code-review-lazy--wash-block)
+                      (error (setq err (error-message-string e)) nil)))
+              (when done
+                (set-marker code-review-lazy--wash-pos (point)))))
+          (cond
+           (err
+            (code-review-lazy--invalidate)
+            (message "Code review lazy wash failed: %s" err))
+           ((not done)
+            (setq code-review-lazy--wash-pos nil)
+            (set-marker code-review-lazy--wash-limit nil)
+            ;; hand over to the expansion phase on the NEXT tick (not
+            ;; inline: a test or observer must be able to freeze the
+            ;; buffer between the wash and the expansion phases)
+            (deferred:nextc (deferred:next)
+              (lambda (_)
+                (code-review-lazy--expand-step buffer epoch))))
+           (t
+            (deferred:nextc (deferred:next)
+              (lambda (_)
+                (code-review-lazy--wash-step buffer epoch))))))))))
 
 ;;; Loading
 
@@ -281,31 +403,62 @@ Return non-nil when a file was loaded."
                    (code-review-lazy--expand-at section)))))
     loaded))
 
-(defun code-review-lazy--step (buffer epoch)
-  "Load one queued file in BUFFER if EPOCH is still current."
+(defun code-review-lazy--expand-step (buffer epoch)
+  "Expand queued placeholders in BUFFER, one per tick, while EPOCH
+is current.  When the queue drains, run the whole-buffer visibility
+passes (bot folds, viewed folds, fringe markers) that the render
+could not apply: the hunks did not exist yet at render time."
   (when (and (buffer-live-p buffer)
              (eq epoch (buffer-local-value 'code-review-lazy--epoch buffer)))
     (with-current-buffer buffer
       (if (not (code-review-lazy--load-next))
-          (let ((inhibit-read-only t))
-            ;; the queue drained: apply the whole-buffer visibility
-            ;; passes (bot folds, viewed folds, fringe markers) that
-            ;; ran at render time before the placeholders existed
+          (let ((inhibit-read-only t)
+                ;; the render's dynamic binding is long gone; the
+                ;; drain re-installs the captured value so
+                ;; fold-and-mark sees the render-time flags
+                (code-review-section--just-refetched
+                 code-review-lazy--just-refetched?))
+            (dolist (sec code-review-lazy--end-fixups)
+              (when (and (object-of-class-p sec 'magit-section)
+                         (slot-boundp sec 'end)
+                         (markerp (oref sec end)))
+                (set-marker (oref sec end) (point-max))))
             (code-review-section--fold-and-mark
-             nil code-review-lazy--commit-focus?))
+             code-review-lazy--fresh-render?
+             code-review-lazy--commit-focus?))
         (deferred:nextc (deferred:next)
           (lambda (_)
-            (code-review-lazy--step buffer epoch)))))))
+            (code-review-lazy--expand-step buffer epoch)))))))
 
-(defun code-review-lazy--schedule (commit-focus?)
-  "Queue the deferred chunk loader for the placeholders of this render."
-  (setq code-review-lazy--commit-focus? commit-focus?)
-  (when code-review-lazy--queue
-    (let ((buffer (current-buffer))
-          (epoch code-review-lazy--epoch))
-      (deferred:nextc (deferred:next)
-        (lambda (_)
-          (code-review-lazy--step buffer epoch))))))
+(defun code-review-lazy--schedule (commit-focus? fresh-render?)
+  "Queue the deferred wash + chunk loader for this render.
+FRESH-RENDER? is the render's own first-render flag, captured for
+the drain.  Called inside the render's narrowing: capture the wash
+region as markers and hand the per-block work to the deferred
+queue so Emacs can process input between file blocks (the sync
+wash blocked the UI for seconds on medium-file PRs — every block
+under the lazy threshold washed inline in one pass)."
+  (setq code-review-lazy--commit-focus? commit-focus?
+        code-review-lazy--fresh-render? fresh-render?
+        code-review-lazy--just-refetched?
+        (and (boundp 'code-review-section--just-refetched)
+             code-review-section--just-refetched)
+        code-review-lazy--wash-pos (copy-marker (point))
+        code-review-lazy--wash-limit (copy-marker (point-max))
+        code-review-lazy--insert-parent magit-insert-section--parent
+        code-review-lazy--end-fixups
+        (let ((secs nil)
+              (sec magit-insert-section--parent))
+          (while sec
+            (push sec secs)
+            (setq sec (and (object-of-class-p sec 'magit-section)
+                           (ignore-errors (oref sec parent)))))
+          secs))
+  (let ((buffer (current-buffer))
+        (epoch code-review-lazy--epoch))
+    (deferred:nextc (deferred:next)
+      (lambda (_)
+        (code-review-lazy--wash-step buffer epoch)))))
 
 (provide 'code-review-lazy)
 ;;; code-review-lazy.el ends here

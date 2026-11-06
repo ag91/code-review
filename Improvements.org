@@ -5890,6 +5890,91 @@ regenerated via =code-review-criteria-home-index-sync= (skeleton
 stanzas; any hand-set =p= priorities on it were lost with the
 file).  Suite 423/423.
 
+*** Step 2d — the whole diff wash defers, one file block per tick — 2026-11-06 LANDED
+
+The stage-timing log on #1137 showed the sync render tail still
+blocking on three stages after Step 2c: =setup-worktree= (15s,
+one-time per PR), =lazy-wash-files= (4.8s) and
+=post-hook:code-review-registry--detect= (3.9s, cached after).
+The wash was the fixable one: phase 30 only DEFERRED blocks above
+=code-review-lazy-threshold=, so a PR of many medium files washed
+every one of them inline in ONE synchronous pass.
+
+The restructure (=code-review-lazy.el=, =--render-diff-tree=):
+
+- The render now runs only a structural PRECHECK over the raw
+  diff (=--precheck=: pure motion, milliseconds) and hands the
+  wash to the deferred stepper.  Malformed diffs still fail the
+  SYNC render and keep the =code-review-render--call= rollback
+  semantics.
+- =--wash-step= washes ONE file block per tick (inline below the
+  threshold, placeholder above it), then hands over to the
+  placeholder loader (=--expand-step=) and finally re-runs
+  =fold-and-mark= at the drain with the render's captured
+  fresh/commit-focus/just-refetched flags (the hunks did not
+  exist at render time).  First paint on #1137 drops the 4.8s
+  wash to ~0; Emacs processes input between every file block.
+- Three deferred-wash traps, all hit and all fixed here:
+  (1) magit's insertion context is DYNAMIC — a section created at
+  tick time has a nil parent AND silently REPLACES
+  =magit-root-section= (=--create= treats a parent-less insert as
+  a new root); the stepper rebinds
+  =magit-insert-section--parent/current/oldroot= to the values
+  captured at schedule time.
+  (2) the enclosing sections' =end= markers are set at render
+  finish (insertion type nil) and the wash paints AFTER that: the
+  drain extends the captured ancestor ends (=--end-fixups=) to
+  the washed end.
+  (3) =--invalidate= must clear the wash markers too, or a
+  rolled-back render leaves a stale =--wash-pos= that a drain
+  loop waits on forever.
+- =code-review-lazy-enabled= nil keeps a genuinely SYNCHRONOUS
+  path (=--wash-all=, the old loop).  =code-review-lazy--wash-files=
+  is gone (=fmakunbound'd in the daemon).
+
+Suite 424/424 (the render tests drain through
+=code-review-test--drain-lazy=; the lazy tests freeze the
+placeholder state with =--drain-wash=, which invalidates the load
+queue at a tick boundary — the wash→expand handover happens on
+its own tick precisely so that freeze is deterministic).
+
+*** Step 2e — review the flows that force a full PR reload — 2026-11-06 :STATUS:todo:
+
+AUDITED (all =code-review-section-full-refresh?= t sites):
+=code-review-comment.el= (the three comment submits:
+=--handler-commit= new code comment, =--update-comment= edit,
+=--new-issue-comment=/single comment), plus the 13 sites in
+=code-review-actions.el=/=code-review.el= (explicit refreshes,
+kill/finish flows, =g=).
+
+The comment submits are the wrong-reload cases: the forge
+mutation is async and only the CONVERSATION changed afterwards —
+the diff and infos did not, so a full refetch+rebuild
+(=--build-buffer= with full refresh) re-downloads the diff,
+re-washes 44 file blocks and re-derives the analysis for a one
+comment change.  Design for the conversation-only rebuild:
+
+1. After the mutation callback succeeds, merge the returned
+   comment into the db's =raw-comments= (the reconcile in
+   req-2026-11-03-001 already preserves locals — extend it to
+   accept the single new node).
+2. Re-render WITHOUT the fetch stages: =--trigger-hooks= with
+   full-refresh? nil rebuilds from the STORED payload — that is
+   the cheap path the percent display already paves (the
+   deferred wash re-paints block by block).
+3. Optionally an in-place comment-section update (the
+   =--insert-outdated-comment-missing= anchor machinery) — only
+   worth it if the re-render flash matters; the deferred wash
+   already keeps the UI responsive during it.
+
+The EXPLICIT =g= refresh and the kill/finish flows are correct
+full reloads (the user asked to re-fetch).  NOT touched: the
+commit-focus renders (different diff payload by design).
+
+Deferred until a session where the submit-flash actually annoys:
+the machinery above exists, this is a ~30-line change in
+=code-review-comment.el= plus a test.
+
 ** Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
 
 *** The local-comment wipe (req-2026-11-03-001)

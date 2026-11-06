@@ -26,6 +26,19 @@
   "Return a unique temporary sqlite file name."
   (format "/tmp/code-review-test-db-%s.sqlite" (uuidgen-4)))
 
+(defun code-review-test--drain-lazy (buffer)
+  "Pump deferred timers until BUFFER's lazy wash and chunk loader finish.
+Batch emacs runs deferred callbacks only on timer ticks; the
+deferred per-block wash (phase 31) means a fresh `trigger-hooks'
+render is NOT washed yet."
+  (with-current-buffer buffer
+    (let ((deadline (+ (float-time) 30)))
+      (while (or code-review-lazy--wash-pos code-review-lazy--queue
+                 deferred:queue)
+        (when (> (float-time) deadline)
+          (ert-fail "lazy render never drained"))
+        (sit-for 0.05)))))
+
 (defun code-review-test--reset-db (file)
   "Point the singleton database at FILE, closing any live connection first.
 FILE nil means: just drop the singleton."

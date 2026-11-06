@@ -297,7 +297,7 @@ COMMIT-FOCUS? excludes PR-scoped read tracking."
                 code-review-section--file-classifications))))
     (insert ?\n)))
 
-(defun code-review-section--render-diff-tree (commit-focus?)
+(defun code-review-section--render-diff-tree (commit-focus? &optional fresh-render?)
   "Render the section tree over the inserted diff text: the header
 sections (via `code-review-sections-hook', or
 `code-review-sections-commit-hook' with COMMIT-FOCUS?) and the
@@ -320,14 +320,19 @@ washed diff under the files-report container."
           (narrow-to-region (point) (point-max))
           (code-review--stage-time "diff-wash-hook"
             (run-hooks 'magit-diff-wash-diffs-hook))
-          ;; phase 30: one file block at a time; large blocks become
-          ;; placeholders whose hunks load through the deferred queue
-          (code-review--stage-time "lazy-wash-files"
-            (progn
-              (code-review-lazy--wash-files)
-              (unless (eobp)
-                (error "Code review stopped before the end of the diff"))))
-          (code-review-lazy--schedule commit-focus?))))))
+          ;; phase 30 + 31: the per-block wash runs through the
+          ;; deferred queue (one file per tick, Emacs processes input
+          ;; between blocks).  A cheap structural precheck keeps the
+          ;; malformed-diff rollback semantics of the old sync loop.
+          (code-review--stage-time "lazy-wash-precheck"
+            (code-review-lazy--precheck))
+          (if code-review-lazy-enabled
+              (code-review-lazy--schedule commit-focus? fresh-render?)
+            (code-review--stage-time "lazy-wash-files"
+              (progn
+                (code-review-lazy--wash-all)
+                (unless (eobp)
+                  (error "Code review stopped before the end of the diff"))))))))))
 
 (defun code-review-section--fold-and-mark (fresh-render? &optional commit-focus?)
   "Fold bot-authored comment threads (AI chatter) and add the
@@ -440,7 +445,7 @@ If you want to display a minibuffer MSG in the end."
          (code-review--stage-time "insert-pr-text"
            (code-review-section--insert-pr-text commit-focus?))
          (code-review--stage-time "render-diff-tree"
-           (code-review-section--render-diff-tree commit-focus?))
+           (code-review-section--render-diff-tree commit-focus? fresh-render?))
          (code-review--stage-time "fold-and-mark"
            (code-review-section--fold-and-mark fresh-render? commit-focus?)))
        )

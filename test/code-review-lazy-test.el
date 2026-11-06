@@ -45,10 +45,25 @@
 Batch emacs runs deferred callbacks only on timer ticks."
   (with-current-buffer name
     (let ((deadline (+ (float-time) 30)))
-      (while (or code-review-lazy--queue deferred:queue)
+      (while (or code-review-lazy--queue
+                 code-review-lazy--wash-pos
+                 deferred:queue)
         (when (> (float-time) deadline)
           (ert-fail "lazy chunks never drained"))
         (sit-for 0.05)))))
+
+(defun code-review-lazy-test--drain-wash (name)
+  "Let the deferred WASH stepper finish, then freeze the buffer:
+placeholders stay placeholders (the load queue is invalidated).
+No tick can run between the loop exit and the invalidate: the
+handover to the expansion phase happens on its own tick."
+  (with-current-buffer name
+    (let ((deadline (+ (float-time) 30)))
+      (while code-review-lazy--wash-pos
+        (when (> (float-time) deadline)
+          (ert-fail "lazy wash never finished"))
+        (sit-for 0.05))
+      (code-review-lazy--invalidate))))
 
 (defun code-review-lazy-test--counts ()
   "Return (FILES HUNKS) of the current buffer's section tree."
@@ -62,15 +77,25 @@ Batch emacs runs deferred callbacks only on timer ticks."
 
 ;;; req-2026-11-05-001: opening-a-large-pr-shows-a-skeleton-instantly
 ;; covers: code-review-lazy.el
-;; covers-fn: code-review-lazy--wash-files code-review-lazy--insert-placeholder
+;; covers-fn: code-review-lazy--wash-step code-review-lazy--insert-placeholder
 ;; enforcement: test
 (ert-deftest code-review-lazy/req-2026-11-05-001-skeleton-renders-without-big-hunks ()
   "WHEN a PR opens with a large file block THE SYSTEM SHALL render the skeleton without washing that file's hunks synchronously."
   (code-review-lazy-test--with-review
     (code-review--trigger-hooks name)
     (with-current-buffer name
-      (goto-char (point-min))
+      ;; NOTHING washed synchronously: the render returns after the
+      ;; structural precheck, Emacs gets its input back immediately
+      ;; (the raw diff text still carries "+new"/"+xxxx", so assert on
+      ;; the section tree, not on hunk strings)
+      (should (equal (code-review-lazy-test--counts) (list 0 0)))
+      (should (= (length code-review-lazy--queue) 0)))
+    ;; the deferred stepper then washes block by block: the small file
+    ;; inline, the big block as a placeholder
+    (code-review-lazy-test--drain-wash name)
+    (with-current-buffer name
       ;; the big file's placeholder heading is there, tagged and sized
+      (goto-char (point-min))
       (should (search-forward "big.py" nil t))
       (goto-char (match-beginning 0))
       (should (get-text-property (point) 'code-review-lazy))
@@ -79,16 +104,22 @@ Batch emacs runs deferred callbacks only on timer ticks."
       (goto-char (point-min))
       (search-forward "big.py")
       (should (get-text-property (match-beginning 0) 'code-review-path))
-      ;; NO big hunk text was painted during the synchronous phase
+      ;; NO big hunk text was painted during the wash phase
       (goto-char (point-min))
       (should-not (search-forward "+xxxx" nil t))
-      ;; the small file washed inline with painted faces
+      ;; the big file washed inline with painted faces
       (goto-char (point-min))
       (search-forward "+new")
       (should (eq (get-text-property (1- (point)) 'font-lock-face)
                   'magit-diff-added))
-      ;; one placeholder queued for the deferred loader
-      (should (= (length code-review-lazy--queue) 1)))))
+      ;; frozen before the loader ran: the placeholder stays a
+      ;; placeholder and the load queue is invalidated, so TAB is the
+      ;; only way it loads
+      (should (= (length code-review-lazy--queue) 0))
+      (should (get-text-property
+               (progn (goto-char (point-min)) (search-forward "big.py")
+                      (match-beginning 0))
+               'code-review-lazy)))))
 
 (ert-deftest code-review-lazy/chunks-load-after-render ()
   (code-review-lazy-test--with-review
@@ -108,8 +139,9 @@ Batch emacs runs deferred callbacks only on timer ticks."
 (ert-deftest code-review-lazy/toggle-loads-placeholder-on-demand ()
   (code-review-lazy-test--with-review
     (code-review--trigger-hooks name)
-    ;; kill the background queue: only the TAB path may load
-    (with-current-buffer name (code-review-lazy--invalidate))
+    ;; let the wash finish, then kill the background queue: only the
+    ;; TAB path may load
+    (code-review-lazy-test--drain-wash name)
     (with-current-buffer name
       (goto-char (point-min))
       (search-forward "big.py")
@@ -172,7 +204,7 @@ Batch emacs runs deferred callbacks only on timer ticks."
 (ert-deftest code-review-lazy/failed-load-restores-placeholder ()
   (code-review-lazy-test--with-review
     (code-review--trigger-hooks name)
-    (with-current-buffer name (code-review-lazy--invalidate))
+    (code-review-lazy-test--drain-wash name)
     (with-current-buffer name
       (goto-char (point-min))
       (search-forward "big.py")

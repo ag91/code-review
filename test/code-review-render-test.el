@@ -43,6 +43,7 @@
                     ;; A supported Emacs cleanup hook must not run on new text.
                     (add-hook 'change-major-mode-hook #'font-lock-defontify nil t)))))
       (code-review--trigger-hooks name)
+      (code-review-test--drain-lazy name)
       (code-review-db--pullreq-raw-comments-update
        '((state . "LOCAL COMMENT") (author (login . "me"))
          (comments (nodes ((internal-id . "draft")
@@ -51,6 +52,7 @@
                             (side . "RIGHT") (local? . t))))))
       (dotimes (_ 3)
         (code-review--trigger-hooks name)
+        (code-review-test--drain-lazy name)
         (with-current-buffer name
           (goto-char (point-min))
           (search-forward "+new")
@@ -67,6 +69,7 @@
   "WHEN a refresh fails THE SYSTEM SHALL retain the previous usable review."
   (code-review-render-test--with-review
     (code-review--trigger-hooks name)
+    (code-review-test--drain-lazy name)
     (with-current-buffer name
       (let* ((text (buffer-string))
              (root magit-root-section)
@@ -87,17 +90,36 @@
         (should (= (point) position))
         ;; Inherited visibility must also survive a successful retry.
         (code-review--trigger-hooks name)
+        (code-review-test--drain-lazy name)
         (goto-char (oref magit-root-section end))
         (should (looking-at-p "[[:space:]]*\\'"))))))
 
 (ert-deftest code-review-render/unwashed-tail-restores-review ()
   (code-review-render-test--with-review
     (code-review--trigger-hooks name)
+    (code-review-test--drain-lazy name)
     (let ((text (with-current-buffer name (buffer-string))))
       (cl-letf (((symbol-function 'code-review-wash-diff) (lambda () nil)))
-        (should-error (code-review--trigger-hooks name)))
+        (code-review--trigger-hooks name)
+        (code-review-test--drain-lazy name)
+        (with-current-buffer name
+          ;; the deferred stepper refused the first block: it stopped
+          ;; the chain, dropped the queue and left the raw skeleton
+          (should (null code-review-lazy--wash-pos))
+          (should (null code-review-lazy--queue))
+          (should-not (equal-including-properties text (buffer-string)))
+          (goto-char (point-min))
+          (should (search-forward "diff --git" nil t))))
+      ;; a retry renders the full review again (the magit-section text
+      ;; properties hold NEW section objects: compare washed content,
+      ;; not object identities)
+      (code-review--trigger-hooks name)
+      (code-review-test--drain-lazy name)
       (with-current-buffer name
-        (should (equal-including-properties text (buffer-string)))))))
+        (goto-char (point-min))
+        (search-forward "+new")
+        (should (eq (get-text-property (1- (point)) 'font-lock-face)
+                    'magit-diff-added))))))
 
 (ert-deftest code-review-render/folding-preserves-wash-position ()
   (with-temp-buffer
@@ -188,8 +210,11 @@
              "diff --git a/next.el b/next.el\n"
              "--- a/next.el\n+++ b/next.el\n@@ -1 +1 @@\n-before\n+after\n"))
     (code-review--trigger-hooks name)
+    (code-review-test--drain-lazy name)
     (code-review-render-test--save-comment name 99)
+    (code-review-test--drain-lazy name)
     (code-review-render-test--save-comment name 100)
+    (code-review-test--drain-lazy name)
     (with-current-buffer name
       (let ((files nil))
         (magit-map-sections
@@ -207,7 +232,9 @@
 (ert-deftest code-review-render/save-missing-anchor-at-end ()
   (code-review-render-test--with-review
     (code-review--trigger-hooks name)
+    (code-review-test--drain-lazy name)
     (code-review-render-test--save-comment name 99)
+    (code-review-test--drain-lazy name)
     (with-current-buffer name
       (goto-char (point-min))
       (search-forward "+new")
@@ -234,6 +261,7 @@
                          (diffHunk . "@@ -5 +5 @@\n-old context\n+obsolete"))))))
     (dotimes (_ 2)
       (code-review--trigger-hooks name)
+      (code-review-test--drain-lazy name)
       (with-current-buffer name
         (goto-char (point-min))
         (re-search-forward "Historical[[:space:]\n]+review[[:space:]\n]+note")
@@ -343,6 +371,7 @@ and insert the raw body as plain text instead of killing the render."
 (ert-deftest code-review-render/save-with-displayed-outdated-html ()
   (code-review-render-test--with-review
     (code-review--trigger-hooks name)
+    (code-review-test--drain-lazy name)
     (code-review-db--pullreq-raw-comments-update
      '((state . "COMMENTED") (author (login . "reviewer"))
        (comments (nodes ((databaseId . 42) (path . "lib.el")
@@ -356,6 +385,7 @@ and insert the raw body as plain text instead of killing the render."
           (set-window-buffer window (get-buffer name))
           (set-window-point window 1)
           (code-review-render-test--save-comment name 1)
+          (code-review-test--drain-lazy name)
           (with-current-buffer name
             (goto-char (point-min))
             (search-forward "Keep this unanchored draft")
