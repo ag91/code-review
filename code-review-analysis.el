@@ -1213,7 +1213,12 @@ and left the user without a PR buffer)."
            (pr (and diff (code-review-db-get-pullreq))))
       (when (and worktree diff pr)
         (let ((key (concat (oref pr id) "|" (md5 diff))))
-          (or (gethash key code-review-analysis--cache)
+          ;; a stored NIL is a RESULT (no findings), not a miss:
+          ;; the sentinel-gethash idiom keeps a no-findings PR from
+          ;; recomputing the 10s worktree greps on every render
+          (let ((cached (gethash key code-review-analysis--cache 'missing)))
+            (if (not (eq cached 'missing))
+                cached
               (let ((res (condition-case err
                              (code-review-analysis--compute worktree diff pr)
                            (error
@@ -1223,7 +1228,7 @@ and left the user without a PR buffer)."
                                      key err))
                             nil))))
                 (puthash key res code-review-analysis--cache)
-                res)))))))
+                res))))))))
 
 (defun code-review-analysis-reset ()
   "Forget all cached analysis results."

@@ -5720,9 +5720,175 @@ and the files report rendered at DEFUN level.  Adding the probes
 un-nested it; the parse only balanced again after recounting
 (AGENTS.md's phase-20 trap, fourth instance).
 
-Suite 423/423; section.elc reloaded into the daemon.  NEXT: one
-timed refresh per-member names the 1.7s post-hook member; likely
-Step 3 = defer the heavy member to a post-first-paint tick.
+*** Step 2b — third timed refresh, Step 2 CLOSED — 2026-11-06
+
+The per-member probes on a settled refresh:
+
+- =setup-worktree= 0.003s, whole render **1.29s** — the 80%
+  freeze is gone.  Full-refresh cost is now ~1.3s of bounded
+  work + the network fetch only when the head actually moved.
+- The 1.72s post-hook did NOT reproduce: every member
+  (=post-default-setup=, =registry--detect=, =browse--after-render=)
+  measured ≤0.003s.  It was a one-time cost on the head-moved
+  refresh (most likely the registry trailer scan recomputing on a
+  new HEAD, cached since) — no fix warranted; the per-member
+  timing stays in place to catch it if it recurs.
+- Largest remaining render sub-stage: =sections-hook= 0.82s (the
+  header sections, incl. the description's shr HTML render).  Not
+  deferred: the header is the first thing the reviewer reads and
+  its cost is bounded.
+- The planned Step 2 deferrals (news-compute skip at 0.18s,
+  raw-infos shrink at 0.03s) are now marginal — NOT implemented.
+
+Step 2 closed as MEASURED-DONE.  Remaining open item of the
+responsiveness plan: Step 3 (time-box the history-harvest child's
+5000-commit =git log=; make its sentinel patch tags in place
+instead of re-rendering) — optional now that a sentinel re-render
+costs the same ~1.3s as any refresh.
+
+*** REASSESSED on the real slow PR (#1107) — 2026-11-06
+
+The 1.3s conclusion above was measured on #1131 (28KB diff).
+#1107 — the PR the user actually experienced as slow (212KB diff,
+747KB infos) — measured hermetically (db copy, stored payloads,
+real worktree, no network):
+
+- =sections-hook= **22.5s** — of which
+  =code-review-section-insert-analysis= **23.56s**: the phase-5
+  =code-review-analysis-run= 12.3s + the phase-17
+  =code-review-testimpact-run= 10.1s (coupling: cached, 0.05s).
+- =lazy-wash-files= 3.2s (the skeleton wash over 44 file blocks).
+- Everything else: <0.2s.  The fetch skip and the yielding chain
+  hold up fine.
+
+So the REAL remaining bottleneck is the analysis overlay: the
+engines run full-worktree =git grep= subprocesses PER FILE (44
+grep passes over the service repo) plus per-file =git blame
+--porcelain= for delicacy — bounded per call, unbounded in
+aggregate, and fully SYNCHRONOUS inside the render.
+
+Step 2c (proposed): (a) defer the Analysis section off the
+critical path — the buffer paints without it, the engines drain
+through the deferred queue after first paint (the lazy-loader
+pattern), first paint drops to ~4s; (b) chunk the engines'
+per-file work through the same queue so no single tick exceeds a
+frame budget (a lone 12s =analysis-run= tick would still freeze
+after paint).  Step 3 (harvest) unchanged.
+
+*** Step 2c — the analysis engines defer to a background child — 2026-11-06 LANDED
+
+Per-file chunking was abandoned first: the 10s+ cost is ONE
+=git grep= subprocess per engine (a 44-pass chunking cannot split
+a single subprocess), so the fix is a dispatcher in
+=code-review-section-insert-analysis=:
+
+- When =code-review-analysis-deferred?= (new defcustom, default
+  t) and the engines' cache keys are missing, the inserter paints
+  a placeholder Analysis section ("(computing in background)")
+  and spawns a batch child emacs (=make-process= + sentinel, the
+  =code-review-history--harvest-async= pattern).  The child gets
+  a consistent db snapshot (sqlite3 =.backup= into a temp file),
+  computes BOTH engines, and prin1s the results plist to a temp
+  file.  The sentinel fills the two engine caches and swaps the
+  placeholder in place (=--replace-placeholder=: delete the
+  placeholder span under the same parent, then run the
+  synchronous =--insert-full=, which now hits the caches).  An
+  epoch guard (=code-review-lazy--epoch=) skips the swap when a
+  re-render happened meanwhile — that render picks the results up
+  from cache on its own insert.
+- The nil-cache fix: the engines cached nil results but read the
+  cache with truthiness, so a NO-FINDINGS PR recomputed the 10s
+  greps on every render.  All three engines (=analysis=,
+  =testimpact=, =coupling=) now use the sentinel-gethash idiom
+  (a stored nil is a RESULT, not a miss).
+- In-flight bookkeeping in =code-review-analysis--deferred-in-flight=
+  keyed by the cache key; the child process list carries the
+  buffer/section/parent/epoch via =process-put=; the sentinel is
+  condition-case free of signals (logged failures only).
+- Suite: =run-tests.el= sets =code-review-analysis-deferred?=
+  nil as the suite default (render tests assert synchronous
+  content); the dedicated deferral test
+  =code-review-local/req-2026-11-05-002-analysis-deferred-placeholder-fills=
+  binds it t and runs the REAL child end-to-end: placeholder at
+  first paint, then the fill (2.5s).  Suite 424/424.
+- Daemon reloaded (4 touched .elc, eln purged), live buffers
+  verified intact, NO render triggered in the daemon.  #1107
+  first paint should drop from ~26s to ~4s (skeleton + wash);
+  findings fill in ~30s later without blocking.
+
+Gotchas hit while landing: the =if= wrapper around the two-step
+cache read added ONE nesting level the old =or= didn't have —
+hand-counted closers stayed at the or-count in all three engine
+files (check-parens flagged only the NEXT top-level form; the
+syntax-ppss defun-boundary walk found each).  And the child's
+giant =--eval= format string hides its parens from hand-counting
+entirely: the depth-at-EOL-per-line walk was the only reliable
+locator.  AGAIN: never hand-count closers on multi-level splices.
+
+*** Step 2c fixes — the child failed twice in the live daemon — 2026-11-06
+
+First failure: the sqlite snapshot.  macOS's old =/usr/bin/sqlite3=
+parses dot-command arguments from ONE string — =call-process= with
+=".backup" and the filename as separate argv entries answers
+="missing FILENAME argument"=, exits 1 SILENTLY (call-process
+discards stderr), and leaves the empty temp file for the child to
+connect to (emacsql creates the schema → the child sees a fresh
+empty db → =code-review-db-get-pullreq= returns nil → =oref= on
+nil).  Fixed: the dot-command and filename are ONE argument
+=(concat ".backup " db-copy)=, exit status AND snapshot size
+checked, plain =copy-file= as the fallback.
+
+Second failure (after close/reopen): the child captured the row's
+uuid =code-review-db--pullreq-id= at spawn — but the uuid is
+REGENERATED on every re-open (=code-review-db--pullreq-create=),
+so the child looked up a DELETED row.  Fixed: the child resolves
+the row by the canonical =(owner repo number)= key via
+=code-review-db--search= and re-aims =code-review-db--pullreq-id=
+at the FOUND row; the sentinel now stores under the CHILD's key
+(authoritative) and only uses the spawning key for in-flight
+bookkeeping.  Also: the child's =--eval= string is assembled with
+=concat= +=prin1-to-string=, never a format string — the escaped
+quote nesting of the =format= version was unreadable and
+hand-unbalanceable (three balance slips in one edit session; the
+depth-walk found each, and the byte-compile error
+=sequencep, :sentinel= pointed at the unclosed =append=).
+Diagnostic pattern that cracked it: simulate the child verbatim in
+a fresh batch emacs against a =.backup= of the REAL db (no daemon,
+no network) — the first failure was invisible in the suite because
+the suite's temp dbs are tiny and never locked.
+
+Third failure (#1137): the canonical lookup used
+=code-review-db-search=, whose =(= saved 't)= filter EXCLUDES a
+just-created PR row (=saved= is NULL until first save — the same
+regenerate-on-reopen flow), so the child silently found nothing,
+exited 0 with no out file, and the sentinel wrote the failure
+note.  The child now queries the pullreq table directly (owner,
+repo, number — no saved/finished filter) and remakes the instance
+with =closql--remake-instance=.  Type trap en route: the live db
+stores =number= as emacsql-quoted TEXT (="1137"=), and the row
+slot decodes back to the string ="1137"=, so passing the slot
+value straight through matches the column; an integer would not
+(=where number = 1137= matches ZERO rows).  The suite could not
+see any of this: its local rows store number as INTEGER and saved
+as t.  Validated by simulating the full child chain (lookup →
+diff → both engines) against a fresh backup of the real db and
+the real #1137 worktree.  Suite 424/424.
+
+*** Fix — 2026-11-06: the invalid-function recurrence + the order-safe Makefile
+
+=code-review-start= failed fresh the next morning with the same
+=(invalid-function code-review--stage-time)= — this time from an
+overnight/outside rebuild (the .elc AND .eln mtimes all changed at
+11:15, before the failed start).  The Makefile now compiles the
+two macro-defining files (=code-review-section.el=,
+=code-review-actions.el=) BEFORE the alphabetical loop, so the
+order trap is closed at the source instead of worked around with
+a double pass.  The daemon got a full reload (all 45 .elc, eln
+purged) and verified =macrop=.  Side find: the dogfood index
+=specs/index.md= (untracked tool state) had been deleted with it —
+regenerated via =code-review-criteria-home-index-sync= (skeleton
+stanzas; any hand-set =p= priorities on it were lost with the
+file).  Suite 423/423.
 
 ** Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
 

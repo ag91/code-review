@@ -23,10 +23,18 @@ deps: ## install package dependencies from MELPA
 	  --eval "(message \"deps ok\")"
 
 compile: ## byte-compile all package files
+	## Macro-defining files (code-review-section.el defines
+	## code-review--stage-time, used by code-review-local.el;
+	## code-review-actions.el defines code-review-set-obsolete-fns)
+	## come FIRST: the loop is alphabetical, and a file compiled
+	## before the section that defines a macro it calls ships the
+	## macro call UNEXPANDED — (invalid-function ...) at render time.
 	$(EMACS) -Q --batch $(LOAD_PATH) \
 	  --eval "(byte-compile-file \"code-review.el\")" \
+	  --eval "(byte-compile-file \"code-review-section.el\")" \
+	  --eval "(byte-compile-file \"code-review-actions.el\")" \
 	  --eval "(dolist (f (directory-files \".\" nil \"^code-review-.*\\\\.el\\\\'\")) \
-	           (unless (member f (quote (\"code-review-autoloads.el\" \"code-review-pkg.el\"))) \
+	           (unless (member f (quote (\"code-review-autoloads.el\" \"code-review-pkg.el\")) ) \
 	             (byte-compile-file f)))"
 
 test: ## run the ERT test suite in batch mode

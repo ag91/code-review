@@ -526,5 +526,71 @@ table the counter rewrite guards on."
                                  " 1/2 (50%)")))
               (kill-buffer rbuf))))))))
 
+;;; req-2026-11-05-002: analysis-deferred-placeholder-and-fill
+;; covers: code-review-section-analysis.el, code-review-analysis.el
+;; covers-fn: code-review-section-insert-analysis,
+;; code-review-analysis--insert-deferred,
+;; code-review-analysis--child-sentinel,
+;; code-review-analysis--replace-placeholder, code-review-analysis-run
+;; enforcement: test
+(ert-deftest code-review-local/req-2026-11-05-002-analysis-deferred-placeholder-fills ()
+  "WHEN the analysis engines are not cached and deferral is on THE
+SYSTEM SHALL paint the review buffer with a placeholder Analysis
+section immediately and compute the engines in a background
+child — and WHEN the child finishes THE SYSTEM SHALL cache the
+results (a nil no-findings result included) and replace the
+placeholder in place.  The engines' full-worktree greps cost
+10s+ EACH on a large PR, off the render's critical path."
+  (let ((repo (code-review-local-test--make-repo))
+        (code-review-history-enabled nil)
+        (code-review-budget-focus-enabled nil)
+        (code-review-analysis-deferred? t))
+    (code-review-test--with-db
+      (let ((pr (code-review-local-test--make-local-pr
+                 "diff --git a/lib.py b/lib.py\n--- a/lib.py\n+++ b/lib.py\n@@ -1,1 +1,2 @@\n x\n+def two(x):\n    return one(x) - 1\n")))
+        ;; the engines read the HOST dir as the worktree
+        (oset pr host repo)
+        (code-review-db-update pr)
+        (let* ((diff (oref pr raw-diff))
+               (key (concat (oref pr id) "|" (md5 diff))))
+          (code-review--build-buffer "*render target*")
+          (let ((deadline (+ (float-time) 10)) done)
+            (while (and (not done) (< (float-time) deadline))
+              (let ((r (ignore-errors (code-review-db-get-pullreq))))
+                (when (and r (null deferred:queue)) (setq done t))
+                (unless done (sit-for 0.05)))))
+          (let ((rbuf (car (cl-remove-if-not
+                            (lambda (b)
+                              (with-current-buffer b
+                                (derived-mode-p 'code-review-mode)))
+                            (buffer-list)))))
+            (unwind-protect
+                (with-current-buffer rbuf
+                  ;; first paint: the placeholder, NOT the findings
+                  (goto-char (point-min))
+                  (should (search-forward "computing in background" nil t))
+                  ;; the child runs its sentinel during sit-for
+                  (setq done nil deadline (+ (float-time) 45))
+                  (while (and (not done) (< (float-time) deadline))
+                    (when (and (null deferred:queue)
+                               (null (gethash key
+                                              code-review-analysis--deferred-in-flight)))
+                      (setq done t))
+                    (unless done (sit-for 0.1)))
+                  (unless done (ert-fail
+                                "deferred analysis child did not finish"))
+                  ;; the placeholder is gone and the results are
+                  ;; cached (a stored nil is a RESULT, not a miss —
+                  ;; the next render must not recompute)
+                  (should-not (search-forward
+                               "computing in background" nil t))
+                  (should-not (eq (gethash key code-review-analysis--cache
+                                           'missing)
+                                  'missing))
+                  (should-not (eq (gethash key code-review-testimpact--cache
+                                           'missing)
+                                  'missing)))
+              (kill-buffer rbuf))))))))
+
 (provide 'code-review-local-test)
 ;;; code-review-local-test.el ends here

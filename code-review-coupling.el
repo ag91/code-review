@@ -259,7 +259,10 @@ review buffer down with it (the phase 5 survivability rule)."
            (pr (and diff (code-review-db-get-pullreq))))
       (when (and worktree diff pr)
         (let ((key (concat (oref pr id) "|" (md5 diff))))
-          (or (gethash key code-review-coupling--cache)
+          ;; a stored NIL is a RESULT (no findings), not a miss
+          (let ((cached (gethash key code-review-coupling--cache 'missing)))
+            (if (not (eq cached 'missing))
+                cached
               (let ((res (condition-case err
                              (code-review-coupling--compute worktree diff)
                            (error
@@ -269,7 +272,7 @@ review buffer down with it (the phase 5 survivability rule)."
                                      key err))
                             nil))))
                 (puthash key res code-review-coupling--cache)
-                res)))))))
+                res))))))))
 
 (defun code-review-coupling-reset ()
   "Forget all cached completeness findings."

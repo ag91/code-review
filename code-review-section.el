@@ -198,6 +198,9 @@ named after the DB's current pullreq."
 (defvar magit-root-section)
 (defvar code-review-comment-commit-buffer?)
 (defvar code-review-comment-cursor-pos)
+;; defined in code-review.el (defcustom); always loaded before any
+;; render runs, declared here to keep the byte-compiler quiet
+(defvar code-review-post-hook)
 
 
 (declare-function code-review-promote-comment-to-new-issue "code-review")

@@ -256,14 +256,269 @@ to the file-section INSIDE the review buffer."
                  " — no test in this diff references it\n"
                " — its criteria file is untouched in this diff\n")))))
 
+(defcustom code-review-analysis-deferred? t
+  "Non-nil means the heavy analysis engines compute in a background child.
+The render inserts a placeholder Analysis section immediately;
+when the engines finish the placeholder is replaced in place with
+the findings.  The engines' full-worktree `git grep' passes cost
+10s+ EACH on a large PR (#1107: 23.6s synchronous) — deferral
+keeps first paint at the skeleton's cost.  Set nil for the old
+synchronous behavior (batch tools and tests may want that)."
+  :type 'boolean
+  :group 'code-review)
+
+(defvar code-review-analysis--deferred-in-flight
+  (make-hash-table :test #'equal)
+  "Cache keys with a background analysis child currently running.")
+
+(defun code-review-analysis--cache-key ()
+  "The (PR id, diff md5) cache key shared by the analysis engines, or nil."
+  (ignore-errors
+    (let* ((diff (code-review-db--pullreq-raw-diff))
+           (pr (and diff (code-review-db-get-pullreq))))
+      (and pr (concat (oref pr id) "|" (md5 diff))))))
+
+(defun code-review-analysis--deferred-needed? (key)
+  "Non-nil when KEY's engines are enabled and not cached yet.
+A stored nil IS a result (no findings): distinguish it from a
+never-computed key with a sentinel (`gethash' two-step idiom)."
+  (and key
+       (or (and code-review-analysis-enabled
+                (eq (gethash key code-review-analysis--cache 'missing)
+                    'missing))
+           (and code-review-testimpact-enabled
+                (eq (gethash key code-review-testimpact--cache 'missing)
+                    'missing)))))
+
 (defun code-review-section-insert-analysis ()
   "Insert the heuristic Analysis section (phase 5, 15, 17, 18).
-Phase 17 findings (CI-gaming, no test coverage) are HOISTED
-above the phase 18 completeness findings, the phase 5
-duplicate/dead/dangling findings and the phase 15 delicate-hunk
-jump list.  Toggle it with TAB like any other section.  Nothing
-is inserted when no analysis found anything (or they are
-disabled, or there is no worktree)."
+Deferred by default: the engines compute in a background child
+while the review buffer paints without them (see
+`code-review-analysis-deferred?').  Nothing is inserted when no
+analysis found anything (or they are disabled, or there is no
+worktree)."
+  (let* ((key (and code-review-analysis-deferred?
+                   (code-review-analysis--cache-key)))
+         (canon (and key (code-review-analysis--canonical-key))))
+    ;; deferral needs the canonical (owner repo number) key: without
+    ;; it the child could never find the row (insert synchronously)
+    (if (and key canon (code-review-analysis--deferred-needed? key))
+        (code-review-analysis--insert-deferred key canon)
+      (code-review-analysis--insert-full))))
+
+(defun code-review-analysis--canonical-key ()
+  "The (owner repo number) of the current PR, or nil.
+The pullreq row's uuid id is REGENERATED on every re-open, so the
+background child must resolve the row by the canonical
+owner/repo/number key instead of capturing the volatile id."
+  (ignore-errors
+    (let ((pr (code-review-db-get-pullreq)))
+      (and pr (list (oref pr owner) (oref pr repo) (oref pr number))))))
+
+(defun code-review-analysis--insert-deferred (key canon)
+  "Insert a placeholder Analysis section and spawn the compute child.
+KEY is the engines' cache key, CANON the (owner repo number)
+canonical key the child resolves the row by (the row uuid is
+regenerated on every re-open); the child writes the results to a
+temp file and the sentinel fills the caches and swaps the
+placeholder for the real section."
+  (let* ((section (magit-insert-section (code-review-analysis-section)
+                    (insert (propertize "Analysis"
+                                        'font-lock-face 'magit-section-heading))
+                    (insert (propertize " (heuristic)"
+                                        'font-lock-face 'magit-dimmed))
+                    (magit-insert-heading)
+                    (insert (propertize
+                             "(computing in background — this section \
+fills in when ready)"
+                             'font-lock-face 'magit-dimmed))
+                    (insert ?\n)))
+         (canon (code-review-analysis--canonical-key))
+         (db-copy (make-temp-file "cr-analysis-db-" nil ".sqlite"))
+         (out (make-temp-file "cr-analysis-out-"))
+         (parent (oref section parent))
+         (buffer (current-buffer))
+         (epoch code-review-lazy--epoch))
+    (puthash key t code-review-analysis--deferred-in-flight)
+    ;; a consistent db snapshot for the child: a plain copy of a LIVE
+    ;; sqlite can catch a mid-write state; the sqlite3 CLI's .backup
+    ;; takes a proper snapshot (fallback: plain copy).  The dot-command
+    ;; and its filename are ONE argument — macOS's /usr/bin/sqlite3
+    ;; parses dot-command arguments from the same string and answers
+    ;; "missing FILENAME argument" when they arrive as separate argv
+    ;; entries (a silently empty snapshot; exit status MUST be checked).
+    (let ((db-file (expand-file-name code-review-db-database-file))
+          (st -1))
+      (when (executable-find "sqlite3")
+        (setq st (call-process "sqlite3" nil nil nil db-file
+                               (concat ".backup " db-copy))))
+      (unless (and (zerop st) (file-exists-p db-copy)
+                   (> (nth 7 (file-attributes db-copy)) 4096))
+        ;; .backup unavailable or failed: a plain copy is the fallback
+        (copy-file db-file db-copy t)))
+    (let ((proc (make-process
+                 :name "code-review-analysis"
+                 :buffer " *code-review-analysis-child*"
+                 :connection-type 'pipe
+                 :command (append
+                           (list (expand-file-name invocation-name
+                                                   invocation-directory)
+                                 "--batch" "-Q")
+                           (apply #'append
+                                  (mapcar (lambda (d) (list "-L" d))
+                                          load-path))
+                           (list
+                            "--eval"
+                            ;; assembled with concat + prin1-to-string,
+                            ;; NEVER a format string: escaped-quote
+                            ;; nesting inside --eval strings is a
+                            ;; hand-counting bug farm
+                            (concat
+                             "(progn (require 'code-review-analysis)"
+                             " (require 'code-review-testimpact)"
+                             " (setq code-review-db-database-file "
+                             (prin1-to-string db-copy)
+                             " code-review-repo-worktree "
+                             (prin1-to-string code-review-repo-worktree)
+                             " code-review-repo-dir "
+                             (prin1-to-string code-review-repo-dir)
+                             " code-review-history-enabled nil)"
+                             ;; the row uuid is volatile (regenerated on
+                             ;; re-open): resolve by owner/repo/number,
+                             ;; then aim the engines' id at the FOUND
+                             ;; row.  Direct emacsql, NOT
+                             ;; code-review-db-search: that one filters
+                             ;; (= saved 't), but a just-rendered PR row
+                             ;; has saved NULL until first save, so the
+                             ;; child silently found nothing.
+                             " (let* ((db (code-review-db))"
+                             " (rows (emacsql db [:select :* :from pullreq"
+                             " :where (and (= owner $s1) (= repo $s2)"
+                             " (= number $s3))]"
+                             " " (prin1-to-string (nth 0 canon))
+                             " " (prin1-to-string (nth 1 canon))
+                             " " (prin1-to-string (nth 2 canon)) "))"
+                             " (pr (and rows (closql--remake-instance"
+                             " 'code-review-db-pullreq db (car (last rows))))))"
+                             " (when pr"
+                             " (setq code-review-db--pullreq-id (oref pr id))"
+                             " (let ((diff (code-review-db--pullreq-raw-diff)))"
+                             " (with-temp-file " (prin1-to-string out)
+                             " (prin1 (list :key (concat (oref pr id) \"|\""
+                             " (md5 diff))"
+                             " :analysis (code-review-analysis-run)"
+                             " :testimpact (code-review-testimpact-run)"
+                             ")))))))")))
+                 :sentinel #'code-review-analysis--child-sentinel)))
+      (process-put proc 'analysis-key key)
+      (process-put proc 'analysis-out out)
+      (process-put proc 'analysis-db-copy db-copy)
+      (process-put proc 'review-buffer buffer)
+      (process-put proc 'analysis-section section)
+      (process-put proc 'analysis-parent parent)
+      (process-put proc 'analysis-epoch epoch))))
+
+(defun code-review-analysis--child-sentinel (proc _msg)
+  "Fill the engine caches from the child's output and swap the
+placeholder for the real section."
+  (when (memq (process-status proc) '(exit signal))
+    (let* ((key (process-get proc 'analysis-key))
+           (out (process-get proc 'analysis-out))
+           (db-copy (process-get proc 'analysis-db-copy))
+           (buffer (process-get proc 'review-buffer))
+           (sec (process-get proc 'analysis-section))
+           (parent (process-get proc 'analysis-parent))
+           (epoch (process-get proc 'analysis-epoch))
+           (data (and (zerop (process-exit-status proc))
+                      (file-exists-p out)
+                      (ignore-errors
+                        (with-temp-buffer
+                          (insert-file-contents out)
+                          (read (current-buffer)))))))
+      (remhash key code-review-analysis--deferred-in-flight)
+      (ignore-errors (delete-file out))
+      (ignore-errors (delete-file db-copy))
+      ;; the child resolves the row by owner/repo/number, so its key
+      ;; is AUTHORITATIVE: it may differ from the spawning render's
+      ;; key when the row was regenerated meanwhile (the reopen case)
+      (let ((ckey (and (consp data) (plist-get data :key))))
+        (if (stringp ckey)
+            (progn
+              ;; nil results are cached too: no findings is a RESULT,
+              ;; not a miss (otherwise every render recomputes)
+              (puthash ckey (plist-get data :analysis)
+                       code-review-analysis--cache)
+              (puthash ckey (plist-get data :testimpact)
+                       code-review-testimpact--cache)
+              ;; swap the placeholder only if THIS render is still the
+              ;; live one (an epoch mismatch means a re-render happened;
+              ;; its own insert path picks the results up from cache)
+              (when (and (buffer-live-p buffer)
+                         (eq epoch
+                             (buffer-local-value 'code-review-lazy--epoch
+                                                 buffer)))
+                (code-review-analysis--replace-placeholder
+                 buffer sec parent)))
+          ;; failure: never leave a "computing" placeholder that will
+          ;; never fill; no retry from the sentinel — the next render
+          ;; re-spawns (the cache key is still missing)
+          (when (and (buffer-live-p buffer)
+                     (eq epoch
+                         (buffer-local-value 'code-review-lazy--epoch
+                                             buffer)))
+            (code-review-analysis--placeholder-note
+             buffer sec parent
+             "background analysis failed — refresh to retry"))
+          (message "code-review: background analysis failed \
+(see *code-review-analysis-child*)"))))))
+
+(defun code-review-analysis--placeholder-note (buffer sec parent note)
+  "Replace the deferred placeholder SEC with a dimmed NOTE line."
+  (with-current-buffer buffer
+    (when (and (slot-boundp sec 'start) (markerp (oref sec start))
+               (marker-buffer (oref sec start))
+               (numberp (marker-position (oref sec start)))
+               (numberp (marker-position (oref sec end)))
+               (< (marker-position (oref sec start))
+                  (marker-position (oref sec end))))
+      (let ((inhibit-read-only t))
+        (save-excursion
+          (goto-char (oref sec start))
+          (delete-region (oref sec start) (oref sec end))
+          (when parent
+            (setf (oref parent children) (delq sec (oref parent children))))
+          (let ((magit-insert-section--parent parent))
+            (magit-insert-section (code-review-analysis-section)
+              (insert (propertize "Analysis"
+                                  'font-lock-face 'magit-section-heading))
+              (magit-insert-heading)
+              (insert (propertize (concat "(" note ")")
+                                  'font-lock-face 'magit-dimmed))
+              (insert ?\n))))))))
+
+(defun code-review-analysis--replace-placeholder (buffer sec parent)
+  "Replace the deferred placeholder SEC with the real section.
+The engines are cached at this point, so the synchronous insert
+runs instantly; the placeholder span is deleted under the same
+parent to keep the section order."
+  (with-current-buffer buffer
+    (when (and (slot-boundp sec 'start) (markerp (oref sec start))
+               (marker-buffer (oref sec start))
+               (numberp (marker-position (oref sec start)))
+               (numberp (marker-position (oref sec end)))
+               (< (marker-position (oref sec start))
+                  (marker-position (oref sec end))))
+      (let ((inhibit-read-only t))
+        (save-excursion
+          (goto-char (oref sec start))
+          (delete-region (oref sec start) (oref sec end))
+          (when parent
+            (setf (oref parent children) (delq sec (oref parent children))))
+          (let ((magit-insert-section--parent parent))
+            (code-review-analysis--insert-full)))))))
+
+(defun code-review-analysis--insert-full ()
+  "Run the analysis engines synchronously and insert the section."
   (let* ((res (code-review-analysis-run))
          (tres (code-review-testimpact-run))
          (tres-findings (and tres (or (plist-get tres :ci)

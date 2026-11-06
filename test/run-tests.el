@@ -15,6 +15,11 @@
 ;; fail fast if any dependency is missing
 (require 'code-review)
 
+;; render tests assert SYNCHRONOUS content: the deferred analysis
+;; (placeholder + background child) has its own dedicated test,
+;; which binds the defcustom t around its render.
+(setq-default code-review-analysis-deferred? nil)
+
 (dolist (file (directory-files
                (file-name-directory (or load-file-name buffer-file-name))
                t "-test\\.el\\'"))

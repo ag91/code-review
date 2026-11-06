@@ -557,7 +557,10 @@ review buffer down with it (the phase 5 survivability rule)."
            (pr (and diff (code-review-db-get-pullreq))))
       (when (and worktree diff pr)
         (let ((key (concat (oref pr id) "|" (md5 diff))))
-          (or (gethash key code-review-testimpact--cache)
+          ;; a stored NIL is a RESULT (no findings), not a miss
+          (let ((cached (gethash key code-review-testimpact--cache 'missing)))
+            (if (not (eq cached 'missing))
+                cached
               (let ((res (condition-case err
                              (code-review-testimpact--compute worktree diff)
                            (error
@@ -567,7 +570,7 @@ review buffer down with it (the phase 5 survivability rule)."
                                      key err))
                             nil))))
                 (puthash key res code-review-testimpact--cache)
-                res)))))))
+                res))))))))
 
 (defun code-review-testimpact--hunk-tag-for (path ranges)
   "The NO-TEST tag for hunk PATH+RANGES of the current render, nil when none.

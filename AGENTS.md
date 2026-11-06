@@ -1155,10 +1155,17 @@ There is no cask/buttercup anymore: tests are plain ERT, run by
   UNEXPANDED in the bytecode.  The compile prints only a warning;
   the failure surfaces later as a render-time error (found via
   the log: `code-review--build-buffer - (invalid-function
-  code-review--stage-time)`, 2026-11-05).  Fix: run `make
-  compile` a SECOND time (or `make compile && make compile` after
-  adding cross-file macros), and grep the new .elc for the macro
-  NAME — an expanded call site no longer contains it.
+  code-review--stage-time)`, 2026-11-05).  FIX (2026-11-06): the
+  Makefile now byte-compiles the macro-defining files
+  (`code-review-section.el`, `code-review-actions.el`) BEFORE the
+  alphabetical loop, so `make compile` is order-safe again and
+  the double-pass workaround is retired.  Verify a .elc is
+  expanded by grepping it for the raw macro NAME — an expanded
+  call site no longer contains it (the defmacro itself does).
+  The trap can STILL resurface through outside rebuilds (package.el
+  recompiles, Emacs upgrades): when the error file shows
+  `(invalid-function ...)`, purge `~/.emacs.d/eln-cache/*/code-review-*.eln`
+  and reload every package .elc in the daemon before debugging.
 
 
 
