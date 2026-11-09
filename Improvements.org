@@ -6279,7 +6279,7 @@ and the reviewer's time went to what deserved it.
   an ERT asserting the delicate files appear in the message,
   and the existing queue tests unchanged.
 
-* Phase 33 — PR search and the people cache :STATUS:todo:
+* Phase 33 — PR search and the people cache :STATUS:done:
 
 P1 (explicitly prioritized by the reviewer).  Completes phase
 7's open half: the last regular reason to open the GitHub site.
@@ -6313,6 +6313,104 @@ P1 (explicitly prioritized by the reviewer).  Completes phase
 - VERIFICATION: ERT on the query builder (pure: authors, date
   window, filters), response-parsing tests against recorded
   fixture shapes, and the people-cache name matching.
+
+*** LANDED — 2026-11-09
+
+Two new files, the pure/async split the L1 feature needs:
+
+- =code-review-people.el=: the org's membersWithRole (login +
+  display name) fetched once via ghub-graphql (5.1's =ghub-query=,
+  NOT the obsolete =ghub-graphql=), cursor-walked asynchronously,
+  cached on disk as a versioned plist
+  (=code-review-people-cache-file=, TTL
+  =code-review-people-ttl-days=).  =--ensure= NEVER blocks: fresh
+  serves, stale serves stale while the background refresh runs,
+  unknown returns nil.  Both callbacks condition-cased + logged
+  (the sentinel lesson).  Matching is substring, case-insensitive,
+  on NAME or login; completion candidates are =Name (login)=
+  strings that resolve back to the login.
+- =code-review-search.el=: the recipe as a PURE builder
+  (=--query=: org/author/is:pr/-review:approved/state:open/rolling
+  =code-review-search-window-days=), one REST =/search/issues= per
+  author via =ghub-get= (async callbacks), pooled through
+  =deferred:parallel= (one deferred per author, =deferred:new= +
+  =deferred:callback-post=), deduped into the phase-25 queue
+  template: proper =((ID VECTOR))= entries (the sorter crash
+  trap), custom age sorter reading the entry hash, =g' re-runs the
+  searches via =tabulated-list-revert-hook=, RET opens through
+  =code-review-start= (the URL → review path).  With no
+  author list, the command seeds it from the people cache.
+- The people cache feeds the =C-c @= mention completion: the
+  candidates gain =Name (login)= aliases next to the raw logins.
+- Degrade: search/parse/fetch failures log and drop
+  to an empty pool, never kill the queue.
+
+UPDATE 2026-11-09 (same day): =code-review-search-org= is GONE —
+the org is DERIVED from the user's own clones: the origin remotes
+of the repositories under =code-review-projects-roots= (one and
+two levels deep) yield the candidate orgs, offered through a
+completing-read that REQUIRES NO MATCH (a free string is always
+accepted).  The choice is remembered per session (=--current-org=)
+and reused by =g'; =C-u M-x code-review-search' re-prompts.  The
+=--url-owner= parser handles https, ssh:// and scp-style remotes
+with and without .git.
+
+UPDATE 2 (same day): =code-review-search-authors= is now OPTIONAL
+EXTRAS — the author list derives the same way: the author emails
+of the FIRST 100 COMMITS of every clone under the roots
+(=code-review-repo--git=), GitHub noreply emails resolved to
+logins (=--email->author=: 12345+login@users.noreply.github.com
+and the old login@ form), everything else passed through as-is
+(the search's author: qualifier accepts commit emails), BOT
+COMMITTERS skipped (anything with =[bot]= in the email —
+dependabot/github-actions churn is not reviewed), ordered by
+commit frequency across the clones and capped at
+=code-review-search-max-authors= (15).  The defcustom list is
+added on top for anyone the scan misses.  Smoke-tested against the
+real roots: orgs 28, authors 15 with the user's own addresses
+ranked near the top.
+
+POSTSCRIPT (first live run): the pool,
+=code-review-search--fetch-authors', crashed on EVERY run with
+=(wrong-number-of-arguments mapcar 1)= — a mis-nested splice had
+left =authors= OUTSIDE the =mapcar= call (balanced-but-mis-nested,
+the documented trap) while the phase's compile + suite stayed
+green because only the pure halves were tested; the async plumbing
+never ran until the user pressed the key.  Diagnosed by a
+hermetic repro (stubbed =--fetch= + =sit-for= pump, batch) and a
+=disassemble= of the live function; the defun is rewritten FLAT
+(deferreds list built first, =deferred:nextc' around
+=(deferred:parallel deferreds)=), and
+=req-2026-11-09-008= now exercises the pool end-to-end with the
+stub so the plumbing stays covered.
+
+POSTSCRIPT 2 (people cache, first live run): the =C-c @'
+display-name aliases listed ONLY logins — the people cache never
+landed because =--graphql='s callback read
+=(cdr (assq 'data response))= on ghub 5.1's SPLICED response
+=(data (organization ...))= where =data' is a BARE SYMBOL element,
+so assq is nil and every lookup silently yields nil — the Nov-7
+ghub gotcha (see the mention fix) shipped again in the new module.
+The walk then "succeeded" with (nil nil): no error, no log line,
+refreshing? reset to nil.  Diagnosis needed a chain of hermetic
+probes: sync =ghub-query' works, plain ghub-query WITH callback
+delivers the spliced shape to a file, our wrapper's callback
+delivers nil — isolating the unwrap.  =--parse-response' now
+unwraps with =(cdr response)= and req-2026-11-09 fixtures use the
+REAL captured shape (a quoted full-response-alist fixture encodes
+the wrong contract and passes green — build fixtures from
+captured output).  Cache warmed: 190 members for WriterInternal.
+- Autoloads regenerated (the package.el delete-first way —
+  =package-generate-autoloads= needs =(require 'package)= in batch,
+  it is NOT loaded under -Q).  Suite 435/435 (11 new).  Daemon
+  reloaded and verified.
+
+NOTE the dogfood loop caught the new tests themselves twice: the
+criteria-home invariant test enforces =enforcement: test= on every
+=req-2026-11-09-* block in the test files, and the
+quote-vs-backquote slip hit the age-sorter fixture (a quoted
+comma-literal plist carried a LIST where =time-less-p= wanted a
+time).
 
 * Phase 34 — The diff is the focus: auxiliary sections become popups :STATUS:todo:
 

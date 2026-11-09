@@ -30,6 +30,7 @@
 
 (require 'code-review-section)
 (require 'code-review-utils)
+(require 'code-review-people)
 (require 'markdown-mode)
 (defvar code-review-repo-worktree)             ; code-review-repo.el
 (declare-function code-review-registry--repo-dir "code-review-registry")
@@ -657,17 +658,26 @@ comment buffer; the helper header is stripped first."
   "Insert @USERNAME at current point to mention an user.
 The candidates are the users @-mentionable in this repository:
 the members of the organization the repository belongs to, or
-its assignable users (`code-review-get-mentionable-users')."
+its assignable users (`code-review-get-mentionable-users'), plus
+the people cache's display-name aliases (phase 33) — the reviewer
+knows the person, not the slug."
   (interactive)
   (let* ((pr (code-review-db-get-pullreq))
          (users (code-review-get-mentionable-users pr)))
     (if (not users)
         (user-error "No mentionable users found for this repository")
-      (let ((user (completing-read
-                   "Mention user: "
-                   (sort (-map (lambda (it) (a-get it 'login)) users)
-                         #'string-lessp)
-                   nil 'require-match)))
+      (let* ((logins (sort (-map (lambda (it) (a-get it 'login)) users)
+                           #'string-lessp))
+             (people (code-review-people-match
+                      (or (code-review-people-ensure (oref pr owner))
+                          nil)
+                      ""))
+             (aliases (mapcar #'code-review-people--display people))
+             (cands (delete-dups (copy-sequence (append aliases logins))))
+             (picked (completing-read "Mention user: " cands nil nil))
+             (user (if (string-match "(\\([^)]+\\))\\'" picked)
+                       (match-string 1 picked)
+                     picked)))
         (insert "@" user " ")))))
 
 ;;;###autoload
