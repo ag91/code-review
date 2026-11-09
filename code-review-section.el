@@ -56,6 +56,28 @@
 (require 'code-review-bitbucket)
 (require 'code-review-viewed)
 
+;;; The stage-timing macro MUST be defined before its first use below
+;;; (~line 370): byte-compile evaluates defmacros only as it reaches
+;;; them, so a compile session that has not loaded a previous GOOD
+;;; build of this file compiles every use as a raw function call and
+;;; every render dies with (invalid-function code-review--stage-time).
+;;; This is exactly what a from-scratch `package-vc-rebuild' does —
+;;; the order-safe Makefile only worked because a good .elc already
+;;; existed for `require' to load.  Keep the defmacro FIRST.
+
+(defmacro code-review--stage-time (stage &rest body)
+  "Run BODY, logging its wall-clock seconds as STAGE when `code-review-stage-timing?'.
+The log entry lands in `code-review-log-file' via `code-review-utils--log'."
+  (declare (indent 1))
+  (let ((beg (make-symbol "beg")))
+    `(let ((,beg (and code-review-stage-timing? (float-time))))
+       (unwind-protect
+           (progn ,@body)
+         (when ,beg
+           (code-review-utils--log
+            "stage-timing"
+            (format "%s: %.3fs" ,stage (- (float-time) ,beg))))))))
+
 ;;; Part files (phase 15c split): required here so every
 ;;; `code-review-section' require site sees all of it.
 (require 'code-review-section-shared)
@@ -712,19 +734,6 @@ Turn it on to find which stage of a large PR's fetch/render blocks
 Emacs (the 80%-freeze investigation, 2026-11-05)."
   :type 'boolean
   :group 'code-review)
-
-(defmacro code-review--stage-time (stage &rest body)
-  "Run BODY, logging its wall-clock seconds as STAGE when `code-review-stage-timing?'.
-The log entry lands in `code-review-log-file' via `code-review-utils--log'."
-  (declare (indent 1))
-  (let ((beg (make-symbol "beg")))
-    `(let ((,beg (and code-review-stage-timing? (float-time))))
-       (unwind-protect
-           (progn ,@body)
-         (when ,beg
-           (code-review-utils--log
-            "stage-timing"
-            (format "%s: %.3fs" ,stage (- (float-time) ,beg))))))))
 
 (defun code-review--report-build-error (err)
   "Log a build-chain ERR and message the user; shared by every build chain."

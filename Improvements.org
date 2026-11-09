@@ -5975,6 +5975,41 @@ Deferred until a session where the submit-flash actually annoys:
 the machinery above exists, this is a ~30-line change in
 =code-review-comment.el= plus a test.
 
+*** Fix — 2026-11-09: =(invalid-function code-review--stage-time)= recurred through =package-vc-rebuild= — the macro was defined AFTER its uses
+
+The real root cause of the recurring =invalid-function= (the
+2026-11-06 "order-safe Makefile" treated a symptom): the
+=--stage-time= defmacro sat at line 716 of =code-review-section.el=
+while its first use is at line 307.  The byte compiler evaluates
+defmacros only as it REACHES them, so any compile session that did
+not already have a previous GOOD build loaded compiled all ~40
+uses as raw function calls — and the runtime, where the macro IS
+defined by then, signaled =invalid-function= on every render.
+
+The order-safe Makefile only ever worked BY ACCIDENT: it compiles
+=code-review.el= first, whose =(require 'code-review-section)=
+loads the PREVIOUS good .elc from disk, pre-defining the macro for
+the section.el compile.  =package-vc-rebuild= deletes the .elc
+files first — its clean compile therefore re-broke the file every
+time, which is why the user's "rebuild fixes it for a little"
+looped: each rebuild compiled a fresh BAD section.elc.
+
+The fix is one move: the defmacro now sits at the TOP of
+=code-review-section.el=, before its first use.  ANY compile —
+clean-room, partial, package-vc, byte-recompile-directory — is
+correct, with no reliance on prior artifacts or compile order.
+Proven by deleting ALL .elc files and byte-compiling the whole
+package alphabetically in one bare emacs (the exact rebuild
+condition): the new section.elc carries the macro symbol exactly
+twice (the defalias + the indent spec), i.e. every call site
+expanded.  eln-cache purged, suite 424/424, daemon reloaded.
+
+LESSON (the general form): a macro used in a file MUST be defined
+in that file BEFORE its first use — compile-order workarounds in
+build scripts only mask it and break under any other build path.
+The Makefile's section/actions pre-compile stays (actions.el has
+the same shape across files), but it is belt-and-suspenders now.
+
 ** Local comments survive the full refresh + forge stops stealing PR links — 2026-11-03 :STATUS:done:
 
 *** The local-comment wipe (req-2026-11-03-001)
