@@ -1205,15 +1205,15 @@ delete remotely via provider API and then drop from local DB."
     (or (let ((sec (magit-current-section)))
           (and sec
                (slot-boundp sec 'value)
-               (funcall info (oref sec 'value))))
+               (funcall info (oref sec value))))
         (let* ((sec (magit-current-section))
                (parent (and sec
                             (slot-boundp sec 'parent)
-                            (oref sec 'parent))))
+                            (oref sec parent))))
           (when parent
             (cl-some (lambda (s)
                        (and (slot-boundp s 'value)
-                            (funcall info (oref s 'value))))
+                            (funcall info (oref s value))))
                      (oref parent children)))))))
 ;;;###autoload
 (defun code-review-threads-toggle-resolved ()

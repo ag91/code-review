@@ -384,14 +384,18 @@ every block declares its enforcement, and the local index holds
 the priorities."
   (let* ((root (expand-file-name
                 ".."
-                (file-name-directory (or load-file-name buffer-file-name))))
+                (file-name-directory
+                 (or load-file-name buffer-file-name
+                     (locate-library "code-review-criteria-home-test")))))
          (home (code-review-criteria-home--criteria root))
          (ids (mapcar (lambda (r) (plist-get r :id)) home))
-         (index (code-review-criteria-home--parse-index-text
-                 (with-temp-buffer
-                   (insert-file-contents
-                    (expand-file-name "specs/index.md" root))
-                   (buffer-string)))))
+         ;; the index is untracked local tool state: absent in a clean checkout
+         (index-file (expand-file-name "specs/index.md" root))
+         (index (and (file-exists-p index-file)
+                     (code-review-criteria-home--parse-index-text
+                      (with-temp-buffer
+                        (insert-file-contents index-file)
+                        (buffer-string))))))
     ;; New requirements may be added without changing the migrated set.
     (should (equal (length (cl-remove-if-not
                            (lambda (id) (string-lessp id "2026-10-16"))
@@ -412,8 +416,9 @@ the priorities."
         (should (string-match-p "SHALL" (plist-get req :sentence)))
         (should (equal (plist-get req :enforcement) "test"))
         (should (equal (plist-get req :source) 'test))
-        ;; the priority rides the local index
-        (should (equal (plist-get (cdr (assoc id index)) :priority)
-                       (plist-get req :priority)))))))
+        ;; the priority rides the local index (when this checkout has one)
+        (when index
+          (should (equal (plist-get (cdr (assoc id index)) :priority)
+                         (plist-get req :priority))))))))
 
 ;;; code-review-criteria-home-test.el ends here

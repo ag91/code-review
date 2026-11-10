@@ -376,6 +376,12 @@ fills in when ready)"
                             (concat
                              "(progn (require 'code-review-analysis)"
                              " (require 'code-review-testimpact)"
+                             ;; closql rebuilds the row as its concrete
+                             ;; subclass, which must be defined here
+                             " (require 'code-review-github)"
+                             " (require 'code-review-gitlab)"
+                             " (require 'code-review-bitbucket)"
+                             " (require 'code-review-local)"
                              " (setq code-review-db-database-file "
                              (prin1-to-string db-copy)
                              " code-review-repo-worktree "
@@ -407,8 +413,10 @@ fills in when ready)"
                              " (prin1 (list :key (concat (oref pr id) \"|\""
                              " (md5 diff))"
                              " :analysis (code-review-analysis-run)"
-                             " :testimpact (code-review-testimpact-run)"
-                             ")))))))")))
+                             " :testimpact (code-review-testimpact-run))"
+                             ;; to the temp buffer, not `standard-output'
+                             ;; (stdout in --batch)
+                             " (current-buffer))))))))")))
                  :sentinel #'code-review-analysis--child-sentinel)))
       (process-put proc 'analysis-key key)
       (process-put proc 'analysis-out out)

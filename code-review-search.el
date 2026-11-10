@@ -86,10 +86,13 @@ The most frequent committers of the project clones win."
 ;;; The query (pure)
 
 (defun code-review-search--window-start (days as-of)
-  "The created:>= date DAYS before AS-OF, as YYYY-MM-DD."
+  "The created:>= date DAYS before AS-OF, as YYYY-MM-DD in UTC.
+GitHub evaluates search dates in UTC, so the window must not shift
+with the local time zone."
   (format-time-string
    "%Y-%m-%d"
-   (time-subtract as-of (days-to-time days))))
+   (time-subtract as-of (days-to-time days))
+   t))
 
 (defun code-review-search--query (org author &optional days as-of)
   "The search qualifier string for ORG and AUTHOR.
