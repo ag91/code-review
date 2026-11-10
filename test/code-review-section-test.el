@@ -296,7 +296,7 @@ badge.  The analysis run is faked: the wash only READS its result
     (with-temp-buffer
       (let ((inhibit-read-only t))
         (code-review-section-insert-is-draft))
-      (should (string-match-p "Draft: +false" (buffer-string)))))
+      (should (string-match-p "Draft: +false" (buffer-string))))))
 
 (ert-deftest code-review-section-test/labels ()
   "Labels render each name; missing labels show the placeholder."
@@ -308,9 +308,13 @@ badge.  The analysis run is faked: the wash only READS its result
       (let ((inhibit-read-only t))
         (magit-insert-section (code-review--root-section)
           (code-review-section-insert-labels)))
+      ;; magit-insert-heading auto-appends the child count
       (should (string-match-p "Labels: +bug" (buffer-string)))
       (should (= 1 (length (overlays-in (point-min) (point-max))))))
     ;; no labels at all: the dimmed placeholder
+    (let ((pr (code-review-db-get-pullreq)))
+      (oset pr labels nil)
+      (closql-insert (code-review-db) pr t))
     (with-temp-buffer
       (let ((inhibit-read-only t))
         (code-review-section-insert-labels))
@@ -389,9 +393,9 @@ badge.  The analysis run is faked: the wash only READS its result
                                     (url . "https://example.com/bob")))))
        (latestOpinionatedReviews
         (nodes ((author (login . "alice")
-                        (url . "https://example.com/alice")
-                        (state . "APPROVED")
-                        (createdAt . "2021-11-08T00:24:09Z")))))))
+                        (url . "https://example.com/alice"))
+                (state . "APPROVED")
+                (createdAt . "2021-11-08T00:24:09Z"))))))
     (with-temp-buffer
       (magit-section-mode)
       (let ((inhibit-read-only t))
@@ -443,13 +447,14 @@ badge.  The analysis run is faked: the wash only READS its result
   (code-review-section-test--with-section-env
     (code-review-db--pullreq-raw-infos-update
      `((commits (nodes ((commit (abbreviatedOid . "abc1234")
-                                (message . "plain subject"))))))))
+                                (message . "plain subject")))))))
     (with-temp-buffer
       (magit-section-mode)
       (let ((inhibit-read-only t))
         (magit-insert-section (code-review--root-section)
           (code-review-section-insert-commits)))
-      (should (string-match-p "Commits:" (buffer-string)))
+      ;; magit-insert-heading auto-appends the child count
+      (should (string-match-p "Commits (1)" (buffer-string)))
       (should (string-match-p "abc1234 plain subject" (buffer-string)))
       (should-not (string-match-p "CI Checks" (buffer-string)))
       (let ((types (code-review-section-test--section-types)))

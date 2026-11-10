@@ -6410,6 +6410,27 @@ the old span first, then delete the old span; and markers below
 legitimately shift by the length delta — assert "start still points
 at the new heading", not byte equality).
 
+UPDATE (2026-11-10, evening): LAZY DRAIN LEFT POINT AT THE BOTTOM —
+the deferred chunk inserts =goto-char' their insertion sites, so
+after the drain buffer point rested at the last expanded file
+block.  The drain's terminal branch now restores
+=code-review-lazy--pre-render-point' (captured by
+=code-review--trigger-hooks' BEFORE the render: the submit flows'
+cursor-pos wins, then the pre-render window point, then point-min
+for a fresh render) and syncs every window showing the buffer.  The
+terminal branch is now condition-cased in TWO halves (the
+visibility pass and the point restore) — an error in one must not
+skip the other.  Resurrecting the drain also surfaced SIX dormant
+section tests that a MISSING CLOSER in
+=code-review-section-test/is-draft= had been swallowing since their
+day (balanced-but-mis-nested again: the file's net balance was 0,
+so every paren check passed, =ert-deftest= forms at DEPTH 2 simply
+never registered).  One test died of its own fixture (the reviewers
+node nested =state'/=createdAt' INSIDE =author' — GitHub puts them
+at node level) and the nested =let-alist' in
+=--fmt-reviewers= silently grouped real landed reviews under a nil
+status: replaced with explicit =a-get=.
+
 POSTSCRIPT (first live run): the pool,
 =code-review-search--fetch-authors', crashed on EVERY run with
 =(wrong-number-of-arguments mapcar 1)= — a mis-nested splice had

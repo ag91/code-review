@@ -53,6 +53,7 @@
 (declare-function code-review-section--fold-hunks "code-review-folding")
 (declare-function code-review--mark-comment-lines "code-review-section")
 (declare-function code-review-viewed--apply-visibility "code-review-viewed")
+(declare-function code-review-utils--log "code-review-utils")
 
 (defcustom code-review-lazy-enabled t
   "When non-nil, wash large file blocks lazily instead of all at once.
@@ -86,6 +87,16 @@ Captured at schedule time: the deferred drain runs long after the
 render's dynamic bindings are gone.  Drives the fresh-render folds
 at the drain.")
 (put 'code-review-lazy--fresh-render? 'permanent-local t)
+
+(defvar-local code-review-lazy--pre-render-point nil
+  "Where point should rest once the lazy drain finishes.
+Captured by `code-review--trigger-hooks' BEFORE the render replaces
+the buffer text: the cursor position of a submit flow
+(`code-review-comment-cursor-pos') wins, then the pre-render point,
+then point-min (a fresh render opens at the top).  Without this, the
+deferred chunk inserts leave point at the LAST expanded block — the
+bottom of the PR.")
+(put 'code-review-lazy--pre-render-point 'permanent-local t)
 
 (defvar-local code-review-lazy--just-refetched? nil
   "Captured `code-review-section--just-refetched' for the drain.")
@@ -412,20 +423,42 @@ could not apply: the hunks did not exist yet at render time."
              (eq epoch (buffer-local-value 'code-review-lazy--epoch buffer)))
     (with-current-buffer buffer
       (if (not (code-review-lazy--load-next))
-          (let ((inhibit-read-only t)
-                ;; the render's dynamic binding is long gone; the
-                ;; drain re-installs the captured value so
-                ;; fold-and-mark sees the render-time flags
-                (code-review-section--just-refetched
-                 code-review-lazy--just-refetched?))
-            (dolist (sec code-review-lazy--end-fixups)
-              (when (and (object-of-class-p sec 'magit-section)
-                         (slot-boundp sec 'end)
-                         (markerp (oref sec end)))
-                (set-marker (oref sec end) (point-max))))
-            (code-review-section--fold-and-mark
-             code-review-lazy--fresh-render?
-             code-review-lazy--commit-focus?))
+          ;; the drain's terminal branch runs in a deferred callback:
+          ;; NEVER signal (async errors land wherever the user is)
+          (progn
+            (condition-case err
+                (let ((inhibit-read-only t)
+                      ;; the render's dynamic binding is long gone; the
+                      ;; drain re-installs the captured value so
+                      ;; fold-and-mark sees the render-time flags
+                      (code-review-section--just-refetched
+                       code-review-lazy--just-refetched?))
+                  (dolist (sec code-review-lazy--end-fixups)
+                    (when (and (object-of-class-p sec 'magit-section)
+                               (slot-boundp sec 'end)
+                               (markerp (oref sec end)))
+                      (set-marker (oref sec end) (point-max))))
+                  (when (and (boundp 'magit-root-section) magit-root-section)
+                    (code-review-section--fold-and-mark
+                     code-review-lazy--fresh-render?
+                     code-review-lazy--commit-focus?)))
+              (error
+               (code-review-utils--log
+                "lazy-drain" (error-message-string err))))
+            ;; the chunk inserts dragged point to the last expanded
+            ;; block (the bottom): rest it where the render intended.
+            ;; SEPARATE from fold-and-mark: a visibility-pass failure
+            ;; must not skip the point restore
+            (condition-case err
+                (progn
+                  (goto-char (or code-review-comment-cursor-pos
+                                 code-review-lazy--pre-render-point
+                                 (point-min)))
+                  (dolist (w (get-buffer-window-list nil nil t))
+                    (set-window-point w (point))))
+              (error
+               (code-review-utils--log
+                "lazy-drain" (error-message-string err)))))
         (deferred:nextc (deferred:next)
           (lambda (_)
             (code-review-lazy--expand-step buffer epoch)))))))

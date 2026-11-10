@@ -462,6 +462,13 @@ If you want to display a minibuffer MSG in the end."
            ;; before the render replaces it: t when this buffer
            ;; has never been rendered before
            (fresh-render? (not magit-root-section)))
+      ;; remember where point should rest after the lazy drain: the
+      ;; submit flows' cursor wins, then where the user was, then the
+      ;; top (fresh render).  setq — the deferred drain reads this
+      ;; buffer-local long after this let unwinds
+      (setq code-review-lazy--pre-render-point
+            (or code-review-comment-cursor-pos
+                (if window (window-point window) (point))))
       (code-review-render--call
        (lambda ()
          (code-review--stage-time "insert-pr-text"

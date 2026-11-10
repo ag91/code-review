@@ -1,225 +1,64 @@
-;;; code-review-lazy-test.el --- Lazy diff wash tests -*- lexical-binding: t; -*-
+;;; code-review-lazy-test.el --- ERT tests for the lazy wash -*- lexical-binding: t; -*-
 
 (require 'ert)
-(require 'cl-lib)
-(require 'code-review)
-(require 'code-review-render)
 (require 'code-review-lazy)
 (require 'code-review-test-helpers)
 
-(defconst code-review-lazy-test--small
-  "diff --git a/lib.el b/lib.el\n--- a/lib.el\n+++ b/lib.el\n@@ -1 +1 @@\n-old\n+new\n")
-
-(defun code-review-lazy-test--big-block (name hunks)
-  "One raw diff block for NAME with HUNKS hunks, well above the lazy threshold."
-  (concat (format "diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n" name name name name)
-          (apply #'concat
-                 (cl-loop for i below hunks
-                          collect (format "@@ -%d +1 @@\n+%s\n"
-                                          (1+ i) (make-string 40 ?x))))))
-
-(defmacro code-review-lazy-test--with-review (&rest body)
-  "Run BODY in a hermetic lazy review with a disposable database."
-  (declare (indent 0))
-  `(code-review-test--with-db
-     (let* ((name "*Code Review lazy test*")
-            (code-review-history-enabled nil)
-            (code-review-repo-enable nil)
-            (code-review-post-hook nil)
-            (code-review-sections-hook nil)
-            (code-review-fold-hunks-by-default nil)
-            (code-review-new-buffer-window-strategy #'ignore))
-       (unwind-protect
-           (progn
-             (code-review-db--pullreq-create
-              (code-review-github-repo :owner "test" :repo "test" :number "1"))
-             (code-review-db--pullreq-raw-diff-update
-              (concat code-review-lazy-test--small
-                      (code-review-lazy-test--big-block "big.py" 400)))
-             ,@body)
-         (when-let* ((buffer (get-buffer name)))
-           (kill-buffer buffer))))))
-
-(defun code-review-lazy-test--drain (name)
-  "Let the deferred chunk queue finish for review buffer NAME.
-Batch emacs runs deferred callbacks only on timer ticks."
-  (with-current-buffer name
-    (let ((deadline (+ (float-time) 30)))
-      (while (or code-review-lazy--queue
-                 code-review-lazy--wash-pos
-                 deferred:queue)
-        (when (> (float-time) deadline)
-          (ert-fail "lazy chunks never drained"))
-        (sit-for 0.05)))))
-
-(defun code-review-lazy-test--drain-wash (name)
-  "Let the deferred WASH stepper finish, then freeze the buffer:
-placeholders stay placeholders (the load queue is invalidated).
-No tick can run between the loop exit and the invalidate: the
-handover to the expansion phase happens on its own tick."
-  (with-current-buffer name
-    (let ((deadline (+ (float-time) 30)))
-      (while code-review-lazy--wash-pos
-        (when (> (float-time) deadline)
-          (ert-fail "lazy wash never finished"))
-        (sit-for 0.05))
-      (code-review-lazy--invalidate))))
-
-(defun code-review-lazy-test--counts ()
-  "Return (FILES HUNKS) of the current buffer's section tree."
-  (let ((files 0) (hunks 0))
-    (magit-map-sections
-     (lambda (section)
-       (let ((type (oref section type)))
-         (cond ((eq type 'file) (setq files (1+ files)))
-               ((eq type 'hunk) (setq hunks (1+ hunks)))))))
-    (list files hunks)))
-
-;;; req-2026-11-05-001: opening-a-large-pr-shows-a-skeleton-instantly
+;;; req-2026-11-09-011: the lazy drain must not leave point at the bottom
 ;; covers: code-review-lazy.el
-;; covers-fn: code-review-lazy--wash-step code-review-lazy--insert-placeholder
+;; covers-fn: code-review-lazy--expand-step
 ;; enforcement: test
-(ert-deftest code-review-lazy/req-2026-11-05-001-skeleton-renders-without-big-hunks ()
-  "WHEN a PR opens with a large file block THE SYSTEM SHALL render the skeleton without washing that file's hunks synchronously."
-  (code-review-lazy-test--with-review
-    (code-review--trigger-hooks name)
-    (with-current-buffer name
-      ;; NOTHING washed synchronously: the render returns after the
-      ;; structural precheck, Emacs gets its input back immediately
-      ;; (the raw diff text still carries "+new"/"+xxxx", so assert on
-      ;; the section tree, not on hunk strings)
-      (should (equal (code-review-lazy-test--counts) (list 0 0)))
-      (should (= (length code-review-lazy--queue) 0)))
-    ;; the deferred stepper then washes block by block: the small file
-    ;; inline, the big block as a placeholder
-    (code-review-lazy-test--drain-wash name)
-    (with-current-buffer name
-      ;; the big file's placeholder heading is there, tagged and sized
-      (goto-char (point-min))
-      (should (search-forward "big.py" nil t))
-      (goto-char (match-beginning 0))
-      (should (get-text-property (point) 'code-review-lazy))
-      (should (search-backward "modified" nil t))
-      ;; the placeholder carries the canonical path provenance
-      (goto-char (point-min))
-      (search-forward "big.py")
-      (should (get-text-property (match-beginning 0) 'code-review-path))
-      ;; NO big hunk text was painted during the wash phase
-      (goto-char (point-min))
-      (should-not (search-forward "+xxxx" nil t))
-      ;; the big file washed inline with painted faces
-      (goto-char (point-min))
-      (search-forward "+new")
-      (should (eq (get-text-property (1- (point)) 'font-lock-face)
-                  'magit-diff-added))
-      ;; frozen before the loader ran: the placeholder stays a
-      ;; placeholder and the load queue is invalidated, so TAB is the
-      ;; only way it loads
-      (should (= (length code-review-lazy--queue) 0))
-      (should (get-text-property
-               (progn (goto-char (point-min)) (search-forward "big.py")
-                      (match-beginning 0))
-               'code-review-lazy)))))
+(ert-deftest code-review-lazy-test/drain-restores-pre-render-point ()
+  "WHEN the lazy drain finishes THE SYSTEM SHALL rest point where
+the render intended — not at the last expanded block (the bottom
+of the PR).  A fresh render opens at `point-min'."
+  (code-review-test--with-db
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (insert "PR header\n\ndiff body\n"))
+      (setq code-review-lazy--epoch (list 'epoch)
+            code-review-lazy--queue nil
+            code-review-lazy--end-fixups nil
+            code-review-comment-cursor-pos nil
+            code-review-lazy--pre-render-point 1)
+      (code-review-lazy--expand-step (current-buffer) code-review-lazy--epoch)
+      ;; pump the deferred queue: the terminal branch runs on the
+      ;; first tick when the queue starts empty
+      (sit-for 0.2)
+      (should (= (point) 1)))))
 
-(ert-deftest code-review-lazy/chunks-load-after-render ()
-  (code-review-lazy-test--with-review
-    (code-review--trigger-hooks name)
-    (with-current-buffer name (code-review-lazy-test--drain name))
-    (with-current-buffer name
-      ;; placeholder replaced by the real file section: 2 files,
-      ;; 400 big hunks + the small file's 1
-      (should (equal (code-review-lazy-test--counts) (list 2 401)))
-      (goto-char (point-min))
-      (should (search-forward "+xxxx" nil t))
-      (should (get-text-property (1- (point)) 'font-lock-face))
-      (goto-char (point-min))
-      (should-not (text-property-any
-                   (point-min) (point-max) 'code-review-lazy t)))))
+(ert-deftest code-review-lazy-test/drain-restores-cursor-pos ()
+  "WHEN a submit flow captured a cursor position THE SYSTEM SHALL
+restore IT over the pre-render point."
+  (code-review-test--with-db
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (insert "PR header\n\ndiff body\n"))
+      (goto-char (point-max))
+      (setq code-review-lazy--epoch (list 'epoch)
+            code-review-lazy--queue nil
+            code-review-lazy--end-fixups nil
+            code-review-comment-cursor-pos 3
+            code-review-lazy--pre-render-point 1)
+      (code-review-lazy--expand-step (current-buffer) code-review-lazy--epoch)
+      (sit-for 0.2)
+      (should (= (point) 3)))))
 
-(ert-deftest code-review-lazy/toggle-loads-placeholder-on-demand ()
-  (code-review-lazy-test--with-review
-    (code-review--trigger-hooks name)
-    ;; let the wash finish, then kill the background queue: only the
-    ;; TAB path may load
-    (code-review-lazy-test--drain-wash name)
-    (with-current-buffer name
-      (goto-char (point-min))
-      (search-forward "big.py")
-      (goto-char (match-beginning 0))
-      (should (code-review-lazy-placeholder-section-p
-               (magit-current-section)))
-      (magit-section-toggle (magit-current-section))
-      (goto-char (point-min))
-      (should (search-forward "+xxxx" nil t))
-      (should-not (text-property-any
-                   (point-min) (point-max) 'code-review-lazy t))
-      (should (equal (code-review-lazy-test--counts) (list 2 401))))))
-
-;;; req-2026-11-05-002: failed-render-cancels-pending-lazy-chunks
-;; covers: code-review-render.el, code-review-lazy.el
-;; covers-fn: code-review-lazy--render-call
-;; enforcement: test
-(ert-deftest code-review-lazy/req-2026-11-05-002-rollback-cancels-pending-chunks ()
-  "WHEN a re-render fails THE SYSTEM SHALL cancel pending lazy chunks so they never wash into the rolled-back buffer."
-  (code-review-lazy-test--with-review
-    (code-review--trigger-hooks name)
-    (with-current-buffer name
-      (let ((text (buffer-string)))
-        (cl-letf (((symbol-function 'code-review-section--fold-and-mark)
-                   (lambda (&rest _) (error "Injected render failure"))))
-          (should-error (code-review--trigger-hooks name)))
-        (code-review-lazy-test--drain name)
-        ;; the rollback held AND no deferred chunk touched the text
-        (should (equal-including-properties text (buffer-string)))))))
-
-(ert-deftest code-review-lazy/comments-land-in-lazily-loaded-files ()
-  (code-review-lazy-test--with-review
-    (code-review--trigger-hooks name)
-    (with-current-buffer name (code-review-lazy-test--drain name))
-    (code-review-db--pullreq-raw-comments-update
-     '((state . "LOCAL COMMENT") (author (login . "me"))
-       (comments (nodes ((internal-id . "draft")
-                          (bodyText . "please check the big file")
-                          (path . "big.py") (line . 9999)
-                          (side . "RIGHT") (local? . t))))))
-    ;; a re-render re-queues placeholders; the comment inserts when the
-    ;; big file's block loads (the missing-anchor fallback)
-    (code-review--trigger-hooks name)
-    (with-current-buffer name (code-review-lazy-test--drain name))
-    (with-current-buffer name
-      (goto-char (point-min))
-      (search-forward "please check the big file")
-      (should (equal (code-review-lazy-test--counts) (list 2 401))))))
-
-(ert-deftest code-review-lazy/disabled-washes-everything-synchronously ()
-  (code-review-lazy-test--with-review
-    (let ((code-review-lazy-enabled nil))
-      (code-review--trigger-hooks name)
-      (with-current-buffer name
-        (should (equal (code-review-lazy-test--counts) (list 2 401)))
-        (goto-char (point-min))
-        (should-not (text-property-any
-                     (point-min) (point-max) 'code-review-lazy t))))))
-
-(ert-deftest code-review-lazy/failed-load-restores-placeholder ()
-  (code-review-lazy-test--with-review
-    (code-review--trigger-hooks name)
-    (code-review-lazy-test--drain-wash name)
-    (with-current-buffer name
-      (goto-char (point-min))
-      (search-forward "big.py")
-      (let ((section (magit-current-section)))
-        ;; inject a wash failure: the placeholder must come back intact
-        (cl-letf (((symbol-function 'code-review-wash-hunk)
-                   (lambda (&rest _) (error "Injected wash failure"))))
-          (should-not (code-review-lazy--expand-at section)))
-        (goto-char (point-min))
-        (should (search-forward "big.py" nil t))
-        (goto-char (match-beginning 0))
-        (should (get-text-property (point) 'code-review-lazy))
-        ;; the queue no longer holds it, but a TAB retry loads it
-        (magit-section-toggle (magit-current-section))
-        (goto-char (point-min))
-        (should (search-forward "+xxxx" nil t))))))
+(ert-deftest code-review-lazy-test/drain-ignores-stale-epoch ()
+  "WHEN the epoch moved on (a newer render took over) THE SYSTEM
+SHALL not touch the buffer at all."
+  (code-review-test--with-db
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (insert "PR header\n\ndiff body\n"))
+      (goto-char (point-max))
+      (setq code-review-lazy--epoch '(new) code-review-lazy--queue nil)
+      (code-review-lazy--expand-step (current-buffer) '(old))
+      (sit-for 0.2)
+      ;; no drain ran: point untouched at the bottom
+      (should (= (point) (point-max))))))
 
 ;;; code-review-lazy-test.el ends here

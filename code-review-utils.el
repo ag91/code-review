@@ -519,19 +519,25 @@ Expect the same output as `git diff --no-prefix`"
                                 (at))))
                           (-distinct .reviewRequests.nodes))
                groups)
+      ;; explicit a-get access INSIDE the lambda: the nested let-alist
+      ;; fails to shadow the outer binding of the TOP-LEVEL paths
+      ;; (.state, .createdAt bind nil from the outer infos alist), so
+      ;; every landed review grouped under a nil status
       (mapc (lambda (o)
-              (let-alist o
-                (let ((current-data (gethash .state groups)))
-                  (when (not (-contains-p (-map
-                                           (lambda (it)
-                                             (a-get it 'login))
-                                           current-data)
-                                          .author.login))
-                    (push `((code-owner?)
-                            (login . ,.author.login)
-                            (url . ,.author.url)
-                            (at . ,.createdAt))
-                          (gethash .state groups))))))
+              (let* ((state (a-get o 'state))
+                     (author (a-get o 'author))
+                     (login (a-get author 'login))
+                     (current-data (gethash state groups)))
+                (when (not (-contains-p (-map
+                                         (lambda (it)
+                                           (a-get it 'login))
+                                         current-data)
+                                        login))
+                  (push `((code-owner?)
+                          (login . ,login)
+                          (url . ,(a-get author 'url))
+                          (at . ,(a-get o 'createdAt)))
+                        (gethash state groups)))))
             .latestOpinionatedReviews.nodes)
       groups)))
 
