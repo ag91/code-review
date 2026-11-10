@@ -115,12 +115,13 @@
    (buffer              :closql-class code-review-db-buffer))
   :abstract t)
 
-(defclass code-review-db-database (closql-database)
-  ((name         :initform "code-review-db")
-   (object-class :initform 'code-review-db-pullreq)
-   (file         :initform 'code-review-db-database-file)
-   (schemata     :initform 'code-review-db-table-schema)
-   (version      :initform 11)))
+(eval-and-compile
+  (defclass code-review-db-database (closql-database)
+    ((name         :initform "code-review-db")
+     (object-class :initform 'code-review-db-pullreq)
+     (file         :initform 'code-review-db-database-file)
+     (schemata     :initform 'code-review-db-table-schema)
+     (version      :initform 11))))
 
 (defvar code-review-db--override-connection-class nil)
 
@@ -435,7 +436,7 @@ VACUUMs the file at the end."
     (when (/= (closql--db-get-version db)
               (oref-default 'code-review-db-database version))
       (emacsql-close db)
-      (oset-default code-review-db-database singleton eieio--unbound)
+      (oset-default 'code-review-db-database singleton eieio--unbound)
       (setq db (code-review-db)))
     (let* ((rows (emacsql db [:select [id owner repo number] :from pullreq
                                       :order-by [(asc rowid)]]))
@@ -662,7 +663,8 @@ forge confirms success."
              (curr-path-re-enabled? nil))
         (closql-with-transaction db
           ;;; disable all previous ones and enable curr-path is already exists
-          (-map
+          (-each
+           paths
            (lambda (path)
              (if (string-equal (oref path name) curr-path)
                  (progn
@@ -671,8 +673,7 @@ forge confirms success."
                    (setq curr-path-re-enabled? t))
                (progn
                  (oset path at-pos-p nil)
-                 (closql-insert db path t))))
-           paths)
+                 (closql-insert db path t)))))
           (when (not curr-path-re-enabled?)
             ;; save new one
             (closql-insert db (code-review-db-path
@@ -710,8 +711,8 @@ forge confirms success."
 
 (defun code-review-db-delete-raw-comment (identifier)
   "Remove comment identified by IDENTIFIER from raw comments list.
-IDENTIFIER can be our local 'internal-id' (string UUID) or the provider
-'databaseId' (number or string)."
+IDENTIFIER can be our local `internal-id' (string UUID) or the provider
+`databaseId' (number or string)."
   (let* ((pr (code-review-db-get-pullreq))
          (id-str (cond ((numberp identifier) (number-to-string identifier))
                        ((stringp identifier) identifier)
