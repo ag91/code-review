@@ -6370,6 +6370,46 @@ added on top for anyone the scan misses.  Smoke-tested against the
 real roots: orgs 28, authors 15 with the user's own addresses
 ranked near the top.
 
+UPDATE (2026-11-10): the REVIEW BACKLOG joined the pool — one more
+search, =org:X is:pr review-requested:@me state:open' with NO
+created window (a request from months ago is still backlog),
+rows flagged =:requested? t= (=--fetch-requested=).  =--reconcile=
+merges the pools by html_url OR-ing the flag; the Age sorter puts
+requested first (youngest first inside each group); requested rows
+render "requested" in Flags and a bold title
+(=code-review-search-requested= face).  Header reports the backlog
+count.  38 PRs in the real backlog at first run.  Same-day lesson:
+the mention test broke BECAUSE the people cache finally landed on
+disk — its fixture org IS the user's real org, so =--ensure=
+served the REAL 190 members into the stub's collection.  Tests
+touching =--ensure' must bind a FRESH =code-review-people--state=
+fixture (fetched-at now) to be hermetic against the user's real
+cache; and fixtures built as quoted response alists encode the
+wrong ghub shape (see postscript 2).
+
+UPDATE (2026-11-10, later): SUBMISSIONS NO LONGER RE-RENDER.  A
+review submit (approve/comment/request-changes/replies) or a single
+comment send used to fire a FULL =code-review--build-buffer' (with
+=code-review-section-full-refresh? t= — a forge re-fetch and a
+whole re-wash) from its async callback.  What actually changes on
+screen is one thing: the "Comment/Reply by YOU" local headings
+become sent comments.  =code-review-section--mark-local-comments-sent'
+(now =--mark-comment-sent-in-place') rewrites those headings in
+place ("You, just now: ") walking SECTIONS (never raw text —
+bodies QUOTING the heading must survive), preserving the
+neighbor's text properties (the section identity + heading face),
+with a fallback to the old full rebuild when the buffer is gone.
+Wired into =code-review--submit='s two callbacks and
+=code-review-comment-handler-commit='s send branch; the db updates
+(finished, draft delete) still happen, the forge state catches up
+on the next natural refresh.  The regression test caught the
+surgery drifting the section start markers (the 2026-10-29 heading
+gotcha, third face: delete-then-insert drags an insertion-type-t
+start marker PAST the inserted text — insert the replacement AFTER
+the old span first, then delete the old span; and markers below
+legitimately shift by the length delta — assert "start still points
+at the new heading", not byte equality).
+
 POSTSCRIPT (first live run): the pool,
 =code-review-search--fetch-authors', crashed on EVERY run with
 =(wrong-number-of-arguments mapcar 1)= — a mis-nested splice had

@@ -91,7 +91,16 @@ member logins and inserts @LOGIN of the selected one."
     (let* ((pr (code-review-github-repo
                 :owner "WriterInternal" :repo "writer-data-platform" :number 1))
            (old-ghub (symbol-function 'ghub-query))
-           (old-complete (symbol-function 'completing-read)))
+           (old-complete (symbol-function 'completing-read))
+           ;; hermetic against a REAL people cache on disk: serve a
+           ;; fresh fixture state so --ensure neither loads the user's
+           ;; cache nor starts a network refresh
+           (code-review-people--state
+            `(:version ,code-review-people--version
+                       :org "WriterInternal"
+                       :people (("bob" . nil) ("alice" . nil))
+                       :fetched-at ,(float-time)
+                       :refreshing? nil)))
       (fset 'ghub-query
             (lambda (_query _variables &rest _)
               '(data (organization

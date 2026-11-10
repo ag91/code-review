@@ -882,4 +882,66 @@ and the Files changed heading reports 2/2 viewed."
           (should (eq (get-text-property (point) 'font-lock-face)
                       'code-review-dimmed)))))))
 
+;;; req-2026-11-09-010: in-place send-marking, no full re-render
+;; covers: code-review-section.el
+;; covers-fn: code-review-section--mark-comment-sent-in-place
+;; covers-fn: code-review-section--mark-local-comments-sent
+;; enforcement: test
+(ert-deftest code-review-section-test/mark-local-comments-sent-in-place ()
+  "WHEN a review or a comment is submitted THE SYSTEM SHALL flip the
+\"by YOU\" local headings to the sent style IN PLACE: section start
+markers stay valid, text properties (the heading face and magit's
+section identity) ride over, and body text merely QUOTING the
+heading is never touched."
+  (code-review-section-test--with-section-env
+    (with-temp-buffer
+      (magit-section-mode)
+      (let* ((inhibit-read-only t)
+             (obj (code-review-local-comment-section
+                   :msg "looks good" :path "a.el" :author "me"
+                   :state "PENDING" :line-type "ADDED"))
+             (reply (code-review-reply-comment-section
+                     :msg "sure" :path "a.el" :author "me"
+                     :state "PENDING")))
+        (magit-insert-section (code-review--root-section)
+          (magit-insert-section (code-review-local-comment-section obj)
+            (code-review-comment-insert-lines obj))
+          (magit-insert-section (code-review-reply-comment-section reply)
+            (code-review-comment-insert-lines reply))
+          ;; a decoy: a comment BODY quoting the heading text
+          (magit-insert-section (code-review-comment-section)
+            (insert "someone wrote: Comment by YOU: inside\n")))
+        (let ((marked (code-review-section--mark-local-comments-sent
+                       (buffer-name))))
+          ;; exactly the two live sections rewritten
+          (should (= marked 2))
+          (goto-char (point-min))
+          (should (search-forward "You, just now: " nil t))
+          (should (search-forward "Reply, just now: " nil t))
+          (goto-char (point-min))
+          ;; the decoy body text is untouched
+          (should (search-forward "someone wrote: Comment by YOU: inside"
+                                  nil t))
+          ;; no pending heading survives
+          (should-not (re-search-forward
+                       (code-review-section--by-you-heading-regexp)
+                       nil t))
+          ;; every section's start marker still points AT its new
+          ;; heading line (markers may legitimately shift by the
+          ;; length delta of sections edited ABOVE them)
+          (dolist (s (--filter
+                      (memq (oref it type)
+                            '(code-review-local-comment-section
+                              code-review-reply-comment-section))
+                      (--mapcat (cons it (oref it children))
+                                (oref magit-root-section children))))
+            (should (save-excursion
+                      (goto-char (marker-position (oref s start)))
+                      (or (looking-at-p "You, just now: ")
+                          (looking-at-p "Reply, just now: ")))))
+          ;; the heading keeps its face through the surgery
+          (goto-char (point-min))
+          (re-search-forward "You, just now: " nil t)
+          (should (get-text-property (match-beginning 0) 'face)))))))
+
 ;;; code-review-section-test.el ends here

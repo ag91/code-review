@@ -906,5 +906,81 @@ lines with ' ' or '+'. END-POS is exclusive. Review UI lines are ignored."
 (declare-function difftastic-git-diff-range "difftastic"
                   (&optional rev-or-range args files))
 
+;;; In-place updates (no full re-render)
+;;
+;; Submitting a review or a single comment changes exactly ONE kind of
+;; thing on screen: the "by YOU" local comment sections become sent
+;; comments.  A full `code-review--build-buffer' re-fetches and
+;; re-washes everything for that; these helpers edit the live buffer
+;; surgically instead (the 2026-10-29 heading-surgery rules: never
+;; rewrite a whole heading span, carry the neighbor's properties).
+
+(defun code-review-section--find-section (buf pred)
+  "The first magit-section in BUF matching PRED, or nil."
+  (let (found)
+    (with-current-buffer buf
+      (magit-map-sections
+       (lambda (s)
+         (when (and (not found) (funcall pred s))
+           (setq found s)))))
+    found))
+
+(defun code-review-section--by-you-heading-regexp ()
+  "The heading text a local or reply comment section renders with."
+  "\\(Comment\\|Reply\\) by YOU: ")
+
+(defun code-review-section--mark-comment-sent-in-place (buff-name section)
+  "Rewrite SECTION's \"by YOU\" heading to the sent style, in place.
+SECTION lives in BUFF-NAME; its heading text is replaced with the
+\"just now\" style a freshly submitted comment carries, keeping the
+neighbor's text properties.  Returns non-nil when edited."
+  (let ((start (and (buffer-live-p (get-buffer buff-name))
+                    (ignore-errors (oref section start)))))
+    (when (and start
+               (memq (oref section type)
+                     '(code-review-local-comment-section
+                       code-review-reply-comment-section)))
+      (let ((inhibit-read-only t))
+        (save-excursion
+          (with-current-buffer buff-name
+            (goto-char start)
+            (let* ((lend (line-end-position))
+                   (reply? (eq (oref section type)
+                               'code-review-reply-comment-section))
+                   (hit (re-search-forward
+                         (code-review-section--by-you-heading-regexp)
+                         lend t)))
+              (when hit
+                ;; marker-safe surgery: insert the new text AFTER the
+                ;; old span first, then delete the old span -- a plain
+                ;; delete-then-insert would drag the section's
+                ;; insertion-type-t start marker PAST the new text
+                ;; (the 2026-10-29 heading gotcha)
+                (let* ((beg (match-beginning 0))
+                       (end (match-end 0))
+                       (props (text-properties-at beg)))
+                  (goto-char end)
+                  (insert (apply #'propertize
+                                 (if reply? "Reply, just now: " "You, just now: ")
+                                 props))
+                  (delete-region beg end)))
+              hit)))))))
+
+(defun code-review-section--mark-local-comments-sent (buff-name)
+  "Mark EVERY pending local/reply comment section in BUFF-NAME sent.
+The in-place equivalent of the full re-render a review submission
+used to trigger.  Walks SECTIONS (never raw text — a comment body
+quoting \"Comment by YOU\" must not be touched).  Returns the
+number of headings rewritten."
+  (let ((sent 0))
+    (when (get-buffer buff-name)
+      (with-current-buffer buff-name
+        (magit-map-sections
+         (lambda (s)
+           (when (code-review-section--mark-comment-sent-in-place
+                  buff-name s)
+             (setq sent (1+ sent))))))
+      sent)))
+
 (provide 'code-review-section)
 ;;; code-review-section.el ends here

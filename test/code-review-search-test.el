@@ -207,5 +207,56 @@ deduped rows to the callback after the deferred queue drains.
                          '("a" "b"))))
       (fset 'code-review-search--fetch code-review-search--stub--fetch))))
 
+;;; req-2026-11-09-009: the review backlog (review-requested:@me)
+;; covers: code-review-search.el
+;; covers-fn: code-review-search--reconcile
+;; covers-fn: code-review-search--sort-age
+;; covers-fn: code-review-search--row
+;; enforcement: test
+(ert-deftest code-review-search/req-2026-11-09-009-reconcile-merges-flag ()
+  "WHEN the same PR comes from an author search AND the backlog
+search THE SYSTEM SHALL keep one row with the requested flag."
+  (let* ((plain '(:key "u1" :url "u1" :title "t" :author "a"
+                       :number 1 :repo "o/r" :created-ts 100))
+         (requested (plist-put (copy-sequence plain) :requested? t))
+         (merged (code-review-search--reconcile (list plain requested))))
+    (should (= (length merged) 1))
+    (should (plist-get (car merged) :requested?)))
+  ;; distinct keys survive untouched, no flag
+  (should (= (length (code-review-search--reconcile
+                      (list '(:key "u1") '(:key "u2"))))
+             2)))
+
+(ert-deftest code-review-search/req-2026-11-09-009-sort-requested-first ()
+  "WHEN sorting the queue THE SYSTEM SHALL put requested PRs first,
+youngest first inside each group."
+  (let* ((old-plain '(:key "old" :created-ts 100))
+         (new-plain '(:key "new" :created-ts 900))
+         (old-req '(:key "old-req" :created-ts 50 :requested? t))
+         (rows (list old-plain new-plain old-req))
+         (table (make-hash-table :test #'equal)))
+    (dolist (r rows table) (puthash (plist-get r :key) r table))
+    (let ((code-review-search--table table))
+      (should (equal (mapcar #'car
+                             (sort (mapcar #'code-review-search--row rows)
+                                   #'code-review-search--sort-age))
+                     '("old-req" "new" "old"))))))
+
+(ert-deftest code-review-search/req-2026-11-09-009-row-highlights-requested ()
+  "WHEN a row is requested THE SYSTEM SHALL show the flag token and
+face the title with `code-review-search-requested'."
+  (let* ((entry '(:key "u1" :title "the title" :author "a" :number 1
+                       :repo "o/r" :created-ts nil :requested? t))
+         (row (code-review-search--row entry))
+         (vec (cadr row))
+         (plain (code-review-search--row
+                 '(:key "u2" :title "plain" :author "a" :number 2
+                   :repo "o/r" :created-ts nil)))
+         (plain-vec (cadr plain)))
+    (should (equal (aref vec 4) "requested"))
+    (should (get-text-property 0 'face (aref vec 1)))
+    (should (equal (aref plain-vec 4) ""))
+    (should (null (get-text-property 0 'face (aref plain-vec 1))))))
+
 (provide 'code-review-search-test)
 ;;; code-review-search-test.el ends here

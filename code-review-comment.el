@@ -506,11 +506,26 @@ duplicate the comment."
            (code-review-db-get-pullreq)
            obj
            (lambda (&rest _)
-             (let ((code-review-section-full-refresh? t)
-                   (code-review-db--pullreq-id pr-id))
+             (let ((code-review-db--pullreq-id pr-id))
                (when draft-id
                  (code-review-db-delete-raw-comment draft-id))
-               (code-review--build-buffer buff-name)))))
+               ;; async callback: mark THIS comment sent in place — no
+               ;; full re-render, no re-fetch
+               (let* ((buf (get-buffer buff-name))
+                      (section (and buf
+                                    (code-review-section--find-section
+                                     buf
+                                     (lambda (s)
+                                       (and (memq (oref s type)
+                                                  '(code-review-local-comment-section
+                                                    code-review-reply-comment-section))
+                                           (eq (oref s value) obj)))))))
+                 (if (and section
+                          (code-review-section--mark-comment-sent-in-place
+                           buff-name section))
+                     (message "Comment sent")
+                   (let ((code-review-section-full-refresh? t))
+                     (code-review--build-buffer buff-name))))))))
       (progn
         (code-review-comment--save-draft obj raw-comment)
         (code-review--build-buffer buff-name)))))
@@ -673,7 +688,9 @@ knows the person, not the slug."
                           nil)
                       ""))
              (aliases (mapcar #'code-review-people--display people))
-             (cands (delete-dups (copy-sequence (append aliases logins))))
+             (cands (sort (delete-dups
+                           (copy-sequence (append aliases logins)))
+                          #'string-lessp))
              (picked (completing-read "Mention user: " cands nil nil))
              (user (if (string-match "(\\([^)]+\\))\\'" picked)
                        (match-string 1 picked)

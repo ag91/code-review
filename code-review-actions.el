@@ -185,13 +185,18 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
             (code-review-send-review
              review-obj
              (lambda (&rest _)
-               (let ((code-review-section-full-refresh? t))
-                 (oset pr finished t)
-                 (oset pr finished-at (current-time-string))
-                 (oset pr feedback nil)
-                 (code-review-db-update pr)
-                 ;; async callback: point the DB back at this PR and
-                 ;; rebuild this PR's buffer
+               ;; async callback: update the relevant UI in place —
+               ;; the sent local comments flip to the sent style; NO
+               ;; full re-render, no re-fetch
+               (oset pr finished t)
+               (oset pr finished-at (current-time-string))
+               (oset pr feedback nil)
+               (code-review-db-update pr)
+               (if (get-buffer buff-name)
+                   (message "Done submitting review (%d comment(s) marked sent)"
+                            (code-review-section--mark-local-comments-sent
+                             buff-name))
+                 ;; no live buffer to touch: rebuild as before
                  (setq code-review-db--pullreq-id pr-id)
                  (code-review--build-buffer
                   buff-name
@@ -202,7 +207,11 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
             (code-review-send-replies
              replies-obj
              (lambda (&rest _)
-               (let ((code-review-section-full-refresh? t))
+               (if (get-buffer buff-name)
+                   (message "Done submitting review and replies (%d comment(s) marked sent)"
+                            (code-review-section--mark-local-comments-sent
+                             buff-name))
+                 ;; no live buffer to touch: rebuild as before
                  (setq code-review-db--pullreq-id pr-id)
                  (code-review--build-buffer
                   buff-name
@@ -1123,6 +1132,7 @@ buffer).  \\[quit-window] dismisses from inside the popup too."
 (declare-function code-review-analysis--delicate-hunks "code-review-analysis")
 (declare-function code-review-section--goto-hunk-section "code-review-section")
 (declare-function code-review-section--find-hunk-section "code-review-section")
+(declare-function code-review-section--mark-local-comments-sent "code-review-section")
 (defvar code-review-comment-cursor-pos)
 (defvar code-review-section-full-refresh?)
 (defvar code-review-repo-worktree)

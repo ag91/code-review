@@ -127,15 +127,14 @@ created inside the rolling DAYS window (default
 
 ;;; The fetch (L1, async, never signals)
 
-(defun code-review-search--fetch (author callback)
-  "Run ONE author search for AUTHOR, async; CALLBACK gets the rows."
+(defun code-review-search--fetch-query (q per-page callback)
+  "Run ONE search for the query string Q, async; CALLBACK gets rows."
   (ghub-get
    "/search/issues"
-   `((q . ,(code-review-search--query
-            code-review-search--current-org author))
+   `((q . ,q)
      (sort . "created")
      (order . "desc")
-     (per_page . ,(number-to-string code-review-search-per-page)))
+     (per_page . ,(number-to-string per-page)))
    :auth code-review-auth-login-marker
    :host code-review-github-host
    :callback
@@ -154,22 +153,48 @@ created inside the rolling DAYS window (default
      (message "Code Review search failed: %s" args)
      (funcall callback nil))))
 
-(defun code-review-search--fetch-authors (authors callback)
+(defun code-review-search--fetch (author callback)
+  "Run ONE author search for AUTHOR, async; CALLBACK gets the rows."
+  (code-review-search--fetch-query
+   (code-review-search--query
+    code-review-search--current-org author)
+   code-review-search-per-page
+   callback))
+
+(defun code-review-search--fetch-requested (org callback)
+  "The review backlog: open PRs requesting YOUR review, async.
+No created window — a request from months ago is still backlog.
+CALLBACK gets the rows flagged :requested? t."
+  (code-review-search--fetch-query
+   (format "org:%s is:pr review-requested:@me state:open" org)
+   100
+   (lambda (rows)
+     (funcall callback
+              (--map (plist-put it :requested? t) rows)))))
+
+(defun code-review-search--fetch-authors (authors callback &optional extra-maker)
   "Pool the searches for AUTHORS; CALLBACK gets the deduped rows.
 One deferred per author inside a `deferred:parallel'; a failed
-author search contributes nothing instead of killing the pool."
+author search contributes nothing instead of killing the pool.
+EXTRA-MAKER, when set, is called with an ACCUMULATE function and
+returns one MORE deferred to run in the same pool (the review
+backlog search uses it)."
   (let ((fetched nil))
-    (let ((deferreds
-           (mapcar
-            (lambda (author)
-              (let ((d (deferred:new #'identity)))
-                (code-review-search--fetch
-                 author
-                 (lambda (rows)
-                   (setq fetched (append fetched rows))
-                   (deferred:callback-post d t)))
-                d))
-            authors)))
+    (let* ((accumulate (lambda (rows)
+                         (setq fetched (append fetched rows))))
+           (deferreds
+            (mapcar
+             (lambda (author)
+               (let ((d (deferred:new #'identity)))
+                 (code-review-search--fetch
+                  author
+                  (lambda (rows)
+                    (funcall accumulate rows)
+                    (deferred:callback-post d t)))
+                 d))
+             authors)))
+      (when extra-maker
+        (push (funcall extra-maker accumulate) deferreds))
       (deferred:nextc
           (deferred:parallel deferreds)
         (lambda (_)
@@ -298,23 +323,58 @@ re-asks even when remembered."
       (format "%dd" (/ (float-time (time-subtract nil ts)) 86400))
     ""))
 
-(defun code-review-search--row (entry)
-  "One tabulated row for the pooled ENTRY."
-  (list (plist-get entry :key)
-        (vector (code-review-search--age (plist-get entry :created-ts))
-                (plist-get entry :title)
-                (format "%s#%s" (plist-get entry :repo)
-                        (plist-get entry :number))
-                (or (plist-get entry :author) "")
-                (if (plist-get entry :draft?) "draft" ""))))
-
-(defun code-review-search--sort-age (a b)
-  "Sorter: youngest first, by the entries' created-ts."
-  (let ((ta (plist-get (gethash (car a) code-review-search--table) :created-ts))
-        (tb (plist-get (gethash (car b) code-review-search--table) :created-ts)))
+(defun code-review-search--newer-p (a b)
+  "Is A newer than B (youngest first)?  Missing timestamps sink."
+  (let ((ta (plist-get a :created-ts))
+        (tb (plist-get b :created-ts)))
     (cond ((null ta) nil)
           ((null tb) t)
           (t (time-less-p tb ta)))))
+
+(defun code-review-search--reconcile (rows)
+  "Merge pooled ROWS by key, OR-ing the requested flag.
+The same PR can come back from an author search AND the review
+backlog search; one row wins, flags merge."
+  (let ((table (make-hash-table :test #'equal))
+        (missing '(missing)))
+    (dolist (e rows)
+      (let ((known (gethash (plist-get e :key) table missing)))
+        (if (eq known missing)
+            (puthash (plist-get e :key) e table)
+          (when (plist-get e :requested?)
+            (plist-put known :requested? t)))))
+    (mapcar #'cdr (code-review-search--hash->alist table))))
+
+(defface code-review-search-requested
+  '((t :weight bold))
+  "Face for PRs requesting YOUR review (the search queue backlog)."
+  :group 'code-review)
+
+(defun code-review-search--row (entry)
+  "One tabulated row for the pooled ENTRY."
+  (let ((requested? (plist-get entry :requested?))
+        (title (or (plist-get entry :title) "")))
+    (list (plist-get entry :key)
+          (vector (code-review-search--age (plist-get entry :created-ts))
+                  (if requested?
+                      (propertize title 'face 'code-review-search-requested)
+                    title)
+                  (format "%s#%s" (plist-get entry :repo)
+                          (plist-get entry :number))
+                  (or (plist-get entry :author) "")
+                  (cond (requested? "requested")
+                        ((plist-get entry :draft?) "draft")
+                        (t ""))))))
+
+(defun code-review-search--sort-age (a b)
+  "Sorter: requested-for-you first, youngest first inside each group."
+  (let* ((ea (gethash (car a) code-review-search--table))
+         (eb (gethash (car b) code-review-search--table))
+         (ra (plist-get ea :requested?))
+         (rb (plist-get eb :requested?)))
+    (cond (ra (if rb (code-review-search--newer-p ea eb) t))
+          (rb nil)
+          (t (code-review-search--newer-p ea eb)))))
 
 (defun code-review-search--refresh (&optional re-prompt)
   "Re-run the searches and repaint the queue.
@@ -337,22 +397,35 @@ RE-PROMPT re-asks the org."
                        cands))))))
     (unless authors
       (user-error "No authors found: set `code-review-search-authors' or point `code-review-projects-roots' at your clones"))
-    (message "Code Review: searching %s (%d author(s))..." org (length authors))
+    (message "Code Review: searching %s (%d author(s) + your review backlog)..."
+             org (length authors))
     (code-review-search--fetch-authors
      authors
      (lambda (rows)
-       (setq code-review-search--table
-             (let ((table (make-hash-table :test #'equal)))
-               (dolist (e rows table) (puthash (plist-get e :key) e table)))
-             tabulated-list-entries
-             (mapcar #'code-review-search--row rows)
-             header-line-format
-             (format " Open PRs (%s, not approved, last %dd): %d result(s)"
-                     org
-                     code-review-search-window-days
-                     (length rows)))
-       (tabulated-list-print)
-       (message "Code Review: %d open PR(s)" (length rows))))))
+       (let* ((merged (code-review-search--reconcile rows))
+              (backlog (--count (plist-get it :requested?) merged)))
+         (setq code-review-search--table
+               (let ((table (make-hash-table :test #'equal)))
+                 (dolist (e merged table) (puthash (plist-get e :key) e table)))
+               tabulated-list-entries
+               (mapcar #'code-review-search--row merged)
+               header-line-format
+               (format " Open PRs (%s, not approved; authors last %dd): %d result(s), %d review-requested"
+                       org
+                       code-review-search-window-days
+                       (length merged)
+                       backlog))
+         (tabulated-list-print)
+         (message "Code Review: %d open PR(s), %d awaiting your review"
+                  (length merged) backlog)))
+     (lambda (accumulate)
+       (let ((d (deferred:new #'identity)))
+         (code-review-search--fetch-requested
+          org
+          (lambda (rows)
+            (funcall accumulate rows)
+            (deferred:callback-post d t)))
+         d)))))
 
 (define-derived-mode code-review-search-mode tabulated-list-mode
   "Code Review Search"
@@ -362,7 +435,7 @@ RE-PROMPT re-asks the org."
          ("Title" 55 nil)
          ("Repo/PR" 24 nil)
          ("Author" 16 nil)
-         ("Flags" 7 nil)]
+         ("Flags" 10 nil)]
         tabulated-list-sort-key '("Age" . nil))
   (tabulated-list-init-header)
   ;; g re-runs the searches
