@@ -223,6 +223,8 @@ named after the DB's current pullreq."
 ;; defined in code-review.el (defcustom); always loaded before any
 ;; render runs, declared here to keep the byte-compiler quiet
 (defvar code-review-post-hook)
+(defvar code-review-start-hook)
+(defvar code-review--from-start?)
 
 
 (declare-function code-review-promote-comment-to-new-issue "code-review")
@@ -510,7 +512,13 @@ If you want to display a minibuffer MSG in the end."
                                    (copy-sequence code-review-post-hook))))
         (code-review--stage-time
             (format "post-hook:%s" post-fn)
-          (funcall post-fn))))))
+          (funcall post-fn)))
+      ;; one-shot: only renders initiated by `code-review-start' run
+      ;; `code-review-start-hook' (with this PR buffer current and the
+      ;; row fetched — url/title ready); refreshes never fire it
+      (when code-review--from-start?
+        (setq code-review--from-start? nil)
+        (run-hooks 'code-review-start-hook)))))
 
 (cl-defmethod code-review--auth-token-set? ((_github code-review-github-repo) res)
   "Check if the RES has a message for auth token not set for GITHUB."

@@ -6566,6 +6566,17 @@ at node level) and the nested =let-alist' in
 =--fmt-reviewers= silently grouped real landed reviews under a nil
 status: replaced with explicit =a-get=.
 
+UPDATE (2026-11-11): =code-review-start-hook= — a one-shot hook
+after a =code-review-start= render finishes (buffer current, PR row
+fetched so =url=/=title= read off =(code-review-db-get-pullreq)=).
+Triggered by a GLOBAL flag =code-review--from-start?= set by
+=code-review-start= and consumed once in --trigger-hooks' tail:
+it must NOT be let-bound around =--build-buffer= (the render is
+async — the let unwinds before the deferred chain reads the flag,
+the same trap the pre-render-point capture hit).  Deliberately
+distinct from =code-review-post-hook=, which fires on EVERY render
+including plain refreshes.
+
 POSTSCRIPT (first live run): the pool,
 =code-review-search--fetch-authors', crashed on EVERY run with
 =(wrong-number-of-arguments mapcar 1)= — a mis-nested splice had

@@ -161,6 +161,11 @@ away with \"Could not identify the PR ...\"."
   (let ((code-review-section-full-refresh? t))
     (code-review-auth-source-debug)
     (code-review-utils-build-obj-from-url url)
+    ;; global flag (NOT let-bound: the render is async, a let would
+    ;; unwind before the deferred chain reaches it); consumed by
+    ;; --trigger-hooks after the render, which runs
+    ;; `code-review-start-hook' once with the PR buffer current
+    (setq code-review--from-start? t)
     (code-review--build-buffer)))
 
 ;;; Commit buffer
@@ -341,6 +346,21 @@ there)."
   ;; the reviewed/total files beacon in the modeline (:eval lighter —
   ;; no update plumbing; see `code-review-viewed--progress-lighter')
   (code-review-progress-mode 1))
+
+(defvar code-review--from-start? nil
+  "Non-nil while a `code-review-start'-initiated render is in flight.
+Set by `code-review-start', consumed once by --trigger-hooks after
+that render finishes (global on purpose: the render is async, a
+let-binding would unwind before the deferred chain reads it).")
+
+(defcustom code-review-start-hook nil
+  "Hook run ONCE after `code-review-start' finishes building the buffer.
+Runs with the review buffer current and the PR row in the db, so
+functions can read `(code-review-db-get-pullreq)' for `url' and
+`title'.  Unlike `code-review-post-hook' this does NOT fire on
+plain refreshes of the buffer."
+  :group 'code-review
+  :type 'hook)
 
 ;; Run after a Code Review buffer is fully rendered
 (defcustom code-review-post-hook
