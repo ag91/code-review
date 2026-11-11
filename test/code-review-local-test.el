@@ -291,6 +291,13 @@ survives the test's db reset."
 ;;; Local review outcomes (phase 25b): comments -> agent, finish ->
 ;;; budget booking
 
+(defconst code-review-local-test--repo-dir
+  (file-name-as-directory (make-temp-file "somerepo-" t))
+  "A real directory: the code runs processes with it as `default-directory'.")
+
+(add-hook 'kill-emacs-hook
+          (lambda () (ignore-errors (delete-directory code-review-local-test--repo-dir t))))
+
 (defun code-review-local-test--make-local-pr (diff)
   "A LOCAL review row with the given RAW-DIFF, persisted."
   (let ((obj (code-review-local-diff
@@ -298,7 +305,7 @@ survives the test's db reset."
     (code-review-db--pullreq-create obj)
     (oset obj state "LOCAL")
     (oset obj title "Local changes (HEAD)")
-    (oset obj host "/tmp/somerepo/")
+    (oset obj host code-review-local-test--repo-dir)
     (oset obj base-ref-name "HEAD")
     (oset obj head-ref-name "working tree")
     (oset obj saved t)
@@ -346,11 +353,11 @@ finding never evaporates."
         ;; the pure prompt: anchors, contract, repo
         (let ((prompt (code-review-local-agent--prompt
                        (code-review-local--pending-comments)
-                       "/tmp/somerepo/")))
+                       code-review-local-test--repo-dir)))
           (should (string-match-p "lib.py:3" prompt))
           (should (string-match-p "this duplicate logic must go" prompt))
           (should (string-match-p "Do NOT commit" prompt))
-          (should (string-match-p "/tmp/somerepo/" prompt)))
+          (should (string-match-p (regexp-quote code-review-local-test--repo-dir) prompt)))
         ;; wired agent: the hook receives (PROMPT REPO-DIR)
         ;; let* NOT let: a lambda in a plain let's binding list does
         ;; not capture a sibling binding on this Emacs build
@@ -360,7 +367,7 @@ finding never evaporates."
                   (setq calls (list prompt repo)))))
           (code-review-local-comments-send)
           (should (= (length calls) 2))
-          (should (equal (nth 1 calls) "/tmp/somerepo/"))
+          (should (equal (nth 1 calls) code-review-local-test--repo-dir))
           (should (string-match-p "lib.py:3" (car calls))))
         ;; no agent: the work item lands in a buffer + kill ring
         (let ((code-review-local-agent-dispatch-function nil))

@@ -9,7 +9,21 @@
 ;; enforcement: test
 (ert-deftest code-review-startup/req-2026-11-03-006-link-handler-load-order ()
   "WHEN Emacs starts THE SYSTEM SHALL route PR links to code review regardless of Forge load order."
-  (let* ((autoload-file (locate-library "code-review-autoloads"))
+  (let* ((autoload-file
+          (or (locate-library "code-review-autoloads")
+              ;; a source checkout has no generated autoloads: build them
+              ;; (into a file that does not exist yet, or nothing is written)
+              (let ((file (expand-file-name "code-review-autoloads.el"
+                                            (make-temp-file "code-review-autoloads-" t)))
+                    (dir (file-name-directory (locate-library "code-review-browse"))))
+                (loaddefs-generate dir file)
+                ;; generated file names are relative to FILE; the child
+                ;; Emacs has the source dir on its load-path, so use features
+                (with-temp-file file
+                  (insert-file-contents file)
+                  (while (re-search-forward "\"\\.\\./[^\"]*/\\(code-review-[^\"/]+\\)\"" nil t)
+                    (replace-match "\"\\1\"")))
+                file)))
          (executable (expand-file-name invocation-name invocation-directory))
          (paths (-mapcat (lambda (dir) (list "-L" dir))
                          (-filter #'stringp load-path))))
