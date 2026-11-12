@@ -46,6 +46,24 @@
   :group 'code-review
   :type 'string)
 
+(defvar code-review--finish-verdict nil
+  "Verdict of the review submission currently being reported.
+Bound to \"APPROVE\", \"REQUEST_CHANGES\" or \"COMMENT\" around
+`code-review-finish-hook' (dynamic — read it from the hook fn).")
+
+(declare-function code-review-utils--log "code-review-utils")
+
+(defcustom code-review-finish-hook nil
+  "Hook run once after a review verdict submits successfully.
+Fired from the send-review callback (async) with the PR buffer's
+pullreq row in the db; read the verdict from
+`code-review--finish-verdict' (\"APPROVE\", \"REQUEST_CHANGES\" or
+\"COMMENT\").  Fires ONLY for verdict submissions — reply-only and
+comment-only submissions never run it.  Errors in hook functions
+are logged, never propagated into the callback."
+  :group 'code-review
+  :type 'hook)
+
 ;; remove free variable warnings
 (defvar code-review-comment-buffer-name)
 (defvar code-review-commit-buffer-name)
@@ -201,7 +219,16 @@ If you want only to submit replies, use ONLY-REPLY? as non-nil."
                  (code-review--build-buffer
                   buff-name
                   nil
-                  "Done submitting review")))))
+                  "Done submitting review"))
+               ;; async callback: never signal — a hook error must not
+               ;; unwind into the network callback unread
+               (condition-case err
+                   (let ((code-review--finish-verdict
+                          (oref review-obj state)))
+                     (run-hooks 'code-review-finish-hook))
+                 (error
+                  (code-review-utils--log
+                   "finish-hook" (error-message-string err)))))))
 
           (when (oref replies-obj replies)
             (code-review-send-replies

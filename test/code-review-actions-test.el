@@ -180,4 +180,46 @@ it user-errors instead of exploding."
                    (buffer-string))))))
     (kill-buffer code-review-pr-description-buffer-name)))
 
+;; covers-fn: code-review-finish-hook
+(ert-deftest code-review-actions-test/finish-hook-fires-with-verdict ()
+  "A successful verdict submission runs `code-review-finish-hook'
+once, with `code-review--finish-verdict' bound; reply-only
+submissions never fire it."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create
+     (code-review-github-repo :owner "o" :repo "r" :number "1"))
+    (let* ((pr (code-review-db-get-pullreq))
+           (buff-name (code-review-pr-buffer-name pr))
+           (buf (get-buffer-create buff-name))
+           (runs nil)
+           (orig-send (symbol-function 'code-review-send-review))
+           (orig-replies (symbol-function 'code-review-send-replies))
+           (hook-fn (lambda ()
+                      (push code-review--finish-verdict runs))))
+      (with-current-buffer buf
+        (magit-section-mode)
+        ;; mark-local-comments-sent walks sections from the root: a
+        ;; bare magit buffer has NO root section and the walk dies on
+        ;; (oref nil children)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (code-review--root-section)
+            (insert "fake"))))
+      (fset 'code-review-send-review
+            (lambda (_obj callback) (funcall callback)))
+      (fset 'code-review-send-replies
+            (lambda (_obj callback) (funcall callback)))
+      (add-hook 'code-review-finish-hook hook-fn)
+      (unwind-protect
+          (progn
+            ;; verdict submission: hook fires once with the verdict
+            (code-review--submit "APPROVE" "looks good")
+            (should (equal runs (list "APPROVE")))
+            ;; reply-only submission: NO hook run
+            (code-review--submit "APPROVE" nil t)
+            (should (equal runs (list "APPROVE"))))
+        (remove-hook 'code-review-finish-hook hook-fn)
+        (fset 'code-review-send-review orig-send)
+        (fset 'code-review-send-replies orig-replies)
+        (kill-buffer buf)))))
+
 ;;; code-review-actions-test.el ends here
