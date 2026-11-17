@@ -70,6 +70,17 @@ object would accumulate ids and a stale database pointer."
          ((string-equal (oref path name) "gitlab.el")
           (should (oref path at-pos-p))))))))
 
+(ert-deftest code-review-db-test/curr-path-update-reactivates-existing-path ()
+  "Returning to a path activates it without creating a duplicate."
+  (code-review-test--with-db
+    (code-review-db--pullreq-create (code-review-db-test--sample-pr-obj))
+    (code-review-db--curr-path-update "github.el")
+    (code-review-db--curr-path-update "gitlab.el")
+    (code-review-db--curr-path-update "github.el")
+    (let ((paths (oref (code-review-db-get-buffer) paths)))
+      (should (= 2 (length paths)))
+      (should (equal "github.el" (oref (code-review-db--curr-path) name))))))
+
 (ert-deftest code-review-db-test/curr-path-head-pos-update ()
   "Update path head-pos value."
   (code-review-test--with-db
