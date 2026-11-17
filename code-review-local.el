@@ -41,6 +41,7 @@
 (require 'code-review-interfaces)
 (require 'code-review-section)
 (require 'code-review-criteria)
+(require 'code-review-repo)
 (require 'code-review-budget)
 
 (declare-function code-review--build-buffer "code-review-section")
@@ -189,7 +190,7 @@ stops responding to G (full reload)."
         (code-review-local--cleanup-rows root diff-args)
         (let ((obj (code-review-local-diff
                     :owner "local"
-                    :repo (file-name-nondirectory (directory-file-name root))
+                    :repo (code-review-repo-name root)
                     :number 0 :url nil)))
           (oset obj host root)
           (oset obj base-ref-name diff-args)

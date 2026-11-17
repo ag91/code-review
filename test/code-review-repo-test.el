@@ -140,5 +140,21 @@ guard must always fall back to the fetch."
                (code-review-repo--worktree-dir dir num)))
           (should-not (code-review-repo--worktree-current?)))))))
 
+(ert-deftest code-review-repo-test-main-worktree-from-linked ()
+  "A linked worktree resolves to the main checkout and its name."
+  (let* ((dir (code-review-repo-test--make-repo))
+         (wt (expand-file-name ".wt/topic" dir)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory wt) t)
+          (code-review-repo-test--git dir "worktree" "add" "-q" "-b" "topic" wt)
+          (should (equal (file-truename dir)
+                         (file-truename (code-review-repo-main-worktree wt))))
+          (should (equal (file-name-nondirectory dir)
+                         (code-review-repo-name wt)))
+          (should (equal (file-name-nondirectory dir)
+                         (code-review-repo-name dir))))
+      (delete-directory dir t))))
+
 (provide 'code-review-repo-test)
 ;;; code-review-repo-test.el ends here

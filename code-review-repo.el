@@ -117,6 +117,25 @@ Supports both https://host/owner/repo(.git) and git@host:owner/repo(.git)."
 
 ;;; Repository resolution
 
+(defun code-review-repo-main-worktree (dir)
+  "Return the main worktree directory of the repository containing DIR.
+DIR may be a linked worktree (e.g. REPO/.wt/topic); the main
+checkout is the first entry of `git worktree list'.  Return DIR
+itself when git cannot say."
+  (let ((out (code-review-repo--git dir "worktree" "list" "--porcelain")))
+    (if (and out (string-match "^worktree \\(.+\\)$" out))
+        (match-string 1 out)
+      dir)))
+
+(defun code-review-repo-name (dir)
+  "Return the repository name for DIR, even from a linked worktree.
+A worktree directory is named after its topic, not the project, so
+the name comes from the main worktree (a bare repo loses its
+\".git\" suffix)."
+  (file-name-sans-extension
+   (file-name-nondirectory
+    (directory-file-name (code-review-repo-main-worktree dir)))))
+
 (defun code-review-repo--base-dir ()
   "Root directory for on-demand clones.
 First of `code-review-projects-roots' when set, \"/tmp\" otherwise."
@@ -132,7 +151,8 @@ The repository is cloned under its own name
 (defun code-review-repo--candidate-dirs (owner repo)
   "Return candidate directories that may host a clone of OWNER/REPO."
   (let* ((repo-name (file-name-nondirectory (directory-file-name repo)))
-         (current-repo (ignore-errors (magit-toplevel))))
+         (current-repo (-some-> (ignore-errors (magit-toplevel))
+                         code-review-repo-main-worktree)))
     (-some--> code-review-projects-roots
       (--map (append
               (file-expand-wildcards
