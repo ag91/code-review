@@ -6220,10 +6220,44 @@ entering frame.  Guards:
 =code-review-render/req-2026-11-05-001-sub-at-buffer-start-renders=
 and =...-shr-crash-degrades-to-raw-text=.
 
-* Phase 31 — Analysis and test-impact precision pass :STATUS:todo:
+* Phase 31 — Analysis and test-impact precision pass :STATUS:done:
 
 P1. Both features over-promise and get skipped (field report
 3+4); a skipped feature is negative value.
+
+SHIPPED (2026-11-18):
+
+- PRECISION PASS: reciprocal-pair dedupe
+  (`code-review-analysis--dedupe-reciprocal' — a copy between two
+  diff files reported BOTH directions, one duplication two rows of
+  noise) and a per-kind hard cap
+  (`code-review-analysis-max-findings-per-kind', default 8; the old
+  hardcoded dangling cap of 10 moved there).  A `min-covered' raise
+  6 -> 8 was TRIED AND REVERTED: the fixture tests pin an exact
+  6-line helper copy as a true positive — the noise was duplicate
+  rows and unbounded counts, never the small-file threshold.
+- ON DEMAND by default: `code-review-analysis-collapse' (default t)
+  folds everything but the CI-gaming rows into a hidden Findings
+  child (the full fold recipe: heading + explicit
+  `code-review-section--hide-if-hidden' + HIDE in the section
+  spec — all three, see the 2026-10-10 gotcha).  The Analysis
+  heading gains a dimmed count one-liner ("1 ci-gaming, 1 similar,
+  1 possibly-dead — TAB on Findings expands").
+- TEST-IMPACT repositioning: `code-review-testimpact-hunk-tags'
+  (default nil) gates the [NO-TEST] hunk tags — the static "has
+  tests" premise is inverted on AI-generated PRs; the findings
+  stay in the folded list and `T' still runs the mapped subset.
+  The [CI-GAME] file tags are UNTOUCHED (diff-text evidence).
+- REMOVAL GATE (unchanged): if the section still earns no
+  dispositions after a bounded trial, the phase 5 heuristics are
+  REMOVED from the default surface entirely (CI-gaming, delicacy
+  and heat survive — the budget and the beacon consume them).
+- VERIFICATION: ERT req-2026-11-18-001 (reciprocal dedupe pure
+  test, counts test, collapsed one-liner render test asserting the
+  count line AND the invisible overlay AND the expanded variant);
+  suite 454/454 green; `make compile' clean.
+
+Original spec:
 
 - PRECISION PASS on the phase 5 heuristics: high-confidence
   findings only (per-kind thresholds, hard caps, no
@@ -6248,6 +6282,107 @@ P1. Both features over-promise and get skipped (field report
   asserting the collapsed one-liner, and the removal gate
   spelled out here so "keep tuning forever" is not the
   default.
+
+* Design — BDD (Gherkin) syntax for criteria :STATUS:design:
+
+P1 (reviewer request).  The criteria engine (phase 23) parses an
+EARS-shaped sentence and a front-matter block; the ERT req-blocks
+in the test suite already grew the Gherkin-adjacent
+=Given/When/Then= habit informally.  This phase makes BDD a
+FIRST-CLASS criteria syntax, preferred over EARS for new
+criteria.
+
+- WHY BDD WINS HERE: the criteria engine's whole job is a
+  falsifiable claim a test can settle.  EARS encodes that in
+  prose adverbs (WHEN...THE SYSTEM SHALL...); Gherkin encodes it
+  in structure (Given a state, When an act, Then an observable
+  outcome) — the Then IS the assertion, the Given IS the fixture,
+  and a criterion that cannot name all three is unfalsifiable by
+  construction (the grill's `vague' finding, made structural
+  instead of detected).
+- SYNTAX: a criterion file's body may be EITHER
+  #+begin_src markdown
+  <!-- EARS -->
+  WHEN the entry regex drops magit's optional backref group
+  THE SYSTEM SHALL wash every diff --git block.
+
+  <!-- BDD (preferred) -->
+  Given a diff whose `diff --git` matcher drops a rename block
+  When the owned wash runs over that diff
+  Then every block renders as a magit file section
+  #+end_src
+  Parser: `code-review-criteria--parse' grows a BDD branch —
+  recognize =Given/When/Then= line leads (case-insensitive, also
+  =Given=/=When=/=Then= bullets); each of the three lines becomes
+  part of the plist (=:given=, =:when=, =:then=) ALONGSIDE the
+  existing =:text= (the whole sentence, so every existing consumer
+  — traceability, brief, grill — keeps working unchanged).
+- PREFER BDD: the `--template' and the criteria-drafter prompt
+  switch to the Given/When/Then skeleton; EARS files keep parsing
+  forever (no migration, the L0 is hand-written files).
+- WHAT THE STRUCTURE BUYS: (1) the grill's vague-detector gets a
+  mechanical rule — a criterion missing Given, When or Then is
+  `vague' before any semantic read; (2) the probe (review-by-
+  execution) maps Then -> the assertion, Given -> the setup,
+  one-to-one; (3) the traceability req-ID scan is unchanged (IDs
+  stay in front matter).
+- NON-GOAL: no step-definition engine, no Cucumber runner.  The
+  criteria are claims ABOUT tests, not executable specs (the same
+  line phase 27 drew: "BDD's contract without BDD's step-
+  definition ceremony").
+- VERIFICATION: parse tests for the BDD branch (with-bullets,
+  without, mixed with EARS, missing-Then = plist still built but
+  grill flags it), the template test updated to the new skeleton,
+  and one end-to-end: a BDD criterion flows through
+  traceability unchanged.
+
+* Design — Simplify the incident flow (it is unused) :STATUS:design:
+
+P1 (reviewer request).  Honest field report: the incident
+machinery (phase 22) has never been used once, and its popup is
+IN THE WAY of the mode that is used daily.  The failure mode to
+avoid: tuning a feature nobody wants.  The likely truth: the
+POST-MORTEM moment (writing an incident entry) and the REVIEW
+moment (reading a diff with incident heat) are months apart, and
+the phase 22 flow welded them together in one UI.
+
+- WHAT IS ON THE SURFACE TODAY: the keyword-detection prompt
+  (`code-review-registry--detect' in the post-hook — a prompt
+  fired at the WORST moment, right after a review finishes), the
+  `code-review-incident-tag' command, the [N incident(s)] file
+  tags, the `:incidents' hunk-badge ingredient, the dead-code
+  never-flag, and the registry/drafter entry points.
+- THE POPUP GETS OUT OF THE WAY FIRST (no design needed, this is
+  a fix): the detection prompt becomes SILENT — a modeline
+  lighter or a one-line note in the review footer ("incident
+  keywords seen: 2 paths — `C-c C-i' to file") that the reviewer
+  can ignore forever.  A prompt that interrupts a finished
+  review guarantees training the user to say no.
+- OPTION A — RETIRE THE UI, KEEP THE DATA: incidents stay a
+  COMMIT-TRAILER convention (the source of truth already is),
+  read by the budget/beacon/hunk-badge; ALL interactive entry
+  points go (no prompt, no tag command, no drafter).  Filing an
+  incident = writing a trailer, which git already taught
+  everyone.  Smallest surface, loses nothing the reviewer used.
+- OPTION B — MOVE IT OUT OF BAND: incidents get their OWN entry
+  command (`M-x code-review-incident-file' from anywhere, not
+  inside a review buffer), the review buffer keeps only the READ
+  side (tags, badge, dead-code flag).  The review flow never
+  mentions incidents again; the post-mortem flow owns the write
+  side.
+- OPTION C — DELETE THE PHASE: if after the popup fix the
+  read-side tags also earn nothing (same removal-gate rule as
+  phase 31), the registry goes entirely — trailers remain the
+  convention, code-compass or plain git log answers "what
+  incidents touched this file" when the question arises.
+- RECOMMENDATION: the popup fix + OPTION A now; revisit B/C after
+  one bounded trial of the budget actually consuming the
+  `:incidents' ingredient (if the budget never surfaces an
+  incident-driven bounce, OPTION C).
+- VERIFICATION: the detection-prompt test flips to assert the
+  SILENT note; the tag command tests move to the new entry
+  point; the badge/tag render tests are untouched (the read side
+  does not change).
 
 * Phase 32 — The budget enforces boundaries: the polite bounce :STATUS:todo:
 

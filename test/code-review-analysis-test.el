@@ -7,6 +7,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'code-review-analysis)
+(require 'code-review-section-analysis)
 (require 'code-review-db)
 (require 'code-review-github)
 (require 'code-review-test-helpers)
@@ -672,3 +673,43 @@ uncovered.  GITIGNORED files still do not."
       (should-not (cl-some (lambda (h)
                              (equal (nth 0 h) "tests/ignored_test.py"))
                            hits)))))
+
+;;; req-2026-11-18-001: analysis-precision-caps-and-dedupe
+;; covers: code-review-analysis.el
+;; covers-fn: code-review-analysis--dedupe-reciprocal
+;; enforcement: test
+(ert-deftest code-review-analysis/req-2026-11-18-001-reciprocal-dedupe ()
+  "WHEN two files of the diff duplicate each other THE SYSTEM SHALL \
+report ONE similar finding, not both directions."
+  (let* ((row-a (list "a.el" 10 "b.el" 8 3 10))
+         (row-b (list "b.el" 10 "a.el" 8 3 10))
+         (row-c (list "c.el" 5 "a.el" 4 1 4)))
+    ;; A<->B collapse to the first; the unrelated C row stays
+    (should (equal (code-review-analysis--dedupe-reciprocal
+                    (list row-a row-b row-c))
+                   (list row-a row-c)))
+    ;; order-independent: B first keeps B
+    (should (equal (code-review-analysis--dedupe-reciprocal
+                    (list row-b row-a row-c))
+                   (list row-b row-c)))
+    ;; a non-reciprocal overlap (same repo path twice) stays
+    (should (equal (code-review-analysis--dedupe-reciprocal
+                    (list row-a (list "d.el" 5 "a.el" 4 1 4)))
+                   (list row-a (list "d.el" 5 "a.el" 4 1 4))))))
+
+(ert-deftest code-review-analysis/req-2026-11-18-001-counts-drop-empty-kinds ()
+  "WHEN the collapsed Analysis one-liner computes its counts THE SYSTEM \
+SHALL list only non-empty kinds, in the CI-gaming-first priority order."
+  (let ((counts (code-review-section--analysis-counts
+                 nil nil nil nil
+                 (list (list :kind :skip :path "ci.yml" :line 1 :text "|| true"))
+                 nil nil nil)))
+    ;; the only finding: one ci-gaming row; empty kinds dropped
+    (should (equal counts '(("ci-gaming" . 1))))
+    ;; everything non-empty lists, CI first
+    (should (equal
+             (code-review-section--analysis-counts
+              (list (list "a.el" 10 "b.el" 8 3 10))
+              (list (list "foo" "a.el" 3))
+              nil nil nil nil nil nil)
+             '(("similar" . 1) ("possibly-dead" . 1))))))

@@ -267,6 +267,18 @@ synchronous behavior (batch tools and tests may want that)."
   :type 'boolean
   :group 'code-review)
 
+(defcustom code-review-analysis-collapse t
+  "Phase 31: non-nil collapses the Analysis section to its
+one-line count summary.  The CI-gaming rows stay visible (they
+fire on diff-text evidence, never a guess); everything else
+(similar/dead/dangling/delicate/no-test/coupling/traceability)
+folds into a hidden Findings child that TAB expands.  Field
+reports 3+4: a wall of heuristic rows trains the reviewer to
+skip the section; the counts stay scannable, the findings summon
+on demand."
+  :type 'boolean
+  :group 'code-review)
+
 (defvar code-review-analysis--deferred-in-flight
   (make-hash-table :test #'equal)
   "Cache keys with a background analysis child currently running.")
@@ -535,33 +547,90 @@ parent to keep the section order."
          (cfindings (and cres (plist-get cres :findings)))
          (tfindings (code-review-section--criteria-trace-findings)))
     (when (or res tres-findings cfindings tfindings)
-      (let ((similar (and res (plist-get res :similar)))
-            (dead (and res (plist-get res :dead)))
-            (dangling (and res (plist-get res :dangling)))
-            (worktree code-review-repo-worktree))
+      (let* ((similar (and res (plist-get res :similar)))
+             (dead (and res (plist-get res :dead)))
+             (dangling (and res (plist-get res :dangling)))
+             (worktree code-review-repo-worktree)
+             (delicate (and res
+                            (cl-remove-if
+                             (lambda (e)
+                               (< (plist-get e :score)
+                                  code-review-analysis-delicacy-threshold))
+                             (or (plist-get res :hunks) nil))))
+             (ci (and tres (plist-get tres :ci)))
+             (notest (and tres (plist-get tres :notest)))
+             ;; phase 31: the one-line summary counts every kind
+             (counts (--map (pcase it
+                              (`(,label . ,n) (format "%d %s" n label)))
+                            (code-review-section--analysis-counts
+                             similar dead dangling delicate
+                             ci notest cfindings tfindings)))
+             (counts-line (if counts
+                              (string-join counts ", ")
+                            "no findings"))
+             (hide? code-review-analysis-collapse))
         (magit-insert-section (code-review-analysis-section)
           (insert (propertize "Analysis" 'font-lock-face 'magit-section-heading))
           (insert (propertize " (heuristic)" 'font-lock-face 'magit-dimmed))
           (magit-insert-heading)
-          ;; phase 17 first: the CI-gaming findings are the hard tags
+          ;; phase 17: the CI-gaming findings are the hard,
+          ;; adversarial-proof tags — they stay visible even when the
+          ;; rest collapses (field report 4: they fire on diff-text
+          ;; evidence, not a heuristic guess)
           (when tres-findings
-            (code-review-section--insert-testimpact-ci tres)
-            (code-review-section--insert-testimpact-notest tres))
-          ;; phase 18: change-coupling completeness
-          (when cfindings
-            (code-review-section--insert-coupling cres))
-          ;; phase 24: criteria <-> test traceability
-          (when tfindings
-            (code-review-section--insert-criteria-trace))
-          (when res
-            (code-review-section--insert-analysis-similar worktree similar)
-            (code-review-section--insert-analysis-dead dead)
-            (code-review-section--insert-analysis-dangling worktree dangling)
-            ;; phase 15: delicate hunks (top-K, hottest first).  The
-            ;; buttons jump inside the review buffer: the section is
-            ;; inserted there, so the button action runs there.
-            (code-review-section--insert-analysis-delicate res))
+            (code-review-section--insert-testimpact-ci tres))
+          ;; phase 31: everything else folds into one hidden child —
+          ;; the fold recipe's three parts ALL present: (1) a heading,
+          ;; (2) the explicit --hide-if-hidden walk (code-review
+          ;; renders directly, magit only folds on refresh), (3) HIDE
+          ;; in the spec (hidden at creation).
+          (code-review-section--hide-if-hidden
+           (magit-insert-section
+               (code-review-analysis-findings-section nil hide?)
+             (insert (propertize "Findings"
+                                 'font-lock-face 'magit-dimmed))
+             (magit-insert-heading)
+             (when tres-findings
+               (code-review-section--insert-testimpact-notest tres))
+             ;; phase 18: change-coupling completeness
+             (when cfindings
+               (code-review-section--insert-coupling cres))
+             ;; phase 24: criteria <-> test traceability
+             (when tfindings
+               (code-review-section--insert-criteria-trace))
+             (when res
+               (code-review-section--insert-analysis-similar worktree similar)
+               (code-review-section--insert-analysis-dead dead)
+               (code-review-section--insert-analysis-dangling worktree dangling)
+               (code-review-section--insert-analysis-delicate res))))
+          (insert (propertize
+                   (format "(%s — TAB on Findings expands)"
+                           counts-line)
+                   'font-lock-face 'magit-dimmed))
           (insert ?\n))))))
+
+(defclass code-review-analysis-findings-section (magit-section)
+  (()))
+(defvar code-review-section--analysis-counts-seen nil
+  "The last computed Analysis counts alist (label . count), for tests.")
+(defun code-review-section--analysis-counts (similar dead dangling
+                                                   delicate ci notest
+                                                   coupled trace)
+  "The non-empty (LABEL . COUNT) alist of the Analysis findings."
+  (let ((counts
+         (--keep (pcase it
+                   (`(,label . ,n) (and (> n 0) (cons label n))))
+                 (list
+                  (cons "ci-gaming" (length ci))
+                  (cons "no-test" (length notest))
+                  (cons "similar" (length similar))
+                  (cons "possibly-dead" (length dead))
+                  (cons "dangling" (length dangling))
+                  (cons "delicate" (length delicate))
+                  (cons "coupled" (length coupled))
+                  (cons "trace" (length trace))))))
+    (setq code-review-section--analysis-counts-seen counts)
+    counts))
 (defclass code-review-review-order-section (magit-section)
   (()))
 (defun code-review-section--goto-file-section (path)

@@ -310,6 +310,63 @@
               (should (equal (buffer-string) "Do not lose this draft"))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+;;; req-2026-11-18-001: analysis-collapses-to-count-one-liner
+;; covers: code-review-section-analysis.el
+;; covers-fn: code-review-analysis--insert-full
+;; enforcement: test
+(ert-deftest code-review-render/req-2026-11-18-001-analysis-collapsed-one-liner ()
+  "WHEN `code-review-analysis-collapse' is non-nil THE SYSTEM SHALL \
+render the Analysis section as a one-line count summary with the \
+findings folded into a hidden Findings child, while the CI-gaming rows \
+stay visible; TAB-expanding reveals the findings."
+  (cl-letf (((symbol-function 'code-review-analysis-run)
+             (lambda () (list :similar
+                              (list (list "a.el" 10 "b.el" 8 3 10))
+                              :dead (list (list "foo" "a.el" 3))
+                              :dangling nil :hunks nil)))
+            ((symbol-function 'code-review-testimpact-run)
+             (lambda () (list :ci (list (list :kind :skip :path "ci.yml"
+                                         :line 1 :text "jobs.test || true"))
+                              :hunks nil :notest nil)))
+            ((symbol-function 'code-review-coupling-run) (lambda () nil))
+            ((symbol-function 'code-review-section--criteria-trace-findings)
+             (lambda () nil))
+            (code-review-analysis-deferred? nil))
+    (code-review-render-test--with-review
+      (let ((name "*Code Review render safety test*"))
+        (with-current-buffer (get-buffer-create name)
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (setq magit-root-section nil)
+            (code-review-mode))
+          (let ((inhibit-read-only t)
+                (code-review-analysis-collapse t))
+            (code-review-analysis--insert-full)
+            (goto-char (point-min))
+            ;; the counts one-liner is present
+            (should (string-match-p
+                     "Analysis"
+                     (buffer-string)))
+            (should (string-match-p
+                     "1 ci-gaming, 1 similar, 1 possibly-dead"
+                     (buffer-string)))
+            ;; the CI-gaming ROW is visible (outside the fold)
+            (should (string-match-p "ci-gaming:" (buffer-string)))
+            ;; the dead-code ROW is folded: its text present but
+            ;; INVISIBLE (the fold gotcha: check the overlay, never
+            ;; the hidden slot).  Point must sit in the child's BODY
+            ;; (past its heading) — the heading itself is never hidden.
+            (goto-char (point-min))
+            (search-forward "possibly dead: ")
+            (should (get-char-property (point) 'invisible)))
+          ;; expanded: the same insert shows the findings
+          (let ((inhibit-read-only t)
+                (code-review-analysis-collapse nil))
+            (erase-buffer)
+            (setq magit-root-section nil)
+            (code-review-analysis--insert-full)
+            (should (string-match-p "possibly dead: " (buffer-string)))))))))
+
 ;;; req-2026-11-05-001: shr-render-failure-degrades-not-kills
 ;; covers: code-review-section-shared.el
 ;; covers-fn: code-review--insert-html

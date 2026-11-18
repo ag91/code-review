@@ -79,12 +79,28 @@
   :type 'integer)
 
 (defcustom code-review-analysis-min-covered 6
-  "Minimum number of covered added lines to report a similarity."
+  "Minimum number of covered added lines to report a similarity.
+Phase 31 tried raising this to 8 and REVERTED it: an exact
+6-line copy of a helper is a true positive (the fixture tests
+pin exactly that case), and the precision problem was never the
+small-file threshold — it was duplicate rows (both directions of
+a two-file copy, fixed by `code-review-analysis--dedupe-reciprocal')
+and unbounded row counts (fixed by
+`code-review-analysis-max-findings-per-kind')."
   :group 'code-review-analysis
   :type 'integer)
 
 (defcustom code-review-analysis-max-findings-per-file 3
   "Maximum similar-code findings reported per diff file."
+  :group 'code-review-analysis
+  :type 'integer)
+
+(defcustom code-review-analysis-max-findings-per-kind 8
+  "Phase 31 precision pass: hard cap on each finding KIND's row
+count in the Analysis section (similar, dead, dangling alike).
+A wall of low-confidence rows trains the reviewer to skip the
+whole section; the cap keeps the best per-file finds and drops
+the tail.  The old hardcoded dangling cap (10) moved here."
   :group 'code-review-analysis
   :type 'integer)
 
@@ -1135,6 +1151,22 @@ Return (SIMILAR DEAD DANGLING) findings for this file."
                    collect (list name path name-refs))))
       (list similar dead dangling))))
 
+(defun code-review-analysis--dedupe-reciprocal (similar)
+  "Drop the reciprocal rows of SIMILAR findings.
+Each row is (DIFF-PATH TOTAL REPO-PATH COVERED LO HI): a copy
+between two diff files reports BOTH directions (A in B, B in A) —
+one duplication, two rows of noise.  Keep the first row of each
+reciprocal pair (phase 31 precision pass)."
+  (let ((kept nil))
+    (cl-loop for f in similar
+             when (not (cl-find-if
+                        (lambda (g)
+                          (and (string= (nth 0 f) (nth 2 g))
+                               (string= (nth 2 f) (nth 0 g))))
+                        kept))
+             do (push f kept)
+             finally return (nreverse kept))))
+
 (defun code-review-analysis--compute (worktree diff pr)
   "Compute all findings for DIFF of PR against WORKTREE.
 Return (:similar SIMS :dead DEAD :dangling DANGLINGS :hunks
@@ -1186,9 +1218,22 @@ HUNKS — phase 15 delicacy entries, hottest first), or nil."
         (setq similar (append similar (nth 0 res))
               dead (append dead (nth 1 res))
               dangling (append dangling (nth 2 res)))))
+    ;; phase 31: a copy between two diff files reports BOTH
+    ;; directions (A in B, B in A) — one duplication, two rows of
+    ;; noise.  Keep the first row of each reciprocal pair.
+    (setq similar (code-review-analysis--dedupe-reciprocal similar))
+    ;; phase 31: hard per-kind caps — a wall of rows trains the
+    ;; reviewer to skip the section
+    (setq similar (when similar
+                    (cl-subseq similar 0 (min (length similar)
+                                              code-review-analysis-max-findings-per-kind)))
+          dead (when dead
+                 (cl-subseq dead 0 (min (length dead)
+                                        code-review-analysis-max-findings-per-kind))))
     ;; only interesting dangling references: keep the first few
     (setq dangling (when dangling
-                     (cl-subseq dangling 0 (min (length dangling) 10))))
+                     (cl-subseq dangling 0 (min (length dangling)
+                                                code-review-analysis-max-findings-per-kind))))
     ;; phase 15: hunk delicacy entries (blast radius, blame age and
     ;; ownership, complexity delta, dead-on-arrival), hottest first
     (let ((hunks (code-review-analysis--hunks

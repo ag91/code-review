@@ -225,6 +225,20 @@ everything."
   :group 'code-review-testimpact
   :type 'natnum)
 
+(defcustom code-review-testimpact-hunk-tags nil
+  "Phase 31: non-nil paints the [NO-TEST: ...] tag on hunk
+headings.  OFF by default: the field report found the static
+\"has tests\" premise inverted on AI-generated PRs — the tag
+announced missing coverage the reviewer no longer trusts, on
+every hunk.  The [NO-TEST] findings stay available in the
+Analysis section's folded Findings list (TAB expands), and the
+`T' command still runs the mapped test subset.  The CI-GAME file
+tags are UNAFFECTED: they fire on diff-text evidence (skip
+markers, `|| true', removed CI steps) and stay on every file
+heading."
+  :group 'code-review-testimpact
+  :type 'boolean)
+
 ;;; Pure helpers: classification
 
 (defun code-review-testimpact--doc-file-p (path)
@@ -576,9 +590,13 @@ review buffer down with it (the phase 5 survivability rule)."
   "The NO-TEST tag for hunk PATH+RANGES of the current render, nil when none.
 Called from the hunk wash: `code-review-testimpact-run' is a cache
 hit there (the Analysis section runs before the diff wash in
-`code-review-sections-hook')."
-  (let ((tres (code-review-testimpact-run)))
-    (and tres (code-review-testimpact--hunk-tag tres path ranges))))
+`code-review-sections-hook').  Phase 31: nil unless
+`code-review-testimpact-hunk-tags' is on — the static coverage
+tag moved behind the opt-in, the findings live in the Analysis
+section's folded Findings list."
+  (and code-review-testimpact-hunk-tags
+       (let ((tres (code-review-testimpact-run)))
+         (and tres (code-review-testimpact--hunk-tag tres path ranges)))))
 
 (defun code-review-testimpact--file-tag-for (path)
   "The CI-GAME tag for file PATH of the current render, nil when clean.
