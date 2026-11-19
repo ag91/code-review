@@ -407,4 +407,40 @@ no diff."
           (code-review-section-insert-budget)
           (should (string-match-p "budget off" (buffer-string))))))))
 
+;;; req-2026-11-18-002: meaning-left-in-the-queue
+;; covers: code-review-budget.el
+;; covers-fn: code-review-budget--meaning
+;; enforcement: test
+(ert-deftest code-review-budget/req-2026-11-18-002-meaning-left ()
+  "WHEN the queue reports what still deserves the day's budget THE \
+SYSTEM SHALL show the importance-weighted meaning left per PR (the \
+same weight as the beacon), degrading to the flat file count when \
+heat is unknown."
+  (code-review-test--with-db
+    (let* ((pr (code-review-budget-test--make-pr
+                "test" "test" "1" code-review-budget-test--diff "Meaning"))
+           (code-review-db--pullreq-id (oref pr id))
+           (signals (list :heat-entries
+                          (list (list :path "hot.py" :bucket "HOT")
+                                (list :path "cold.py" :bucket "COLD"))
+                          :delicate-hunks
+                          (list (list :path "hot.py" :score 1.0))))
+           (shape (list :files 2))
+           (meaning (code-review-budget--meaning pr signals shape)))
+      ;; hot.py: 3 x (1 + 1.0 delicacy) = 6; cold.py: 1 — nothing viewed
+      (should (= (cdr meaning) 7.0))
+      (should (= (car meaning) 7.0))
+      ;; the HOT file marked viewed: only 1 unit of meaning left
+      (code-review-db--reviewed-insert "hot.py")
+      (setq meaning (code-review-budget--meaning pr signals shape))
+      (should (= (car meaning) 1.0))
+      (should (= (cdr meaning) 7.0))
+      ;; heat unknown: flat fallback — 2 files, 1 viewed row
+      (code-review-db--reviewed-delete "hot.py")
+      (code-review-db--reviewed-insert "cold.py")
+      (setq meaning (code-review-budget--meaning
+                     pr (list :heat-entries nil) shape))
+      (should (= (cdr meaning) 2.0))
+      (should (= (car meaning) 1.0)))))
+
 ;;; code-review-budget-test.el ends here

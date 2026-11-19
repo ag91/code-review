@@ -6630,11 +6630,49 @@ diff should own (field report 5 of the consolidation round).
   existing anchor-jump tests (phase 7's discussion anchors
   must still land when their section moved into a popup).
 
-* Phase 35 — Importance-weighted review progress :STATUS:todo:
+* Phase 35 — Importance-weighted review progress :STATUS:done:
 
 P2. The N/M beacon is encouraging (field report: it works) —
 but flat.  Reviewing the two hotspot files IS more of the
 review than reviewing eight cold ones.
+
+SHIPPED (2026-11-18):
+
+- THE WEIGHT: `code-review-viewed--file-weight' = heat
+  multiplier (HOT x3, WARM x2, everything else x1) times a
+  delicacy factor (1 + the file's max phase 15 hunk score,
+  capped at 2) — a weight in [1, 9].  The pure core
+  (`--weights', `--weighted-progress') lives in
+  code-review-viewed.el; the queue reuses it unchanged.
+- THE BEACON: the modeline shows the weighted completion beside
+  the flat count ("3/8 (37%) | 61% weighted") whenever it
+  differs from the flat percentage; on a cold-history PR every
+  weight is 1 and the tail is suppressed (same number twice is
+  noise).  Off-switch: `code-review-viewed-weighted-progress?'.
+- NO NEW HARVESTS, NO :eval HEAVY LIFTS: the delicacy entries
+  reach the beacon through `code-review-viewed--delicacy-cache',
+  a permanent-local stuffed by `code-review-analysis--insert-full'
+  at render time (it has the result in hand) and CLEARED for
+  commit-focus renders (PR-scoped, like new-since-last-review).
+  The :eval lighter only walks the classifications/viewed/delicacy
+  hashes — it must never md5 the diff on every redisplay.
+- THE QUEUE: a "Meaning" column shows "meaning left"
+  (LEFT . TOTAL, the same weight, the db's whole-file viewed rows
+  subtracted) with a numeric sorter
+  (`code-review-budget--meaning-sorter' — a cons entry value is a
+  BUTTON descriptor in Emacs 30's tabulated-list, not a numeric
+  sort key: carry the number in a text property and sort on it).
+  Heat unknown degrades to the flat file count, never a made-up
+  zero.  Risk stays the default sort (admission logic consumes
+  it); Meaning is the "what still deserves the day's budget"
+  view, one click away.
+- VERIFICATION: ERT req-2026-11-18-002 (weight arithmetic with
+  the hot/cold ordering flip, the beacon's weighted string and
+  its suppression, meaning-left through the REAL db reviewed
+  rows), suite 458/458 green, `make compile' clean, daemon
+  reloaded.
+
+Original spec:
 
 - WEIGHT the completion: file importance from the phase 14
   heat (HOT/WARM/COLD), the phase 15 delicacy scores and the

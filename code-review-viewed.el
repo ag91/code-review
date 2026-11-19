@@ -386,26 +386,129 @@ never grow private copies of this rule."
                code-review-section--viewed)
       viewed)))
 
+;;; Phase 35: importance-weighted progress
+
+(defvar-local code-review-viewed--delicacy-cache nil
+  "The delicate hunk entries of the current render (:path/:score plists).
+Stuffed by `code-review-analysis--insert-full' at render time (it
+has the analysis result in hand): the beacon's :eval lighter must
+NEVER touch the analysis cache itself (that would md5 the whole
+diff on every redisplay).  Permanent-local: the deferred render
+tail re-runs the mode body, which would otherwise wipe it mid
+render.")
+(put 'code-review-viewed--delicacy-cache 'permanent-local t)
+
+(defcustom code-review-viewed-weighted-progress? t
+  "Phase 35: non-nil shows the weighted completion beside the
+flat N/M count in the modeline beacon.  The weight is the file's
+importance: heat bucket (HOT x3, WARM x2) times a delicacy
+factor from the phase 15 hunk scores.  Suppressed when it does
+not differ from the flat percentage: on a cold-history PR every
+weight is 1 and \"3/8 (37%) | 37% weighted\" is noise."
+  :group 'code-review
+  :type 'boolean)
+
+(defun code-review-viewed--heat-multiplier (tag)
+  "The heat multiplier of a classification TAG.
+HOT 3, WARM 2, everything else (COLD, DOC, SPEC, nil) 1."
+  (pcase tag
+    ("HOT" 3)
+    ("WARM" 2)
+    (_ 1)))
+
+(defun code-review-viewed--delicacy-for (path delicate-hunks)
+  "The max delicate score among DELICATE-HUNKS of PATH, 0.0 if none."
+  (let ((max 0.0))
+    (--each delicate-hunks
+      (when (and (equal (plist-get it :path) path)
+                 (> (or (plist-get it :score) 0.0) max))
+        (setq max (plist-get it :score))))
+    max))
+
+(defun code-review-viewed--file-weight (tag delicacy-score)
+  "The importance weight of one file.
+TAG is the classification tag (HOT/WARM/COLD/DOC/SPEC/nil),
+DELICACY-SCORE the file's max phase 15 hunk score (0.0..~3.25,
+capped at 2 here).  Range [1, 9]."
+  (* (code-review-viewed--heat-multiplier tag)
+     (1+ (min (or delicacy-score 0.0) 2.0))))
+
+(defun code-review-viewed--weights (classifications delicate-hunks)
+  "Path -> importance weight hash over CLASSIFICATIONS.
+DELICATE-HUNKS feed the delicacy ingredient (nil-safe).  A file
+missing from CLASSIFICATIONS gets no entry: the beacon and the
+queue rank exactly the diff's files."
+  (let ((weights (make-hash-table :test #'equal)))
+    (when (hash-table-p classifications)
+      (maphash (lambda (path info)
+                 (puthash path
+                          (code-review-viewed--file-weight
+                           (plist-get info :tag)
+                           (code-review-viewed--delicacy-for
+                            path delicate-hunks))
+                          weights))
+               classifications))
+    weights))
+
+(defun code-review-viewed--weighted-progress (weights viewed)
+  "((DONE . TOTAL) weighted sums) over WEIGHTS and the VIEWED index."
+  (let ((total 0.0) (done 0.0))
+    (maphash (lambda (path weight)
+               (setq total (+ total weight))
+               (when (code-review-viewed--viewed-p (gethash path viewed))
+                 (setq done (+ done weight))))
+             weights)
+    (cons done total)))
+
+(defun code-review-viewed--percent (part total)
+  "PART of TOTAL as a percentage: an integer, 0 for a zero TOTAL."
+  (if (> total 0) (round (* 100 (/ part (float total)))) 0))
+
 (defun code-review-viewed--progress-lighter ()
   "The modeline beacon: reviewed/total files and the percentage.
-Empty string when there is nothing to show (no rendered diff, or
-a classification table that has not been built yet).  A `:eval'
-lighter: redisplay recomputes it, so a mark needs no update
-plumbing."
+Phase 35 appends the importance-weighted percentage when it
+differs from the flat one (\"42% of the meaning reviewed\"):
+reviewing the two hotspot files IS more of the review than
+reviewing eight cold ones.  Empty string when there is nothing
+to show (no rendered diff, or a classification table that has
+not been built yet).  A `:eval' lighter: redisplay recomputes
+it, so a mark needs no update plumbing."
   (and (hash-table-p code-review-section--viewed)
        (hash-table-p code-review-section--file-classifications)
        (> (hash-table-count code-review-section--file-classifications) 0)
        (let* ((total (hash-table-count
                       code-review-section--file-classifications))
-              (done (code-review-viewed--count-files)))
-         (format " %d/%d (%d%%)" done total
-                 (/ (* 100 done) total)))))
+              (done (code-review-viewed--count-files))
+              (flat (code-review-viewed--percent done total))
+              (weighted
+               (and code-review-viewed-weighted-progress?
+                    (let* ((weights (code-review-viewed--weights
+                                     code-review-section--file-classifications
+                                     code-review-viewed--delicacy-cache))
+                           (dt (code-review-viewed--weighted-progress
+                                weights code-review-section--viewed)))
+                     (and (> (cdr dt) 0)
+                          (list (code-review-viewed--percent
+                                 (car dt) (cdr dt))))))))
+         (concat (format " %d/%d (%d%%)" done total flat)
+                 (and weighted
+                      (/= flat (car weighted))
+                      (format " | %d%% weighted" (car weighted)))))))
 
 (define-minor-mode code-review-progress-mode
   "Show the viewed-files progress beacon in the modeline.
 Enabled by `code-review-mode': N/M files reviewed and the
 percentage of the review behind it."
-  :lighter (:eval (code-review-viewed--progress-lighter)))
+  :lighter (:eval (code-review-viewed--mode-line-lighter)))
+
+(defun code-review-viewed--mode-line-lighter ()
+  "The :eval lighter value: the progress string with `%` escaped.
+The mode line RE-SCANS an :eval result for %-constructs (a
+literal `%b' rendered the buffer name — measured on the live
+daemon), so every literal percent of the progress string is
+doubled here; the mode line prints one."
+  (string-replace "%" "%%"
+                  (or (code-review-viewed--progress-lighter) "")))
 
 ;;; Expiry: GitHub's reset semantics, locally
 

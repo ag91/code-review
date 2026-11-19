@@ -67,6 +67,7 @@
 (require 'code-review-diff)
 (require 'code-review-criteria)
 (require 'code-review-db)
+(require 'code-review-viewed)
 
 (defvar code-review-repo-worktree)         ; code-review-repo.el
 (defvar code-review-history--order-table)  ; code-review-history.el
@@ -597,23 +598,67 @@ cached).  A missing signal is nil = unknown."
 
 ;;; The queue
 
+(defun code-review-budget--meaning (pr signals shape)
+  "Phase 35 \"meaning left\" for the db PR row PR.
+The SAME weight as the beacon: heat bucket (HOT x3, WARM x2)
+times delicacy (the file's max phase 15 hunk score, capped at
+2).  LEFT subtracts the weight of the paths already marked
+viewed (the db's reviewed rows; hunk-only marks are partial
+progress and count nothing, the file is the unit — same
+granularity as the beacon).  Returns (LEFT . TOTAL); with heat
+unknown (a cold history harvest) it degrades to the flat file
+count minus the viewed-file count — never a made-up zero."
+  (let* ((heat (plist-get signals :heat-entries))
+         (delicacy (plist-get signals :delicate-hunks))
+         (viewed-rows (ignore-errors
+                        (code-review-db--reviewed-rows (oref pr id)))))
+    (if (not heat)
+        (let* ((total (max 1 (plist-get shape :files)))
+               (done (cl-count-if
+                      (lambda (row) (null (plist-get row :hunk-key)))
+                      viewed-rows)))
+          (cons (max 0.0 (- total done)) total))
+      (let* ((tags (let ((h (make-hash-table :test #'equal)))
+                     (--each heat
+                       (puthash (plist-get it :path)
+                                (plist-get it :bucket) h))
+                     h))
+             (cls (let ((h (make-hash-table :test #'equal)))
+                    (--each heat
+                      (puthash (plist-get it :path)
+                               (list :tag (gethash (plist-get it :path)
+                                                   tags))
+                               h))
+                    h))
+             (weights (code-review-viewed--weights cls delicacy))
+             (vw (let ((h (make-hash-table :test #'equal)))
+                   (--each (or viewed-rows ())
+                     (unless (plist-get it :hunk-key)
+                       (puthash (plist-get it :path) (list :file t) h)))
+                   h))
+             (dt (code-review-viewed--weighted-progress weights vw)))
+        (cons (- (cdr dt) (car dt)) (cdr dt))))))
+
 (defun code-review-budget--entry (pr)
   "Budget ENTRY plist for the db PR row PR, or nil without a diff.
-(:key :pr :title :url :localp :assess)."
+(:key :pr :title :url :localp :assess :meaning)."
   (let ((diff (oref pr raw-diff)))
     (when diff
       (let* (;; exact-class check (cl-typep signals "Unknown type"
              ;; for an unloaded class symbol)
              (localp (eq (eieio-object-class pr)
                          'code-review-local-diff))
-             (assess (code-review-budget--assess
-                      diff (code-review-budget--signals pr diff))))
+             (signals (code-review-budget--signals pr diff))
+             (assess (code-review-budget--assess diff signals))
+             (meaning (code-review-budget--meaning
+                       pr signals (plist-get assess :shape))))
         (list :key (code-review-budget--pr-key pr)
               :pr pr
               :title (or (oref pr title) "")
               :url (and (not localp) (ignore-errors (oref pr url)))
               :localp localp
-              :assess assess)))))
+              :assess assess
+              :meaning meaning)))))
 
 (defun code-review-budget--collect ()
   "Budget entries for every unfinished saved review in the db.
@@ -672,17 +717,48 @@ addressed to whoever plans the verification capacity."
 (defvar code-review-budget--table nil
   "Buffer-local hash of the displayed entries, keyed by PR key.")
 
+(defun code-review-budget--meaning-sorter (A B)
+  "Numeric sorter for the queue's \"Meaning\" column: A before B.
+Wired as the third element of the \"Meaning\" entry in
+`code-review-budget-mode''s `tabulated-list-format' — this is
+what the column's `t' would be for a string sort.  A and B are
+tabulated entries ((ID . VECTOR)); the Meaning cell (index 4) is
+a display string whose number rides the `cr-meaning-left' text
+property put there by `code-review-budget--row'.  The number
+cannot travel AS the cell: a cons entry value is a BUTTON
+descriptor in Emacs 30's tabulated-list, not a numeric sort key."
+  (let* ((n 4)                         ; the Meaning column's index
+         (left (lambda (entry)
+                 (let ((cell (aref (cadr entry) n)))
+                   (or (and (stringp cell)
+                            (get-text-property 0 'cr-meaning-left cell))
+                       0)))))
+    (< (funcall left A) (funcall left B))))
+
 (defun code-review-budget--row (entry tier)
   "Tabulated (ID COLS) row for the ENTRY at TIER.
 A proper two-element list, NOT a bare (ID . VECTOR) cons: the
 default column sorter reads (cadr A) and aref's the vector."
   (let* ((a (plist-get entry :assess))
-         (mandatory (plist-get a :mandatory)))
+         (mandatory (plist-get a :mandatory))
+         ;; phase 35: "meaning left" (LEFT . TOTAL), the same
+         ;; importance weight as the beacon — reviewing the two
+         ;; hotspot files IS more of the review than eight cold
+         ;; ones.  The numeric LEFT rides as a text property (see
+         ;; `code-review-budget--meaning-sorter').
+         (meaning (plist-get entry :meaning))
+         (m-left (car meaning))
+         (m-total (cdr meaning)))
     (list (plist-get entry :key)
           (vector (plist-get entry :key)
                   (format "%.2f" (plist-get a :risk))
                   (format "%.1f" (plist-get a :cost))
                   (concat tier (when mandatory "!"))
+                  (propertize (format "%.1f of %.1f (%d%% left)"
+                                      m-left m-total
+                                      (code-review-viewed--percent
+                                       m-left m-total))
+                              'cr-meaning-left m-left)
                   (string-join (plist-get a :reasons) "; ")))))
 
 (defun code-review-budget--refresh ()
@@ -728,6 +804,9 @@ default column sorter reads (cadr A) and aref's the vector."
          ("Risk" 7 t)
          ("Cost" 6 t)
          ("Tier" 8 t)
+         ;; the numeric sort goes through --meaning-sorter: the
+         ;; number itself rides the cell's cr-meaning-left property
+         ("Meaning" 20 code-review-budget--meaning-sorter)
          ("Signals" 60 nil)]
         tabulated-list-sort-key '("Risk" . t))
   (tabulated-list-init-header)

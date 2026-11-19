@@ -377,4 +377,103 @@ the index reports :all-hunks and the file counts as viewed."
       (let ((code-review-section--viewed (code-review-viewed--index)))
         (should (= 1 (code-review-viewed--count-files)))))))
 
+;;; req-2026-11-18-002: importance-weighted-progress
+;; covers: code-review-viewed.el
+;; covers-fn: code-review-viewed--file-weight, code-review-viewed--weighted-progress
+;; enforcement: test
+(ert-deftest code-review-viewed/req-2026-11-18-002-weight-arithmetic ()
+  "WHEN files differ in heat and delicacy THE SYSTEM SHALL weight \
+their completion accordingly (HOT x3, WARM x2, delicacy capped at \
+2x, so a weight spans 1..9)."
+  (should (= (code-review-viewed--file-weight "HOT" 0.0) 3.0))
+  (should (= (code-review-viewed--file-weight "WARM" 0.0) 2.0))
+  (should (= (code-review-viewed--file-weight "COLD" 0.0) 1.0))
+  (should (= (code-review-viewed--file-weight "DOC" 0.0) 1.0))
+  (should (= (code-review-viewed--file-weight nil 0.0) 1.0))
+  ;; delicacy: the max hunk score capped at 2 -> weight at most 9
+  (should (= (code-review-viewed--file-weight nil 2.0) 3.0))
+  (should (= (code-review-viewed--file-weight nil 5.0) 3.0))
+  (should (= (code-review-viewed--file-weight "HOT" 2.0) 9.0)))
+
+(ert-deftest code-review-viewed/req-2026-11-18-002-weighted-ordering-flips ()
+  "WHEN the same number of files is marked viewed THE SYSTEM SHALL \
+report a HIGHER weighted completion for the hot ones than the cold ones \
+(reviewing the hotspot IS more of the review)."
+  (let* ((cls (let ((h (make-hash-table :test #'equal)))
+                (puthash "hot.py" (list :tag "HOT") h)
+                (puthash "cold.py" (list :tag "COLD") h)
+                h))
+         (weights (code-review-viewed--weights cls nil)))
+    (should (= (gethash "hot.py" weights) 3.0))
+    (should (= (gethash "cold.py" weights) 1.0))
+    (let ((hot-viewed (make-hash-table :test #'equal))
+          (cold-viewed (make-hash-table :test #'equal)))
+      (puthash "hot.py" (list :file t) hot-viewed)
+      (puthash "cold.py" (list :file t) cold-viewed)
+      (should (= (car (code-review-viewed--weighted-progress
+                       weights hot-viewed))
+                 3.0))
+      (should (= (car (code-review-viewed--weighted-progress
+                       weights cold-viewed))
+                 1.0)))))
+
+(ert-deftest code-review-viewed/req-2026-11-18-002-beacon-weighted-string ()
+  "WHEN weighted completion differs from flat THE SYSTEM SHALL show \
+it beside the flat count; WHEN the weights are all equal it stays clean."
+  (with-temp-buffer
+    (let ((code-review-section--file-classifications
+           (let ((h (make-hash-table :test #'equal)))
+             (puthash "hot.py" (list :tag "HOT") h)
+             (puthash "cold.py" (list :tag "COLD") h)
+             h))
+          (code-review-viewed--delicacy-cache nil))
+      (let ((code-review-section--viewed
+             (let ((h (make-hash-table :test #'equal)))
+               (puthash "hot.py" (list :file t) h)
+               h)))
+        (should (string-match-p "1/2 (50%) | 75% weighted"
+                                (code-review-viewed--progress-lighter))))
+      ;; a delicacy entry sharpens the weight (hot.py max score 1.0
+      ;; doubles it: 3 x 2 = 6 of a 6+1 total = 86%)
+      (let ((code-review-section--viewed
+             (let ((h (make-hash-table :test #'equal)))
+               (puthash "hot.py" (list :file t) h)
+               h))
+            (code-review-viewed--delicacy-cache
+             (list (list :path "hot.py" :score 1.0))))
+        (should (string-match-p "1/2 (50%) | 86% weighted"
+                                (code-review-viewed--progress-lighter))))
+      ;; all weights equal: no weighted tail
+      (let ((code-review-section--file-classifications
+             (let ((h (make-hash-table :test #'equal)))
+               (puthash "a.py" (list :tag "COLD") h)
+               (puthash "b.py" (list :tag nil) h)
+               h))
+            (code-review-section--viewed
+             (let ((h (make-hash-table :test #'equal)))
+               (puthash "a.py" (list :file t) h)
+               h)))
+        (should (string= (code-review-viewed--progress-lighter)
+                         " 1/2 (50%)"))))))
+
+(ert-deftest code-review-viewed/req-2026-11-18-002-mode-line-escapes-percent ()
+  "WHEN the beacon string reaches the mode line THE SYSTEM SHALL \
+escape its literal percents: an :eval result is RE-SCANNED for \
+%-constructs (a literal `%b' rendered the buffer name, measured \
+on the live daemon), which ate the `(37%)' and made the beacon \
+unreadable."
+  (with-temp-buffer
+    (let ((code-review-section--file-classifications
+           (let ((h (make-hash-table :test #'equal)))
+             (puthash "hot.py" (list :tag "HOT") h)
+             (puthash "cold.py" (list :tag "COLD") h)
+             h))
+          (code-review-viewed--delicacy-cache nil)
+          (code-review-section--viewed
+           (let ((h (make-hash-table :test #'equal)))
+             (puthash "hot.py" (list :file t) h)
+             h)))
+      (should (string-match-p "1/2 (50%%) [|] 75%% weighted"
+                              (code-review-viewed--mode-line-lighter))))))
+
 ;;; code-review-viewed-test.el ends here

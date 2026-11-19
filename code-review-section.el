@@ -445,7 +445,11 @@ If you want to display a minibuffer MSG in the end."
   ;; single-commit diff, and a stale value from the last PR render
   ;; would leak its NEW tag/reorder/fold into the commit buffer.
   (if commit-focus?
-      (setq code-review-section--new-since-last-review nil)
+      (setq code-review-section--new-since-last-review nil
+            ;; phase 35: the weighted-progress delicacy entries are
+            ;; PR-scoped too — a stale value from the last PR render
+            ;; would weight the commit buffer's beacon
+            code-review-viewed--delicacy-cache nil)
     (code-review--stage-time "rederive-new-since"
       (when-let* ((infos (code-review-db--pullreq-raw-infos)))
         (setq code-review-section--new-since-last-review

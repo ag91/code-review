@@ -42,6 +42,12 @@
 (require 'code-review-faces)
 (require 'code-review-db)
 (require 'code-review-utils)
+
+;; phase 35: the beacon's weighted-progress delicacy entries, filled
+;; in `code-review-analysis--insert-full' below.  Owner:
+;; code-review-viewed.el.  VALUELESS forward declaration (a valued
+;; one would swallow the owner's default).
+(defvar code-review-viewed--delicacy-cache)
 (require 'code-review-analysis)
 (require 'code-review-testimpact)
 (require 'code-review-coupling)
@@ -546,6 +552,12 @@ parent to keep the section order."
          (cres (code-review-coupling-run))
          (cfindings (and cres (plist-get cres :findings)))
          (tfindings (code-review-section--criteria-trace-findings)))
+    ;; phase 35: the beacon's weighted progress reads the delicacy
+    ;; entries from here (render time, the result is in hand) — an
+    ;; :eval lighter must never touch the analysis cache itself
+    ;; (that would md5 the whole diff on every redisplay).  nil when
+    ;; the analysis did not run: the weights degrade to heat-only.
+    (setq code-review-viewed--delicacy-cache (plist-get res :hunks))
     (when (or res tres-findings cfindings tfindings)
       (let* ((similar (and res (plist-get res :similar)))
              (dead (and res (plist-get res :dead)))
