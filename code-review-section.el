@@ -239,14 +239,27 @@ named after the DB's current pullreq."
 (defun code-review-section--setup-worktree ()
   "Bind `code-review-repo-worktree' and `default-directory' for the
 render.  Local repository context: worktree checked out at PR
-head; for a local diff review the repository itself is the worktree."
+head; for a local diff review the repository itself is the
+worktree — the row's host (where `code-review-review-local-diff'
+was called) ALWAYS wins over a stale permanent-local value
+(2026-11-19, cross-checkout buffer reuse after 094271c)."
   (if (code-review-db-local-pr-p)
-      (when (and code-review-repo-enable
-                 (not code-review-repo-worktree))
-        (setq code-review-repo-worktree
-              (or (let ((root (oref (code-review-db-get-pullreq) host)))
-                    (and root (file-name-as-directory root)))
-                   (magit-toplevel))))
+      (when code-review-repo-enable
+        ;; 094271c unified the local buffer name AND the db key
+        ;; across checkouts of the same repo ("local: code-review",
+        ;; "local/code-review#0"): a buffer reused from a previous
+        ;; local review of ANOTHER checkout still carries ITS
+        ;; permanent-local `code-review-repo-worktree', and the old
+        ;; nil-guard kept it — the review rendered (and jumped into)
+        ;; that checkout's PR worktree.  The LOCAL row's host IS
+        ;; where `code-review-review-local-diff' was called from: it
+        ;; ALWAYS wins.  A re-render of the same row re-sets the
+        ;; same value; only the stale case changes behavior.
+        (let ((root (let ((pr (code-review-db-get-pullreq)))
+                      (and pr (slot-boundp pr 'host) (oref pr host)))))
+          (setq code-review-repo-worktree
+                (or (and root (file-name-as-directory root))
+                    (magit-toplevel)))))
     (when (and code-review-repo-enable
                (or (not code-review-repo-worktree)
                    code-review-section-full-refresh?))

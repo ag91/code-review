@@ -599,5 +599,35 @@ placeholder in place.  The engines' full-worktree greps cost
                                   'missing)))
               (kill-buffer rbuf))))))))
 
+;;; req-2026-11-19-001: local-worktree-host-priority
+;; covers: code-review-section.el
+;; covers-fn: code-review-section--setup-worktree
+;; enforcement: test
+(ert-deftest code-review-local/req-2026-11-19-001-host-outweighs-stale-worktree ()
+  "WHEN a local review renders in a buffer reused from a previous \
+local review of ANOTHER checkout (same repo name and buffer name \
+since 094271c) THE SYSTEM SHALL set the worktree from the row's \
+host — where `code-review-review-local-diff' was called — never \
+keep the stale permanent-local value."
+  (let ((code-review-repo-enable t)
+        (code-review-history-enabled nil))
+    (code-review-test--with-db
+      ;; the local review row: host = where the command was called
+      (let* ((pr (code-review-local-diff
+                  :owner "local" :repo "code-review" :number 0 :url nil))
+             (code-review-db--pullreq-id (uuidgen-4)))
+        (oset pr id code-review-db--pullreq-id)
+        (oset pr state "LOCAL")
+        (oset pr host "/home/andrea/.emacs.d/elpa/code-review/")
+        (closql-insert (code-review-db) pr t)
+        ;; the reused buffer's stale permanent-local worktree: a PR
+        ;; worktree of ANOTHER checkout
+        (with-temp-buffer
+          (let ((code-review-repo-worktree
+                 "/home/andrea/workspace/code-review/.git/code-review-worktrees/10/"))
+            (code-review-section--setup-worktree)
+            (should (equal code-review-repo-worktree
+                           "/home/andrea/.emacs.d/elpa/code-review/"))))))))
+
 (provide 'code-review-local-test)
 ;;; code-review-local-test.el ends here
